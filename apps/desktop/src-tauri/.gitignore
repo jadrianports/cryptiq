@@ -1,0 +1,5 @@
+# Compiled output (Cargo target dir).
+target/
+
+# tauri-build generated schema dir — recreated on every build.
+gen/schemas/

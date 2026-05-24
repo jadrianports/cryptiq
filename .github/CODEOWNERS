@@ -1,0 +1,7 @@
+# Cryptiq CODEOWNERS.
+#
+# Cryptiq is a self-built password manager; the sole code owner is the maintainer.
+# Anyone opening a PR (yourself or contributors after v1.5 goes public) gets this
+# owner auto-requested for review.
+
+* @jadrianports

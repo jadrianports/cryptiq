@@ -1,0 +1,18 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Supply-chain hardening per SEC-15 + STACK.md §Q7.
+# Refuses to install packages younger than 24h on the npm registry
+# (defends against fresh malicious releases of typosquats / hijacked accounts).
+minimumReleaseAge: 1440
+
+# Trust faster-moving Tauri + Svelte coordinated releases.
+# (Tauri publishes ~10 packages on the same day on every coordinated bump;
+# Svelte 5 ships svelte + @sveltejs/vite-plugin-svelte + language-tools together.)
+minimumReleaseAgeExclude:
+  - '@tauri-apps/*'
+  - '@sveltejs/*'
+
+# Keep pnpm's default isolated linker — DO NOT add nodeLinker: hoisted
+# or shamefully-hoist=true. Isolation is what enforces the core purity rule.

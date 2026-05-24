@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "svelte"],
+    "allowImportingTsExtensions": false,
+    "moduleResolution": "Bundler",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte"],
+  "exclude": ["node_modules", "dist", "src-tauri/target"]
+}

@@ -1,0 +1,53 @@
+/* apps/desktop/src/app.css */
+
+@import 'tailwindcss';
+
+/*
+ * D-12: Dark-mode CSS variable system set up in Phase 1.
+ *
+ * Phase 1 ships light-only. The @theme block defines color tokens so Phase 4
+ * builds components against `var(--color-cryptiq-bg)` etc. instead of literal
+ * hex codes — which means the eventual dark theme is a CSS-variable swap, not
+ * a per-component retrofit pass.
+ *
+ * Tailwind v4 auto-exposes every @theme value as a CSS variable AND as a
+ * Tailwind utility class (e.g. text-cryptiq-fg / bg-cryptiq-bg are
+ * generated automatically).
+ */
+@theme {
+  --color-cryptiq-bg: #fafafa; /* light background */
+  --color-cryptiq-surface: #ffffff; /* card / panel */
+  --color-cryptiq-fg: #0b0d10; /* primary text */
+  --color-cryptiq-fg-muted: #4b5563; /* secondary text */
+  --color-cryptiq-accent: oklch(0.58 0.16 250); /* brand blue-violet */
+  --color-cryptiq-border: #e5e7eb;
+  --color-cryptiq-danger: oklch(0.55 0.22 25);
+
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --radius-cryptiq: 0.5rem;
+}
+
+/*
+ * Future dark theme (Phase 4 or v2) will look like:
+ *
+ *   @media (prefers-color-scheme: dark) {
+ *     @theme {
+ *       --color-cryptiq-bg: #0b0d10;
+ *       --color-cryptiq-fg: #fafafa;
+ *       ...
+ *     }
+ *   }
+ *
+ * Or with a `.dark` class toggle approach.
+ * NOT shipped in Phase 1 — variable system only.
+ */
+
+/* Resets / base — minimal, lets Tailwind's preflight do the heavy lifting */
+html,
+body,
+#app {
+  height: 100%;
+  background: var(--color-cryptiq-bg);
+  color: var(--color-cryptiq-fg);
+  font-family: var(--font-sans);
+}

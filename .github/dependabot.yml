@@ -1,0 +1,36 @@
+# Dependabot — registers the three ecosystems Cryptiq depends on so weekly PRs
+# arrive for outdated GitHub Actions SHAs, npm packages, and Rust crates.
+#
+# SHA-pin maintenance for `.github/workflows/*.yml` is AUTOMATIC: Dependabot detects
+# the existing 40-char @<sha> format after the action ref and preserves it on bumps,
+# replacing both the SHA and the trailing `# vX.Y.Z` comment. No explicit config flag
+# enables this — the format itself triggers the behavior, verified against the official
+# Dependabot configuration reference and dependabot-core source (RESEARCH.md OQ #6).
+#
+# Cryptiq is local-only until v1.5 per project decision 15; this file is committed
+# now so the first push has the config ready, but no PRs will open until the repo
+# goes online.
+
+version: 2
+updates:
+  # GitHub Actions in .github/workflows/*.yml — every uses: is SHA-pinned.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    target-branch: main
+
+  # npm via pnpm workspaces — root + apps/desktop + packages/core all share pnpm-lock.yaml.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Cargo for the Tauri Rust shell.
+  - package-ecosystem: cargo
+    directory: /apps/desktop/src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Cryptiq lock placeholder">
+  <!-- Placeholder lock — real icon design deferred to Phase 6 (CONTEXT.md Deferred Ideas). -->
+  <rect x="14" y="28" width="36" height="26" rx="4" ry="4" fill="none" stroke="currentColor" stroke-width="3"/>
+  <path d="M22 28 V20 a10 10 0 0 1 20 0 V28" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="41" r="2.5" fill="currentColor"/>
+  <rect x="31" y="42" width="2" height="6" fill="currentColor"/>
+</svg>

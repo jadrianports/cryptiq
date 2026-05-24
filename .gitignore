@@ -1,0 +1,48 @@
+# GSD planning workspace — local-only per project config
+.planning/
+
+# GSD harness + Claude Code config — local-only (settings.json + hooks may reference machine-specific paths).
+# Project decision: design docs (cryptiq-plans/) are public; tool config stays private.
+.claude/
+
+# Common
+node_modules/
+.pnpm-store/
+dist/
+build/
+.svelte-kit/
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Other package managers — Pitfall 6 defense.
+# pnpm is the only allowed package manager; package-lock.json or yarn.lock
+# appearing in-tree usually indicates a CLI mis-detection and must stay visible.
+package-lock.json
+yarn.lock
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tauri build artifacts
+target/
+src-tauri/target/
+apps/desktop/src-tauri/gen/
+src-tauri/Cargo.lock.bak
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Env files — defensive (no secrets should ever land here, but just in case)
+.env
+.env.*
+!.env.example
+
+# Phase 1, Plan 01-06 Task 1 — local SHA-resolution working note (not for commit).
+# Authoritative SHAs are maintained by Dependabot in .github/workflows/ci.yml itself.
+.github/_resolved-shas.txt

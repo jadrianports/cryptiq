@@ -1,0 +1,26 @@
+* text=auto eol=lf
+
+# Binary file types
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.wasm binary
+
+# Cryptiq vault file is an opaque encrypted blob
+*.cryptiq binary
+*.cryptiq.bak.* binary
