@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./internal": {
+      "types": "./src/internal.ts",
+      "default": "./src/internal.ts"
     }
   },
   "scripts": {
@@ -18,7 +22,12 @@
     "lint": "eslint src"
   },
   "devDependencies": {
+    "@types/libsodium-wrappers-sumo": "^0.7.8",
+    "fast-check": "^4.8.0",
     "typescript": "^5.4.0",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "libsodium-wrappers-sumo": "^0.7.15"
   }
 }

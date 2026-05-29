@@ -30,12 +30,11 @@ export class VaultIOError extends Error {
   }
 }
 
-export class VaultCorruptError extends Error {
-  readonly code = 'VAULT_CORRUPT';
-  constructor(message: string) {
-    super(message);
-  }
-}
+// VaultCorruptError's canonical declaration moved to ../errors (Phase 2, DC-9) so it
+// is importable from both crypto/ and vault/ without a circular dep. Re-exported here
+// to preserve the Phase 1 import surface (callers still do `import { VaultCorruptError }
+// from '.../storage/VaultStorageAdapter'`).
+export { VaultCorruptError } from '../errors';
 
 /**
  * The platform-bridging interface. `core` orchestrates WHEN to load/save;

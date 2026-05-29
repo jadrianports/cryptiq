@@ -14,21 +14,26 @@
     "lint:custom": "node scripts/lint/lint-workflow-sha-pins.mjs && node scripts/lint/lint-capability-globs.mjs && node scripts/lint/lint-capability-platforms.mjs && node scripts/lint/lint-csp.mjs && node scripts/lint/lint-supply-chain.mjs",
     "test": "vitest run",
     "typecheck": "pnpm -r --workspace-concurrency=1 run typecheck",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "demo:02-1": "node --experimental-transform-types --import ./scripts/demo/_loader.mjs scripts/demo/02-1-calibration.mjs",
+    "demo:02-2": "node --experimental-transform-types --import ./scripts/demo/_loader.mjs scripts/demo/02-2-envelope.mjs"
   },
   "devDependencies": {
     "eslint": "^9.0.0",
-    "typescript-eslint": "^8.59.4",
     "eslint-plugin-svelte": "^3.17.1",
-    "svelte-eslint-parser": "^1.6.1",
     "prettier": "^3.3.0",
-    "vitest": "^3.2.4",
-    "typescript": "^5.4.0"
+    "svelte-eslint-parser": "^1.6.1",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.59.4",
+    "vitest": "^3.2.4"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
       "@tauri-apps/cli"
     ]
+  },
+  "dependencies": {
+    "@cryptiq/core": "workspace:^"
   }
 }

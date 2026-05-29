@@ -26,9 +26,24 @@ const FORBIDDEN_CORE_IMPORTS = [
   { name: 'node:path', message: 'packages/core knows nothing about file paths.' },
 ];
 
+// ESLint's `no-restricted-imports.patterns` array must be homogeneous — either all
+// bare-string globs OR all object entries ({ group, message }). It cannot mix the two.
+// We use the object form throughout so each ban can carry a custom message.
 const FORBIDDEN_CORE_IMPORT_PATTERNS = [
-  '@tauri-apps/*', // core is Tauri-free
-  'svelte/*',
+  { group: ['@tauri-apps/*'], message: 'packages/core is Tauri-free — platform code belongs in apps/desktop.' },
+  { group: ['svelte/*'], message: 'packages/core is platform-free — Svelte belongs in apps/desktop.' },
+];
+
+// SEC-01 / SEC-02 / Pitfall 3: raw libsodium import is banned everywhere in
+// packages/core EXCEPT the single getSodium() entry point. Applied as a `patterns`
+// group (covers `libsodium-wrappers-sumo` and any subpath). sodium.ts itself is
+// exempted via a per-file override below so the entry point can import the raw module.
+const FORBIDDEN_RAW_SODIUM_PATTERNS = [
+  {
+    group: ['libsodium-wrappers-sumo', 'libsodium-wrappers-sumo/*'],
+    message:
+      'Import getSodium() from ./crypto/sodium (or ../sodium) — never the raw WASM module (Pitfall 3, SEC-01/SEC-02).',
+  },
 ];
 
 export default [
@@ -88,7 +103,28 @@ export default [
   {
     files: ['packages/core/**/*.ts'],
     rules: {
-      // SEC-14: forbidden imports.
+      // SEC-14: forbidden imports + SEC-01/SEC-02 raw-sodium ban.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: FORBIDDEN_CORE_IMPORTS,
+          patterns: [...FORBIDDEN_CORE_IMPORT_PATTERNS, ...FORBIDDEN_RAW_SODIUM_PATTERNS],
+        },
+      ],
+
+      // SEC-10 / no plaintext-secrets-to-logs: ban console.* entirely inside core.
+      // Tests in __tests__ may need console for debug — overridden below.
+      'no-console': 'error',
+    },
+  },
+
+  // === The single WASM entry point is exempt from the raw-sodium import ban ===
+  // sodium.ts IS the getSodium() factory — it is the only place allowed to import
+  // the raw libsodium-wrappers-sumo module (SEC-01/SEC-02, Pitfall 3). All other
+  // packages/core rules (forbidden platform imports, no-console) still apply.
+  {
+    files: ['packages/core/src/crypto/sodium.ts'],
+    rules: {
       'no-restricted-imports': [
         'error',
         {
@@ -96,10 +132,6 @@ export default [
           patterns: FORBIDDEN_CORE_IMPORT_PATTERNS,
         },
       ],
-
-      // SEC-10 / no plaintext-secrets-to-logs: ban console.* entirely inside core.
-      // Tests in __tests__ may need console for debug — overridden below.
-      'no-console': 'error',
     },
   },
 
