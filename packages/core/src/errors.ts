@@ -74,3 +74,29 @@ export class VaultCorruptError extends Error {
     super(message);
   }
 }
+
+/**
+ * The key unwrapped from a wrap did NOT match the live in-memory vault key (a session
+ * desync or caller bug). Fail closed: changeMasterPassword refuses to re-wrap a key that
+ * does not match what the current wrap actually protects, which would otherwise brick the
+ * (untouched) data blob. The message NEVER contains key bytes (SEC-09 / no-secrets rule).
+ */
+export class VaultKeyMismatchError extends Error {
+  readonly code = 'VAULT_KEY_MISMATCH';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * A wrapped-key management operation was refused because it would touch a PROTECTED label
+ * (the always-present `master` wrap). Adding over `master` could clobber the primary unlock
+ * path; removing `master` would brick the vault. DC-4 guard rails surface this typed error
+ * so callers branch on `instanceof`/`.code` rather than message text.
+ */
+export class ProtectedWrapError extends Error {
+  readonly code = 'PROTECTED_WRAP';
+  constructor(message: string) {
+    super(message);
+  }
+}

@@ -1,18 +1,21 @@
 // apps/desktop/src/lib/state/vault.svelte.ts
 //
-// Phase 1: D-stub skeleton. All methods throw "Phase 2 will implement".
-// The class shape (per ARCHITECTURE.md §5.2) is correct so Phase 2 just fills in bodies.
+// The in-memory unlocked-vault session singleton. Phase 1 scaffolded the shape; Phase 2
+// (Plan 02-04) fills the method bodies against the @cryptiq/core verb-first API.
 //
 // Why this shape:
 //  - Module-scoped singleton: only one unlocked vault at a time, anywhere in the app.
-//  - $state.raw (not $state): avoid Svelte's deep proxy on entry data
-//    (defends Pitfall 7 — proxied passwords could leak through DevTools).
-//  - vault key is a NON-reactive private field (no UI reactivity needed on bytes).
-//  - lock() is the ONLY way to clear; sodium.memzero is called on every key buffer
-//    (Phase 2 wires the real sodium import).
+//  - $state.raw (NOT $state): avoid Svelte's deep reactive proxy on the decrypted vault
+//    data (defends Pitfall 7 — a deep proxy could surface decrypted secrets through
+//    DevTools / the reactivity graph). $state.raw stores the value by reference and only
+//    reacts to WHOLE-OBJECT reassignment. This MUST NOT become `$state` (locked decision).
+//  - The vault KEY is a NON-reactive private field (#vaultKey): the UI never needs to react
+//    to raw key bytes, and keeping it out of the reactive graph is part of the Pitfall-7
+//    defense. lock() zeroes it via @cryptiq/core's secureWipe (SEC-09) so the desktop layer
+//    never imports raw libsodium (the ESLint no-restricted-imports ban stays intact).
 
-// Phase 1 stub — Phase 2 imports the real type from @cryptiq/core
-type UnlockedVault = unknown;
+import type { UnlockedVault } from '@cryptiq/core';
+import { secureWipe } from '@cryptiq/core';
 
 class VaultSession {
   // $state.raw — Svelte 5 runes pattern for "whole-object reassignment without deep proxying."
@@ -27,31 +30,41 @@ class VaultSession {
   }
 
   /**
-   * Phase 2 will populate after a successful unlockVault() call.
-   * Phase 1: throws so any accidental call surfaces loudly.
+   * Mount a freshly unlocked vault + its 32-byte key after a successful
+   * createVault()/unlockVault() call. The caller hands ownership of `vaultKey` to the
+   * session; from here only lock() may zero it.
    */
-  mount(_vault: UnlockedVault, _vaultKey: Uint8Array): void {
-    throw new Error('VaultSession.mount: Phase 2 will implement.');
+  mount(vault: UnlockedVault, vaultKey: Uint8Array): void {
+    this.#vault = vault;
+    this.#vaultKey = vaultKey;
   }
 
   /**
-   * Phase 2 will call sodium.memzero on #vaultKey and drop references.
-   * Phase 1: throws (no key to zero yet).
+   * Lock the session: zero the vault key buffer in place (SEC-09) and drop all references.
+   * secureWipe (from @cryptiq/core) calls sodium.memzero under the hood — the desktop layer
+   * never touches raw libsodium. Idempotent: locking an already-locked session is a no-op.
+   *
+   * Note: memzero is a best-effort defense (JS GC may have copied bytes); it is the
+   * documented mitigation, not a guarantee (see 02-security-design.md).
    */
   lock(): void {
-    throw new Error('VaultSession.lock: Phase 2 will implement.');
+    const key = this.#vaultKey;
+    this.#vault = null;
+    this.#vaultKey = null;
+    if (key !== null) {
+      // Fire-and-forget: secureWipe awaits getSodium() (already resolved by unlock time).
+      void secureWipe(key);
+    }
   }
 
   /**
-   * For the crypto layer: hand back the key buffer (e.g., master-password change).
-   * Never expose to UI code. In Phase 1 the key is always null (mount() throws),
-   * so the throw path is the only reachable one; Phase 2 wires mount() to assign
-   * #vaultKey and this method then returns it.
+   * For the crypto layer ONLY (e.g. changeMasterPassword, saveVault): hand back the live key
+   * buffer. NEVER expose this to UI code. Throws if the session is locked.
    * @internal
    */
   unsafeGetKey(): Uint8Array {
     if (this.#vaultKey !== null) return this.#vaultKey;
-    throw new Error('VaultSession.unsafeGetKey: Phase 2 will implement.');
+    throw new Error('VaultSession.unsafeGetKey: session is locked (no key mounted).');
   }
 }
 

@@ -249,6 +249,23 @@ Patterns landed in Phase 1 (Scaffold, capabilities, CSP):
 - **Lockfile committed:** `pnpm-lock.yaml` AND `apps/desktop/src-tauri/Cargo.lock` are committed. `package-lock.json` and `yarn.lock` are gitignored (Pitfall 6 — Tauri CLI mis-detection visibility).
 - **No git operations by agents:** the user runs all git commands. Agents surface commit-worthy moments and suggested commands; the user executes.
 - **Phase-completion CLAUDE.md update:** per D-16, every phase's closing step updates this Conventions section + the Architecture section with patterns landed that phase. This is non-optional.
+
+Patterns landed in Phase 2 (Crypto core + vault file format):
+
+- **Single libsodium entry — `getSodium()` (no raw `sodium-wrappers-sumo` imports):** every crypto module imports the WASM handle ONLY via `packages/core/src/crypto/sodium.ts`'s `getSodium()` (awaits `sodium.ready`). Direct `import sodium from 'libsodium-wrappers-sumo'` is BANNED everywhere except `sodium.ts` itself (ESLint `no-restricted-imports`). This guarantees one initialized instance and one place to audit. The Vitest config + the demo `_hooks.mjs` both alias the bare specifier to the working CJS build (the published `.mjs` is broken — imports an unshipped `./libsodium-sumo.mjs` sibling).
+- **Combined-mode XChaCha20-Poly1305 IETF only; data blob bound to `VAULT_AD`:** `crypto/aead.ts` seals/opens the entries blob in COMBINED mode (never detached) under associated data `VAULT_AD = "cryptiq-vault\0v1"` (hex `637279707469712d7661756c74007631`), binding the file-format version into the MAC (SEC-06). Key-wrapping (`crypto/wrap.ts`) uses the SAME primitive but with NO associated data — wrapping is key-only, version-binding lives on the data blob. Pinned by KAT-4.
+- **DC-3 per-wrap KDF, NO top-level `kdf`:** the Argon2id `{opsLimit, memLimit, salt, algorithm}` live INSIDE each `wrappedKeys[label]` object, never at a vault top level. (Supersedes the top-level `kdf` shown in `cryptiq-plans/03-vault-file-format.md` — enables a future weaker mobile wrap alongside the desktop wrap.) Lint-adjacent: `serialize.test.ts` asserts the serialized doc has no top-level `kdf`.
+- **DC-4 open `wrappedKeys` map:** keyed by label; v1 writes `master` (always) + optional `recovery`. The parser TOLERATES unknown labels (future `mobile` / `biometric_<id>`) and refuses to open ONLY on an unknown `version` (VAULT-07). `removeWrappedKey('master')` is refused (would brick the vault).
+- **DC-5 generic `tryUnwrap` (no `unlockWithMaster`/`unlockWithRecovery` split):** both unlock paths derive a 32-byte key and hand it to a single `tryUnwrap(wrappedKey, derivationKey)`; a MAC failure returns `null` (a normal branch, not an error) so the unlock flow can try each wrap.
+- **DC-6 tiered padding + uint32 LITTLE-ENDIAN length prefix:** the entries JSON is padded to a fixed tier bucket (16 KiB ≤256 KiB, 64 KiB ≤1 MiB, else 256 KiB) before sealing, so the file size leaks only a coarse tier (entry-count hiding). The first 4 bytes are the real length via `DataView.setUint32(0, n, true)` — LE is mandatory and pinned by a padding KAT (`true` on BOTH set and get).
+- **DC-7 hand-rolled Crockford Base32 recovery key (version byte + check char, FLAT 54-char contract):** `crypto/recovery.ts` encodes `[0x01 version][32 CSPRNG bytes]` → 53 base32 chars + 1 mod-37 check char = the canonical FLAT 54-char string. The recovery wrap-key is `BLAKE2b(crypto_generichash, 32, raw, domain16="cryptiq-recovery-v1")` — no Argon2id (so `wrappedKeys.recovery.kdf` stores `opsLimit/memLimit = 0` as a domain marker, NOT re-derive params). Decode normalizes (uppercase, strip non-alphanumerics, map look-alikes I/L→1 O→0 U→V), verifies the check char BEFORE the key bytes, then the version byte. **DASH GROUPING IS A PHASE-4 (UI) CONCERN — NOT a crypto invariant**; decode is dash-agnostic.
+- **DC-8 verb-first public API; state lives in the CALLER:** `vault/vault.ts` exposes `createVault / unlockVault / saveVault / changeMasterPassword / addWrappedKey / removeWrappedKey`. `UnlockedVault` is PLAIN DATA (no methods, NO vault key) — the 32-byte vault key is returned SEPARATELY and the caller (`VaultSession`) owns its lifecycle + memzero (SEC-09, via the exported `secureWipe`). `unlockVault`'s `secret` is the open union `{ masterPassword } | { recoveryKey }` (DC-10).
+- **DC-9 typed errors in `packages/core/src/errors.ts` (single source of truth):** `WrongPasswordError`, `WrongRecoveryKeyError`, `KdfResourceError`, `UnknownVaultVersionError`, `MigrationFailedError`, `VaultCorruptError` — each with a stable readonly `code`. Fail-closed discipline: every decryption/auth/derivation/parse failure surfaces one of these, NEVER a bare `Error` and NEVER partial data (SEC-08). DC-11 tamper tests prove all 9+2 byte regions surface a typed error, never a crash.
+- **Calibration: hard FLOOR (256 MiB / 3 ops), NO CEILING (DC-1 deliberate deviation):** `calibrateArgon2id` ramps memory-first at ops=3 then bumps ops at max memory, settling at ≥800 ms; it removes ROADMAP/STATE decision-8's 512 MiB/10-ops ceiling and mitigates via DC-2 `portabilityWarning` (memLimit > 512 MiB). DUAL-PATH OOM: a thrown error OR an all-zeros buffer (libsodium.js #235) is treated as OOM → `KdfResourceError`; a zero buffer is NEVER accepted as a key.
+- **Migration: back-up → migrate-copy → VERIFY-BY-COLD-DECRYPT → swap (`vault/migrations/`):** `loadAndMigrate` writes a never-rotated pre-migration backup BEFORE any transform, then verifies the migrated bytes by re-parsing + re-decrypting them with a freshly re-derived key (not a JSON parse, not the original) — a buggy migration that corrupts the ciphertext fails the cold-decrypt and throws `MigrationFailedError` (the original is NOT swapped). v1's production registry is empty (vault starts at v1); the scaffold is exercised with a synthetic v0→v1 migration.
+- **Decision 27 — explicit base64 variant on EVERY byte field:** every `sodium.to_base64`/`from_base64` passes `sodium.base64_variants.ORIGINAL` (standard alphabet WITH padding) explicitly — NEVER the libsodium default (URLSAFE_NO_PADDING). Applies to salt, nonce, ciphertext, and all wire-format byte fields.
+- **`@cryptiq/core/internal` subpath for demos + KATs:** the `.` public entry re-exports only the verb-first vault API + typed errors; `./internal` (`packages/core/src/internal.ts`) re-exports the crypto primitives for the per-checkpoint demo scripts (`scripts/demo/02-<N>-*.mjs`) and KAT tests without enlarging the public surface.
+- **Vitest crypto-suite test seam — fixed floor `kdfParams`:** `createVault`/`changeMasterPassword` accept an optional `kdfParams` (256 MiB / 3 ops floor) so tests skip the ~1s adaptive calibration ladder per call (real Argon2id, just not auto-tuned); production omits it → calibrates. Suite runs under `pool: 'forks'` + `singleFork: true` (serializes the 256 MiB+ Argon2id allocations). Build expensive vaults ONCE per file (`beforeAll`) and reuse the bytes across tamper regions to keep derivation count down. Property tests use bare `fc.assert(fc.asyncProperty(...))` (no `@fast-check/vitest` adapter); the ~100-pair payload fuzz derives the vault key ONCE and varies only the entries (no per-run Argon2id), with a small-`numRuns` full-path property covering arbitrary passwords.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
@@ -276,8 +293,25 @@ cryptiq/
 │   └── README.md
 ├── packages/core/                # pure TypeScript — no Svelte/Tauri/node:fs
 │   └── src/
-│       ├── storage/VaultStorageAdapter.ts  # interface (types only — Phase 3 implements)
+│       ├── index.ts                        # `.` public entry: verb-first vault API + typed errors
+│       ├── internal.ts                     # `@cryptiq/core/internal`: primitives for demos + KATs
+│       ├── errors.ts                       # DC-9 typed errors (single source of truth)
+│       ├── storage/VaultStorageAdapter.ts  # interface (re-exports VaultCorruptError); Phase 3 implements
 │       ├── config/{types,config}.ts        # CryptiqConfig parse/serialize
+│       ├── crypto/                         # Phase 2 primitives — all go through getSodium()
+│       │   ├── sodium.ts                   # the ONLY libsodium import site (getSodium)
+│       │   ├── kdf.ts                      # DC-1 Argon2id calibrate/derive (floor, no ceiling, dual-OOM)
+│       │   ├── aead.ts                     # combined-mode seal/open under VAULT_AD (SEC-06)
+│       │   ├── wrap.ts                     # envelope wrapKey/tryUnwrap (DC-3/DC-5, no AD)
+│       │   ├── recovery.ts                 # DC-7 Crockford Base32 + BLAKE2b recovery wrap-key
+│       │   ├── padding.ts                  # DC-6 tiered padding + uint32 LE prefix
+│       │   └── __tests__/                  # sodium, kdf (KAT-1), aead (KAT-2), wrap, recovery (KAT-3), padding
+│       ├── vault/                          # the file-format + verb-first API tier
+│       │   ├── format.ts                   # VaultDocumentV1 + WrappedKeyV1 types + format constants
+│       │   ├── serialize.ts                # parseOuter/serializeOuter + encryptInner/decryptInner
+│       │   ├── vault.ts                    # DC-8 createVault/unlockVault/saveVault/changeMasterPassword/…
+│       │   ├── migrations/{types,index}.ts # back-up → migrate → verify-by-cold-decrypt → swap scaffold
+│       │   └── __tests__/                  # serialize, round-trip (KAT-4), tamper (9+2), property, migration
 │       └── __tests__/sanity.test.ts        # Vitest 3 harness wired
 └── apps/desktop/
     ├── package.json              # @tauri-apps/cli HERE (not at root — Pitfall 6)
@@ -286,7 +320,7 @@ cryptiq/
     │   ├── App.svelte            # branded placeholder + sodium.ready gate
     │   ├── app.css               # Tailwind v4 + @theme tokens (cryptiq- prefix)
     │   ├── lib/
-    │   │   ├── state/vault.svelte.ts        # VaultSession singleton skeleton ($state.raw)
+    │   │   ├── state/vault.svelte.ts        # VaultSession singleton — Phase 2 filled the method bodies ($state.raw + #vaultKey, secureWipe on lock)
     │   │   ├── config/config-adapter.ts     # Tauri wrapper around @cryptiq/core config
     │   │   └── dev/boot-self-test.ts        # dev-only diagnostic (stripped in prod)
     │   └── main.ts               # DEV-gated dynamic boot-self-test import
@@ -301,7 +335,7 @@ cryptiq/
 
 ### Tier responsibilities
 
-- `packages/core` — pure TS, bytes in / bytes out. Owns `VaultStorageAdapter` interface, config parsing, future crypto (Phase 2).
+- `packages/core` — pure TS, bytes in / bytes out. Owns `VaultStorageAdapter` interface, config parsing, and (Phase 2) the full crypto/vault layer: `crypto/*` primitives (via the single `getSodium()` entry), `vault/*` file format + verb-first API, `errors.ts` typed errors, and the `migrations/` scaffold. The `.` entry exports the verb-first vault API + errors; `./internal` exports primitives for demos/KATs.
 - `apps/desktop/src` — Svelte 5 renderer. Owns UI, in-memory `VaultSession` singleton, config-adapter (Tauri-side wrapper).
 - `apps/desktop/src/lib/dev/` — dev-only diagnostics; stripped from production via `import.meta.env.DEV`.
 - `apps/desktop/src-tauri/` — Rust shell. Owns capability allowlist, CSP, plugin wiring, atomic save (Phase 3), single-instance enforcement, persisted-scope.
@@ -315,6 +349,9 @@ cryptiq/
 - Single-instance plugin registration order (first; fs before persisted-scope) — locked by SEC-16 + Tauri docs.
 - `$state.raw` (not `$state`) for vault state — locked by Pitfall 7 / ARCHITECTURE.md §5.2.
 - Linux excluded structurally (`platforms` field + `Cargo.toml` target gate) — locked by D-15.
+- Vault file format (`VaultDocumentV1`): `format` discriminator + `version` gate + DC-3 per-wrap `kdf` (no top-level kdf) + DC-4 open `wrappedKeys` map + `data` blob sealed under `VAULT_AD` — locked by Phase 2 / VAULT-01/02/07, pinned by KAT-4. **Do not change the wire format after Phase 2 ships** (project guardrail).
+- Crypto parameters: combined-mode XChaCha20-Poly1305 IETF, Argon2id floor 256 MiB / 3 ops with no ceiling, BLAKE2b recovery wrap-key, DC-6 padding tiers, uint32-LE length prefix, decision-27 base64 ORIGINAL variant — locked by Phase 2 / SEC-03/04/06/08, pinned by KAT-1..4. **Do not modify after Phase 2 ships** (project guardrail).
+- DC-9 typed-error set + fail-closed contract — locked by Phase 2; every parse/auth/decrypt/derive failure surfaces a typed error, never a crash or partial data.
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->
