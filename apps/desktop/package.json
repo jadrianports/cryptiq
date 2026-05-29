@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.node.json --noEmit",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
@@ -30,6 +31,7 @@
     "vite-plugin-top-level-await": "^1.6.0",
     "typescript": "^5.4.0",
     "tslib": "^2.6.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "vitest": "^3.2.4"
   }
 }

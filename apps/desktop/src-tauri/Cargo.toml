@@ -26,5 +26,19 @@ serde_json = "1"
 tauri-plugin-single-instance = "2.0.0"
 tauri-plugin-persisted-scope = "2"
 
+# PID liveness check: raw Windows syscalls via windows-sys.
+# windows-sys 0.59.0 is already resolved transitively by Tauri — reuse the same version
+# to avoid pulling a second copy into the binary.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+# PID liveness check on macOS: kill(pid, 0) via libc.
+# libc 0.2 is already resolved transitively by Tauri — no new download needed.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

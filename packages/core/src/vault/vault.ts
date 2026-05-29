@@ -50,6 +50,8 @@ import {
   ProtectedWrapError,
   VaultCorruptError,
 } from '../errors';
+import type { InnerDoc } from '../entries/types';
+import { DEFAULT_RANDOM_OPTIONS } from '../generator/types';
 
 /**
  * DC-8 plain-data UnlockedVault: the parsed on-disk document plus the DECRYPTED entries.
@@ -75,7 +77,18 @@ export interface CreationReport {
   portabilityWarning: boolean;
 }
 
-const EMPTY_ENTRIES: object = { entries: [] };
+/**
+ * P3-01 versioned inner document written by createVault.
+ * `schemaVersion: 1` is SEPARATE from the outer file-format `version` (= 1).
+ * `settings.generator` seeds the vault-level defaults (GEN-04).
+ */
+const EMPTY_ENTRIES: InnerDoc = {
+  schemaVersion: 1,
+  entries: [],
+  settings: {
+    generator: DEFAULT_RANDOM_OPTIONS,
+  },
+};
 
 /**
  * Securely wipe a key buffer (SEC-09). Exposed so the desktop VaultSession can zero its

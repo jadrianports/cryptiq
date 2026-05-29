@@ -1,3 +1,5 @@
+mod commands;
+
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,6 +31,13 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::vault::vault_write_atomic,
+            commands::vault::vault_write_named,
+            commands::vault::vault_lock_acquire,
+            commands::vault::vault_lock_check,
+            commands::vault::vault_lock_release,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");
 }

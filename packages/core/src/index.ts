@@ -19,3 +19,16 @@ export * from './vault/serialize';
 export * from './vault/vault';
 export * from './vault/migrations/types';
 export * from './vault/migrations/index';
+
+// Phase 3 public surface:
+// Entries — types, CRUD verbs, UUID helper, password-age utility
+export * from './entries/types';
+export * from './entries/crud';
+export * from './entries/uuid';
+// Generator — options types, defaults, and verb exports
+export * from './generator/types';
+export * from './generator/random';
+export * from './generator/passphrase';
+export * from './generator/entropy';
+// Storage — pure lock-decision seam (consumed by TauriVaultStorageAdapter)
+export * from './storage/lockLogic';

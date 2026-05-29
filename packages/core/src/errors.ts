@@ -100,3 +100,31 @@ export class ProtectedWrapError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3 typed errors (DC-9 pattern — Shape B: message-only constructor)
+// ---------------------------------------------------------------------------
+
+/**
+ * An entry CRUD verb was called with an ID that does not exist in the vault,
+ * or the target entry is soft-deleted when the verb requires an active entry.
+ * Callers branch on `instanceof EntryNotFoundError` or `.code === 'ENTRY_NOT_FOUND'`.
+ */
+export class EntryNotFoundError extends Error {
+  readonly code = 'ENTRY_NOT_FOUND';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * The generator options are invalid (e.g. no character class enabled, length too
+ * short for the enabled classes, or an empty/null preset when one is required).
+ * Callers branch on `instanceof GeneratorError` or `.code === 'GENERATOR_INVALID_OPTIONS'`.
+ */
+export class GeneratorError extends Error {
+  readonly code = 'GENERATOR_INVALID_OPTIONS';
+  constructor(message: string) {
+    super(message);
+  }
+}

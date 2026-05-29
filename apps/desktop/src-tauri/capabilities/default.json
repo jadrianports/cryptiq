@@ -25,7 +25,8 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.2" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
-        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" }
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" }
       ]
     },
     {
@@ -38,7 +39,8 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.2" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
-        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" }
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" }
       ]
     },
     {
@@ -50,7 +52,8 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.2" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
-        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" }
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" }
       ]
     },
     {
@@ -66,10 +69,27 @@
       ]
     },
     {
+      "identifier": "fs:allow-remove",
+      "allow": [
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.tmp" }
+      ]
+    },
+    {
       "identifier": "fs:allow-mkdir",
       "allow": [
         { "path": "$APPCONFIG/cryptiq" },
         { "path": "$APPCONFIG/cryptiq/vaults" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-stat",
+      "allow": [
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.1" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.2" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" }
       ]
     }
   ]

@@ -266,6 +266,21 @@ Patterns landed in Phase 2 (Crypto core + vault file format):
 - **Decision 27 — explicit base64 variant on EVERY byte field:** every `sodium.to_base64`/`from_base64` passes `sodium.base64_variants.ORIGINAL` (standard alphabet WITH padding) explicitly — NEVER the libsodium default (URLSAFE_NO_PADDING). Applies to salt, nonce, ciphertext, and all wire-format byte fields.
 - **`@cryptiq/core/internal` subpath for demos + KATs:** the `.` public entry re-exports only the verb-first vault API + typed errors; `./internal` (`packages/core/src/internal.ts`) re-exports the crypto primitives for the per-checkpoint demo scripts (`scripts/demo/02-<N>-*.mjs`) and KAT tests without enlarging the public surface.
 - **Vitest crypto-suite test seam — fixed floor `kdfParams`:** `createVault`/`changeMasterPassword` accept an optional `kdfParams` (256 MiB / 3 ops floor) so tests skip the ~1s adaptive calibration ladder per call (real Argon2id, just not auto-tuned); production omits it → calibrates. Suite runs under `pool: 'forks'` + `singleFork: true` (serializes the 256 MiB+ Argon2id allocations). Build expensive vaults ONCE per file (`beforeAll`) and reuse the bytes across tamper regions to keep derivation count down. Property tests use bare `fc.assert(fc.asyncProperty(...))` (no `@fast-check/vitest` adapter); the ~100-pair payload fuzz derives the vault key ONCE and varies only the entries (no per-run Argon2id), with a small-`numRuns` full-path property covering arbitrary passwords.
+
+Patterns landed in Phase 3 (Entries, generator, storage adapter, file IO):
+
+- **InnerDoc schema (P3-01):** `createVault` now seals `{ schemaVersion: 1, entries: Entry[], settings: { generator: GeneratorOptions } }` (was `{ entries: [] }`); `EMPTY_ENTRIES` in `vault/vault.ts` upgraded. `entries/crud.ts` `asInnerDoc()` is the SINGLE Pitfall-3 cast site — idempotently upgrades pre-existing Phase-2 `{entries:[]}` dev vaults in place. The Phase-2 wire/outer format is UNCHANGED (guardrail) — only the inner doc shape evolved.
+- **Entry CRUD (P3-02):** verbs in `entries/crud.ts` (`addEntry/updateEntry/softDeleteEntry/purgeEntry/listEntries/getEntry/derivePasswordAge/regenerateFromPreset`) mutate `vault.entries` IN PLACE and return the affected Entry; the caller (`VaultSession`, `$state.raw`) reassigns `#vault = { ...vault }` to trigger Svelte reactivity (no deep `$state` proxy — Pitfall 7).
+- **Entry IDs (P3-03):** `entries/uuid.ts` `uuidV4FromBytes(sodium.randombytes_buf(16))` — RFC-4122 v4 from CSPRNG bytes; never `Math.random`/`crypto.randomUUID`.
+- **Password history (ENTRY-07/09):** single `pushHistory` helper — newest-first `unshift` + cap 10; shared by `updateEntry` and `regenerateFromPreset` (single source for the generatorPreset↔passwordHistory interaction the Phase-3 spec note required to lock).
+- **Generator (GEN-01..04, P3-05/06):** `generator/{random,passphrase,entropy}.ts` — `generateRandom`/`generatePassphrase` use `sodium.randombytes_uniform` (modulo-bias-free) + Fisher-Yates; `AMBIGUOUS_CHARS = {l,1,I,O,0}` in `generator/types.ts`; `generateFromOptions(options)` dispatcher (re-exported via index) for preset regen/UI. EFF long wordlist (7,776 words, CC-BY-3.0) bundled at `generator/eff-long.json`. `estimateEntropyBits`/`computePoolSize` are the single entropy source (generator↔estimator kept in sync; module-load `SYMBOLS.length===30` guard).
+- **Lock seam (VAULT-09, P3-08/09/10):** `storage/lockLogic.ts` is PURE (`evaluateLock`, `isOlderThan30Min`) — PID-liveness injected as a boolean (the Tauri side computes it); decision union `acquire-free | take-over-stale | cross-host-warn | locked-by-live`. No IO/PID syscalls in core.
+- **New typed errors (DC-9):** `EntryNotFoundError` (`ENTRY_NOT_FOUND`), `GeneratorError` (`GENERATOR_INVALID_OPTIONS`) in `errors.ts`.
+- **Rust storage commands (`src-tauri/src/commands/vault.rs`):** `vault_write_atomic` = temp-in-same-dir → `sync_all` → **COPY** primary → `.bak.1` (rotate .bak.1–5) → atomic `rename` temp→primary → dir fsync. The COPY (not move) keeps the primary present through a crash (CR-01 crash-safety — the vault file is never absent). `max_backups==0` ⇒ no rotation (content-hash dedup path). `vault_write_named` (pre-migration backup) and all path-taking commands enforce `resolve_confined_path` (reject paths escaping the vault dir). `vault_lock_acquire/check/release` = advisory lock; hostname via `COMPUTERNAME`/`HOSTNAME` env (zero-dep — NO `hostname` crate, per deps-minimized rule); PID liveness via `OpenProcess`/`libc::kill`. Registered in `lib.rs` `generate_handler!` (plugin order preserved).
+- **Capabilities (default.json):** new LITERAL-path scopes for `.lock` + `.bak.1`–`.bak.5` slots, plus `fs:allow-remove` + `fs:allow-stat`; still ZERO single-`*` segments; `platforms` preserved.
+- **TS storage adapter:** `apps/desktop/src/lib/adapters/TauriVaultStorageAdapter.ts` implements `VaultStorageAdapter` over the Rust commands (+ plugin-fs reads). Promise-chain **save-mutex** (P3-12, per-save error isolation — chain never poisons; `isSaving` getter). **FNV-1a content-hash dedup** (P3-11, `contentHash.ts`): unchanged hash ⇒ `maxBackups=0` (no spurious backup). Payload bytes sent as `Array.from(bytes)` (no base64 of the vault payload).
+- **VaultSession (`vault.svelte.ts`):** `unlock` acquires the advisory lock + seeds the content hash; `lock()` awaits the save-mutex before `secureWipe` (Pitfall 4); CRUD-through-session reassigns `#vault` for `$state.raw` reactivity; `#vaultKey` stays NON-reactive.
+- **Desktop tests:** `apps/desktop` now has Vitest (`vitest@^3.2.4` + `apps/desktop/vitest.config.ts`); run via `pnpm --filter @cryptiq/desktop test`.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
@@ -352,6 +367,15 @@ cryptiq/
 - Vault file format (`VaultDocumentV1`): `format` discriminator + `version` gate + DC-3 per-wrap `kdf` (no top-level kdf) + DC-4 open `wrappedKeys` map + `data` blob sealed under `VAULT_AD` — locked by Phase 2 / VAULT-01/02/07, pinned by KAT-4. **Do not change the wire format after Phase 2 ships** (project guardrail).
 - Crypto parameters: combined-mode XChaCha20-Poly1305 IETF, Argon2id floor 256 MiB / 3 ops with no ceiling, BLAKE2b recovery wrap-key, DC-6 padding tiers, uint32-LE length prefix, decision-27 base64 ORIGINAL variant — locked by Phase 2 / SEC-03/04/06/08, pinned by KAT-1..4. **Do not modify after Phase 2 ships** (project guardrail).
 - DC-9 typed-error set + fail-closed contract — locked by Phase 2; every parse/auth/decrypt/derive failure surfaces a typed error, never a crash or partial data.
+
+### Phase 3 addendum — new locations
+
+- `packages/core/src/entries/` — `types.ts`, `uuid.ts`, `crud.ts` (+ `__tests__/`)
+- `packages/core/src/generator/` — `types.ts`, `random.ts`, `passphrase.ts`, `entropy.ts`, `eff-long.json` (+ `__tests__/`)
+- `packages/core/src/storage/lockLogic.ts` (+ `__tests__/`) — pure lock-decision logic; no IO
+- `apps/desktop/src-tauri/src/commands/mod.rs` + `vault.rs` — atomic write, backup rotation, advisory lock, confined-path guard
+- `apps/desktop/src/lib/adapters/TauriVaultStorageAdapter.ts` + `contentHash.ts` (+ `__tests__/`) — TS storage adapter with save-mutex + FNV-1a dedup
+- `apps/desktop/vitest.config.ts` — desktop Vitest config (run: `pnpm --filter @cryptiq/desktop test`)
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->
