@@ -371,6 +371,32 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn write_named_rejects_target_outside_vault_dir() {
+        // WR-04 / T-03-16 path-confinement hardening: a target outside the vault
+        // directory must be rejected and NOTHING written — even though the target
+        // file does not yet exist (the case the old constructed-path check missed).
+        let dir = fresh_dir("write_named_confine");
+        let vp = vault_in(&dir);
+        vault_write_atomic(vp.clone(), vec![9u8; 4], 0).expect("seed primary");
+
+        let outside = std::env::temp_dir().join("cryptiq_uat_outside");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).expect("create outside dir");
+        let evil = outside.join("evil.cryptiq").to_str().unwrap().to_string();
+
+        let res = vault_write_named(vp.clone(), evil.clone(), vec![1u8; 4]);
+        assert!(res.is_err(), "target outside the vault dir must be rejected");
+        assert!(!PathBuf::from(&evil).exists(), "nothing written outside confinement");
+        assert!(
+            !PathBuf::from(format!("{}.tmp", evil)).exists(),
+            "no .tmp written outside confinement either"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
     // --- UAT Test 3: advisory-lock multi-process decisions ------------------
 
     #[test]
@@ -447,30 +473,42 @@ mod tests {
 
 /// Verify that `target` resolves to a path inside `expected_parent` after
 /// canonicalization. Returns `Err` with an explanatory message if the check
-/// fails or if `target` does not exist (for writes the parent dir must exist,
-/// but we check the parent's canonical form, not the file itself).
+/// fails, if a directory cannot be canonicalized, or if `target` has no parent.
 ///
-/// For writes, the file itself may not yet exist; we canonicalize the parent
-/// dir and construct the expected path from there.
+/// For writes the target file itself may not yet exist, so we resolve the
+/// target's *own* parent directory (which must exist for any write) and append
+/// the filename. We must NOT construct the candidate path from `expected_parent`
+/// — doing so would discard the target's real location and let an out-of-tree
+/// absolute path (e.g. `C:\elsewhere\evil.cryptiq`) pass the check while the
+/// subsequent write still lands outside the vault directory (WR-04 / T-03-16).
 fn assert_confined(target: &Path, expected_parent: &Path) -> Result<(), String> {
-    // Canonicalize the parent directory (must exist).
+    // Canonicalize the confinement root (must exist).
     let canonical_parent = expected_parent
         .canonicalize()
         .map_err(|e| format!("Path confinement: could not canonicalize parent '{}': {}", expected_parent.display(), e))?;
 
-    // Construct the canonical target path: canonicalize the parent + the filename.
     let file_name = target
         .file_name()
         .ok_or_else(|| format!("Path confinement: '{}' has no filename component", target.display()))?;
-    let expected_target = canonical_parent.join(file_name);
 
-    // Compare by canonicalizing the target if it exists, otherwise use constructed path.
+    // Resolve the target's REAL canonical location.
     let canonical_target = if target.exists() {
+        // Existing file: canonicalize directly (resolves symlinks and `..`).
         target
             .canonicalize()
-            .unwrap_or_else(|_| expected_target.clone())
+            .map_err(|e| format!("Path confinement: could not canonicalize '{}': {}", target.display(), e))?
     } else {
-        expected_target.clone()
+        // Non-existent file: canonicalize the target's OWN parent dir (which must
+        // exist for a write) and append the filename. Never trust a path rooted at
+        // `expected_parent` here.
+        let target_parent = target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .ok_or_else(|| format!("Path confinement: '{}' has no parent directory", target.display()))?;
+        let canonical_target_parent = target_parent
+            .canonicalize()
+            .map_err(|e| format!("Path confinement: could not canonicalize target parent '{}': {}", target_parent.display(), e))?;
+        canonical_target_parent.join(file_name)
     };
 
     if !canonical_target.starts_with(&canonical_parent) {
