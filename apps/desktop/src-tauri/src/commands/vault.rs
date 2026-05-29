@@ -231,6 +231,214 @@ mod tests {
         // 2000-01-01 is well over 30 minutes ago.
         assert!(is_older_than_30_min("2000-01-01T00:00:00Z"));
     }
+
+    // -----------------------------------------------------------------------
+    // Phase-3 HUMAN-UAT backend coverage (closes 03-HUMAN-UAT.md tests 1–3
+    // at the filesystem/command layer without a live Tauri window — the click
+    // -through round-trip stays for Phase-4 UI + tauri-driver).
+    //
+    // Each test uses its own uniquely-named temp dir so the default parallel
+    // cargo runner has no cross-test contention.
+    // -----------------------------------------------------------------------
+
+    /// Create a clean temp directory for a test (removes any prior run's dir).
+    fn fresh_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cryptiq_uat_{}", name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    /// Path string for `vault.cryptiq` inside `dir`.
+    fn vault_in(dir: &Path) -> String {
+        dir.join("vault.cryptiq").to_str().unwrap().to_string()
+    }
+
+    /// Hand-write an advisory lockfile next to the vault (simulates another session).
+    fn write_lock(vault_path: &str, pid: u32, hostname: &str, started_at: &str) {
+        let json = format!(
+            "{{\"pid\":{},\"hostname\":{:?},\"startedAt\":{:?}}}",
+            pid, hostname, started_at
+        );
+        fs::write(format!("{}.lock", vault_path), json).expect("write lock");
+    }
+
+    // --- UAT Test 1: live vault creation round-trip (backend) ---------------
+
+    #[test]
+    fn write_atomic_creates_exact_bytes_and_leaves_no_tmp() {
+        let dir = fresh_dir("write_basic");
+        let vp = vault_in(&dir);
+        let bytes = vec![1u8, 2, 3, 4, 5];
+
+        vault_write_atomic(vp.clone(), bytes.clone(), 0).expect("write");
+
+        assert_eq!(fs::read(&vp).unwrap(), bytes, "primary holds exact bytes");
+        assert!(!PathBuf::from(format!("{}.tmp", vp)).exists(), "no .tmp left behind");
+        assert!(!PathBuf::from(format!("{}.bak.1", vp)).exists(), "max_backups=0 => no backup");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_file_carries_only_pid_host_startedat_and_no_secrets() {
+        // T-03-15: the advisory lock must never contain a key/password/vault data.
+        let dir = fresh_dir("lock_shape");
+        let vp = vault_in(&dir);
+
+        vault_lock_acquire(vp.clone(), "2099-01-01T00:00:00Z".to_string()).expect("acquire");
+
+        let raw = fs::read_to_string(format!("{}.lock", vp)).expect("read lock");
+        let obj = serde_json::from_str::<serde_json::Value>(&raw)
+            .expect("lock is JSON")
+            .as_object()
+            .expect("lock is a JSON object")
+            .clone();
+
+        assert_eq!(obj.len(), 3, "lock has exactly 3 fields");
+        assert!(obj.contains_key("pid"));
+        assert!(obj.contains_key("hostname"));
+        assert!(obj.contains_key("startedAt"));
+        for forbidden in ["key", "password", "secret", "data", "entries"] {
+            assert!(!obj.contains_key(forbidden), "lock must not contain '{}'", forbidden);
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- UAT Test 2: backup rotation ordering + content-hash dedup ----------
+
+    #[test]
+    fn write_atomic_rotates_newest_first_and_caps_at_five() {
+        let dir = fresh_dir("rotation");
+        let vp = vault_in(&dir);
+
+        // Six writes with distinct contents. Write #1 has no prior primary => no backup.
+        let versions: Vec<Vec<u8>> = (1u8..=6).map(|n| vec![n; 8]).collect();
+        for v in &versions {
+            vault_write_atomic(vp.clone(), v.clone(), 5).expect("write");
+            // Crash-safety invariant: the primary is present after every write.
+            assert!(PathBuf::from(&vp).exists(), "primary always present");
+        }
+
+        // primary == v6; bak.1 == v5 (NEWEST backup) ... bak.5 == v1 (oldest).
+        assert_eq!(fs::read(&vp).unwrap(), versions[5], "primary is newest (v6)");
+        assert_eq!(fs::read(format!("{}.bak.1", vp)).unwrap(), versions[4], "bak.1 is newest backup (v5)");
+        assert_eq!(fs::read(format!("{}.bak.2", vp)).unwrap(), versions[3]);
+        assert_eq!(fs::read(format!("{}.bak.3", vp)).unwrap(), versions[2]);
+        assert_eq!(fs::read(format!("{}.bak.4", vp)).unwrap(), versions[1]);
+        assert_eq!(fs::read(format!("{}.bak.5", vp)).unwrap(), versions[0], "bak.5 is oldest (v1)");
+        assert!(!PathBuf::from(format!("{}.bak.6", vp)).exists(), "capped at 5 slots");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_max_backups_zero_is_dedup_no_op() {
+        // P3-11: when the content hash is unchanged the adapter passes maxBackups=0,
+        // which must update the primary but create NO new backup slot.
+        let dir = fresh_dir("dedup");
+        let vp = vault_in(&dir);
+
+        vault_write_atomic(vp.clone(), vec![1u8; 4], 5).expect("seed (no prior primary => no backup)");
+        vault_write_atomic(vp.clone(), vec![2u8; 4], 5).expect("second write => bak.1");
+        let bak1_before = fs::read(format!("{}.bak.1", vp)).expect("bak.1 exists after 2nd write");
+
+        vault_write_atomic(vp.clone(), vec![3u8; 4], 0).expect("dedup write");
+
+        assert_eq!(fs::read(&vp).unwrap(), vec![3u8; 4], "primary updated");
+        assert_eq!(fs::read(format!("{}.bak.1", vp)).unwrap(), bak1_before, "bak.1 untouched by dedup write");
+        assert!(!PathBuf::from(format!("{}.bak.2", vp)).exists(), "dedup write created no new slot");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_named_writes_inside_vault_dir_without_rotation() {
+        // P3-13 pre-migration backup path.
+        let dir = fresh_dir("write_named");
+        let vp = vault_in(&dir);
+        vault_write_atomic(vp.clone(), vec![9u8; 4], 0).expect("seed primary");
+
+        let backup = dir.join("pre-v2-backup.cryptiq").to_str().unwrap().to_string();
+        let bytes = vec![7u8; 16];
+        vault_write_named(vp.clone(), backup.clone(), bytes.clone()).expect("named write");
+
+        assert_eq!(fs::read(&backup).unwrap(), bytes, "named backup has exact bytes");
+        assert!(!PathBuf::from(format!("{}.tmp", backup)).exists(), "no .tmp left behind");
+        assert!(!PathBuf::from(format!("{}.bak.1", backup)).exists(), "named write does not rotate");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- UAT Test 3: advisory-lock multi-process decisions ------------------
+
+    #[test]
+    fn lock_acquire_blocks_on_fresh_live_same_host_lock() {
+        // P3-09: same machine, fresh timestamp, live PID (our own) => locked.
+        let dir = fresh_dir("lock_live");
+        let vp = vault_in(&dir);
+        write_lock(&vp, std::process::id(), &get_hostname(), "2099-01-01T00:00:00Z");
+
+        let err = vault_lock_acquire(vp.clone(), "2099-01-01T00:00:00Z".to_string())
+            .expect_err("fresh + live + same-host must block");
+        assert!(err.starts_with("VAULT_LOCKED:"), "got: {}", err);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_acquire_takes_over_stale_same_host_lock() {
+        // P3-09: same host but >30min old => stale => silent take-over.
+        let dir = fresh_dir("lock_stale");
+        let vp = vault_in(&dir);
+        write_lock(&vp, std::process::id(), &get_hostname(), "2000-01-01T00:00:00Z");
+
+        vault_lock_acquire(vp.clone(), "2099-01-01T00:00:00Z".to_string())
+            .expect("stale same-host lock is taken over");
+        vault_lock_check(vp.clone()).expect("we own the lock after take-over");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_acquire_warns_cross_host_fresh_but_still_writes_our_lock() {
+        // P3-10: different hostname, fresh => warn, but our lock IS written and owned.
+        let dir = fresh_dir("lock_xhost");
+        let vp = vault_in(&dir);
+        write_lock(&vp, 4242, "some-other-machine-xyz", "2099-01-01T00:00:00Z");
+
+        let err = vault_lock_acquire(vp.clone(), "2099-01-01T00:00:00Z".to_string())
+            .expect_err("cross-host fresh returns a warn signal");
+        assert!(err.starts_with("VAULT_LOCK_WARN:"), "got: {}", err);
+        vault_lock_check(vp.clone()).expect("our lock was written despite the warn");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_check_and_release_lifecycle() {
+        let dir = fresh_dir("lock_lifecycle");
+        let vp = vault_in(&dir);
+
+        vault_lock_acquire(vp.clone(), "2099-01-01T00:00:00Z".to_string()).expect("acquire");
+        vault_lock_check(vp.clone()).expect("owned right after acquire");
+
+        // Another process steals the lock (different PID, same host).
+        write_lock(&vp, std::process::id().wrapping_add(1), &get_hostname(), "2099-01-01T00:00:00Z");
+        let stolen = vault_lock_check(vp.clone()).expect_err("different pid => stolen");
+        assert!(stolen.starts_with("VAULT_LOCK_STOLEN:"), "got: {}", stolen);
+
+        // Release removes the lock; a follow-up check reports it lost; release is idempotent.
+        vault_lock_release(vp.clone()).expect("release");
+        assert_eq!(
+            vault_lock_check(vp.clone()).expect_err("missing lock => lost"),
+            "VAULT_LOCK_LOST"
+        );
+        vault_lock_release(vp.clone()).expect("release is idempotent");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 // ---------------------------------------------------------------------------
