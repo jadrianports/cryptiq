@@ -8,7 +8,7 @@
 //   1. No existing lock → acquire-free
 //   2. Same host, PID dead → take-over-stale
 //   3. Same host, lock > 30 min old → take-over-stale
-//   4. Same host, live PID, fresh lock → locked-by-live
+//   4. Same host, live PID, fresh lock → take-over-stale (single-instance: no live peer; UAT T5)
 //   5. Cross-host, fresh lock → cross-host-warn
 //   6. Cross-host, stale lock (> 30 min) → take-over-stale
 //   7. Null existing (unparseable lock) → acquire-free
@@ -96,14 +96,15 @@ describe('evaluateLock', () => {
     }
   });
 
-  // 4. Same host, live PID, fresh lock → locked-by-live
-  it('returns locked-by-live when same-host lock is fresh and PID is alive', () => {
+  // 4. Same host, live PID, fresh lock → take-over-stale (UAT T5: single-instance plugin
+  //    guarantees no live same-host peer, so a same-host lock is always taken over —
+  //    pidIsAlive is no longer consulted to avoid PID-reuse / self-PID false positives).
+  it('takes over a same-host lock even when fresh and the PID appears alive (single-instance)', () => {
     const existing = makePayload(HOSTNAME_A, 5555, 10 * 60 * 1000, NOW); // 10 min old
     const result = evaluateLock(existing, SELF, { pidIsAlive: true, nowMs: NOW });
-    expect(result.kind).toBe('locked-by-live');
-    if (result.kind === 'locked-by-live') {
-      expect(result.pid).toBe(5555);
-      expect(result.hostname).toBe(HOSTNAME_A);
+    expect(result.kind).toBe('take-over-stale');
+    if (result.kind === 'take-over-stale') {
+      expect(result.reason).toContain('5555'); // reason references the prior pid
     }
   });
 
@@ -140,12 +141,13 @@ describe('evaluateLock', () => {
     expect(result.kind).toBe('take-over-stale');
   });
 
-  // 9. Boundary: exactly at threshold is NOT yet stale (must be strictly greater than 30 min)
+  // 9. Boundary: exactly at threshold is NOT yet stale (must be strictly greater than 30 min).
+  //    Tested via the CROSS-HOST path, where staleness changes the outcome (same-host always
+  //    takes over now, so the boundary is only observable cross-host: not-stale → warn).
   it('does not treat a lock at exactly 30 min as stale (edge case)', () => {
-    const thirtyMinAgo = makePayload(HOSTNAME_A, 2222, 30 * 60 * 1000, NOW);
-    // Exactly 30 min — should NOT be stale (> 30min check)
-    const result = evaluateLock(thirtyMinAgo, SELF, { pidIsAlive: true, nowMs: NOW });
-    // 30 min exactly: STALE_THRESHOLD_MS = 30*60*1000; age === threshold; NOT > threshold
-    expect(result.kind).toBe('locked-by-live');
+    const thirtyMin = makePayload(HOSTNAME_B, 2222, 30 * 60 * 1000, NOW); // cross-host, exactly 30 min
+    const result = evaluateLock(thirtyMin, SELF, { pidIsAlive: false, nowMs: NOW });
+    // 30 min exactly: age === threshold; NOT > threshold → NOT stale → fresh cross-host → warn.
+    expect(result.kind).toBe('cross-host-warn');
   });
 });

@@ -28,6 +28,9 @@
     ackLabel?: string;
     /** Extra gate beyond ack — e.g. passwords match, length met. */
     canContinue?: boolean;
+    /** When false, the footer Continue button is not rendered at all (e.g. when the
+     *  slotted content owns its own gated Continue, as on the recovery-key step). */
+    showContinue?: boolean;
     continueLabel?: string;
     backLabel?: string;
     onBack?: () => void;
@@ -42,6 +45,7 @@
     tone = 'default',
     ackLabel,
     canContinue = true,
+    showContinue = true,
     continueLabel = 'Continue',
     backLabel = 'Back',
     onBack,
@@ -121,16 +125,20 @@
       {:else}
         <span></span>
       {/if}
-      <button
-        type="button"
-        onclick={onContinue}
-        disabled={!continueEnabled}
-        class="rounded-cryptiq px-5 py-2 text-body font-semibold text-cryptiq-accent-fg transition-colors
-               {tone === 'danger' ? 'bg-cryptiq-danger hover:brightness-110' : 'bg-cryptiq-accent hover:bg-cryptiq-accent-hover'}
-               disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
-      >
-        {continueLabel}
-      </button>
+      {#if showContinue}
+        <button
+          type="button"
+          onclick={onContinue}
+          disabled={!continueEnabled}
+          class="rounded-cryptiq px-5 py-2 text-body font-semibold text-cryptiq-accent-fg transition-colors
+                 {tone === 'danger' ? 'bg-cryptiq-danger hover:brightness-110' : 'bg-cryptiq-accent hover:bg-cryptiq-accent-hover'}
+                 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
+        >
+          {continueLabel}
+        </button>
+      {:else}
+        <span></span>
+      {/if}
     </div>
   </div>
 </div>

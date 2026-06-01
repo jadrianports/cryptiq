@@ -2,96 +2,153 @@
   GeneratorSurface.svelte — one engine, two surfaces (P4-12, GEN-05/06).
 
   variant="popover"    → anchored to the password field in EntryDetail; "Use"
-                          fills the field (and the planner pushes the old value
+                          fills the field (and EntryDetail pushes the old value
                           to passwordHistory via the core change path, ENTRY-07).
   variant="standalone" → the full Generator screen; can save defaults to vault
                           `settings` or "save as new entry".
 
-  ⚠ DEMO GENERATION ONLY. The sample output below uses a deterministic LCG so
-  the reference renders believable strings WITHOUT Math.random (project ban) and
-  WITHOUT real entropy. Production MUST generate via @cryptiq/core
-  (`randombytes_uniform` + Fisher–Yates) and read bits from `estimateEntropyBits`
-  / `computePoolSize` — never compute either in the component.
+  Generation is always via @cryptiq/core CSPRNG — never Math.random (T-04-18).
+  The `generate` and `estimateBits` props are injected by the consumer (callback
+  injection pattern). This keeps the component testable and ensures the same
+  contract is used by both EntryDetail (04-05) and GeneratorScreen (04-06).
+
+  Props:
+    generate        — async (opts: GeneratorOptions) => string  (CSPRNG, never Math.random)
+    estimateBits    — (opts: GeneratorOptions) => number  (theoretical bits)
+    variant         — 'popover' | 'standalone' (layout)
+    initialOptions  — optional seed from vault settings.generator (standalone only);
+                      used to sync the surface to the user's saved defaults on mount.
+    onUse           — popover: fill the password field with this value
+    onSaveDefault   — standalone: persist current options to vault settings;
+                      receives the current GeneratorOptions so the parent can persist them
+    onSaveAsEntry   — standalone: create a new entry seeded with this password
 -->
 <script lang="ts">
+  import type { GeneratorOptions, RandomOptions, PassphraseOptions } from '@cryptiq/core';
+  import { DEFAULT_RANDOM_OPTIONS, DEFAULT_PASSPHRASE_OPTIONS } from '@cryptiq/core';
+
   type Variant = 'popover' | 'standalone';
   type Props = {
+    /** Async generator backed by @cryptiq/core CSPRNG. NEVER Math.random. */
+    generate: (opts: GeneratorOptions) => Promise<string>;
+    /** Theoretical entropy estimator backed by @cryptiq/core estimateEntropyBits. */
+    estimateBits: (opts: GeneratorOptions) => number;
     variant?: Variant;
+    /**
+     * standalone: optional seed from vault settings.generator.
+     * When provided, the surface initialises its controls to match the saved defaults
+     * so the standalone screen reflects the user's stored preferences on open.
+     */
+    initialOptions?: GeneratorOptions | undefined;
     /** popover: fill the password field with this value. */
     onUse?: (value: string) => void;
-    /** standalone: persist current options to vault `settings`. */
-    onSaveDefault?: () => void;
+    /**
+     * standalone: persist current options to vault settings.
+     * Receives the current GeneratorOptions so the parent (GeneratorScreen) can
+     * write them to vault settings.generator without needing a secondary state mirror.
+     */
+    onSaveDefault?: (opts: GeneratorOptions) => void;
     /** standalone: create a new entry seeded with this password. */
     onSaveAsEntry?: (value: string) => void;
   };
-  let { variant = 'popover', onUse, onSaveDefault, onSaveAsEntry }: Props = $props();
+  let {
+    generate,
+    estimateBits,
+    variant = 'popover',
+    initialOptions,
+    onUse,
+    onSaveDefault,
+    onSaveAsEntry,
+  }: Props = $props();
 
-  // ── Options ────────────────────────────────────────────────────────────
-  let mode = $state<'random' | 'passphrase'>('random');
-  let length = $state(20);
-  let upper = $state(true);
-  let lower = $state(true);
-  let digits = $state(true);
-  let symbols = $state(true);
-  let avoidAmbiguous = $state(true);
+  // ── Options (bound to the form controls) ────────────────────────────────
+  // Seeded from initialOptions (vault settings.generator) when provided;
+  // falls back to the core defaults. This lets the standalone screen reflect
+  // the user's saved preferences without modifying the popover variant.
+  //
+  // We read initialOptions once here to derive the seed values and pass them
+  // directly as $state initialisers (mount-time seed — intentional snapshot).
+  // The helper is called inline to avoid the Svelte "captures initial value"
+  // diagnostic on intermediate local consts.
+  function _seedMode(): 'random' | 'passphrase' {
+    return initialOptions?.mode ?? 'random';
+  }
+  function _seedR<K extends keyof import('@cryptiq/core').RandomOptions>(
+    k: K,
+  ): import('@cryptiq/core').RandomOptions[K] {
+    const s = initialOptions?.mode === 'random' ? initialOptions : null;
+    return (s?.[k] ?? DEFAULT_RANDOM_OPTIONS[k]) as import('@cryptiq/core').RandomOptions[K];
+  }
+  function _seedRC<K extends keyof import('@cryptiq/core').RandomOptions['classes']>(
+    k: K,
+  ): boolean {
+    const s = initialOptions?.mode === 'random' ? initialOptions : null;
+    return s?.classes[k] ?? DEFAULT_RANDOM_OPTIONS.classes[k];
+  }
+  function _seedP<K extends keyof import('@cryptiq/core').PassphraseOptions>(
+    k: K,
+  ): import('@cryptiq/core').PassphraseOptions[K] {
+    const s = initialOptions?.mode === 'passphrase' ? initialOptions : null;
+    return (s?.[k] ?? DEFAULT_PASSPHRASE_OPTIONS[k]) as import('@cryptiq/core').PassphraseOptions[K];
+  }
 
-  let words = $state(4);
-  let separator = $state<'-' | '.' | '_' | ' '>('-');
-  let capitalize = $state(true);
-  let includeNumber = $state(true);
+  let mode = $state<'random' | 'passphrase'>(_seedMode());
 
-  let seed = $state(1);
+  // Random options (mirrors DEFAULT_RANDOM_OPTIONS from @cryptiq/core)
+  let length = $state(_seedR('length'));
+  let classLower = $state(_seedRC('lowercase'));
+  let classUpper = $state(_seedRC('uppercase'));
+  let classDigits = $state(_seedRC('digits'));
+  let classSymbols = $state(_seedRC('symbols'));
+  let avoidAmbiguous = $state(_seedR('avoidAmbiguous'));
+
+  // Passphrase options (mirrors DEFAULT_PASSPHRASE_OPTIONS from @cryptiq/core)
+  let words = $state(_seedP('words'));
+  let separator = $state(_seedP('separator'));
+  let capitalize = $state(_seedP('capitalize'));
+  let appendDigit = $state(_seedP('appendDigit'));
+
+  // ── Build the GeneratorOptions union from form state ─────────────────────
+  const opts = $derived<GeneratorOptions>(
+    mode === 'random'
+      ? ({
+          mode: 'random',
+          length,
+          classes: { lowercase: classLower, uppercase: classUpper, digits: classDigits, symbols: classSymbols },
+          avoidAmbiguous,
+        } satisfies RandomOptions)
+      : ({
+          mode: 'passphrase',
+          words,
+          separator,
+          capitalize,
+          appendDigit,
+        } satisfies PassphraseOptions),
+  );
+
+  // ── Generated output (updates whenever options change, via regenerate()) ─
+  let output = $state('');
+  let generating = $state(false);
   let copied = $state(false);
 
-  // ── DEMO derivation (see banner) ─────────────────────────────────────────
-  const DEMO_CHARS =
-    'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*?+=';
-  const DEMO_WORDS = [
-    'harbor', 'cinder', 'velvet', 'quartz', 'meadow', 'lantern', 'thicket',
-    'cobalt', 'ripple', 'almond', 'gravel', 'plume', 'ember', 'willow',
-  ];
-
-  function demoRandom(len: number, s: number): string {
-    let x = (s * 2654435761) >>> 0;
-    let out = '';
-    for (let i = 0; i < len; i++) {
-      x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
-      out += DEMO_CHARS[x % DEMO_CHARS.length];
-    }
-    return out;
-  }
-  function demoPassphrase(n: number, s: number): string {
-    let x = (s * 40503) >>> 0;
-    const picked: string[] = [];
-    for (let i = 0; i < n; i++) {
-      x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
-      let w = DEMO_WORDS[x % DEMO_WORDS.length]!;
-      if (capitalize) w = w[0]!.toUpperCase() + w.slice(1);
-      picked.push(w);
-    }
-    let phrase = picked.join(separator);
-    if (includeNumber) phrase += separator + ((x % 90) + 10);
-    return phrase;
-  }
-
-  const output = $derived(
-    mode === 'random' ? demoRandom(length, seed) : demoPassphrase(words, seed),
-  );
-
-  // ── Entropy (demo estimate) ──────────────────────────────────────────────
-  const poolSize = $derived.by(() => {
-    let p = 0;
-    if (lower) p += avoidAmbiguous ? 24 : 26;
-    if (upper) p += avoidAmbiguous ? 24 : 26;
-    if (digits) p += avoidAmbiguous ? 8 : 10;
-    if (symbols) p += 28;
-    return Math.max(p, 1);
+  // Auto-regenerate when opts change.
+  $effect(() => {
+    // Access opts to create a dependency so $effect re-runs when they change.
+    const _o = opts;
+    void regenerate(_o);
   });
-  const bits = $derived(
-    mode === 'random'
-      ? Math.round(length * Math.log2(poolSize))
-      : Math.round(words * Math.log2(7776) + (includeNumber ? 9 : 0)),
-  );
+
+  async function regenerate(currentOpts: GeneratorOptions = opts) {
+    generating = true;
+    try {
+      output = await generate(currentOpts);
+    } finally {
+      generating = false;
+    }
+  }
+
+  // ── Entropy ──────────────────────────────────────────────────────────────
+  const bits = $derived(estimateBits(opts));
   const strength = $derived.by(() => {
     if (bits < 60) return { label: 'Weak', tone: 'bg-cryptiq-danger', text: 'text-cryptiq-danger' };
     if (bits < 80) return { label: 'Fair', tone: 'bg-cryptiq-attention', text: 'text-cryptiq-fg-muted' };
@@ -100,12 +157,10 @@
   });
   const meterPct = $derived(Math.min(100, Math.round((bits / 128) * 100)));
 
-  function regenerate() {
-    seed = (seed + 7) % 100000;
-  }
-  function copy() {
-    // Visual feedback only — real copy routes through the Tauri clipboard
-    // plugin in the wired screen (CONTEXT: per-field copy, UI-06).
+  async function copyOutput() {
+    // Visual feedback only — real copy is handled by the consumer's onUse or
+    // the per-field copy path (UI-06). We write to clipboard only from copyField.ts.
+    // The standalone generator screen wires its own copy via copyField (04-06).
     copied = true;
     setTimeout(() => (copied = false), 1500);
   }
@@ -139,8 +194,11 @@
 
   <!-- Output -->
   <div class="rounded-cryptiq border border-cryptiq-border bg-cryptiq-surface-2 p-3">
-    <p class="font-mono text-emphasis leading-snug break-all text-cryptiq-fg" aria-live="polite">
-      {output}
+    <p
+      class="font-mono text-emphasis leading-snug break-all text-cryptiq-fg {generating ? 'opacity-50' : ''}"
+      aria-live="polite"
+    >
+      {output || '…'}
     </p>
     <div class="mt-2.5 flex items-center justify-between">
       <!-- Strength meter -->
@@ -148,15 +206,16 @@
         <span class="h-1.5 w-24 overflow-hidden rounded-full bg-cryptiq-border" aria-hidden="true">
           <span class="block h-full rounded-full {strength.tone} transition-all duration-300" style="width:{meterPct}%"></span>
         </span>
-        <span class="text-meta font-medium {strength.text}">{strength.label} · {bits} bits</span>
+        <span class="text-meta font-medium {strength.text}">{strength.label} · {Math.round(bits)} bits</span>
       </span>
       <span class="flex items-center gap-1">
         <button
           type="button"
-          onclick={regenerate}
+          onclick={() => regenerate()}
+          disabled={generating}
           title="Regenerate"
           aria-label="Regenerate"
-          class="grid size-7 place-items-center rounded-cryptiq text-cryptiq-fg-muted transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg"
+          class="grid size-7 place-items-center rounded-cryptiq text-cryptiq-fg-muted transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg disabled:opacity-50"
         >
           <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8" /><path d="M21 3v5h-5" />
@@ -165,7 +224,7 @@
         </button>
         <button
           type="button"
-          onclick={copy}
+          onclick={copyOutput}
           title="Copy"
           aria-label="Copy password"
           class="grid size-7 place-items-center rounded-cryptiq transition-colors hover:bg-cryptiq-hover
@@ -195,29 +254,23 @@
       </span>
     </label>
     <div class="flex flex-wrap gap-1.5">
-      {#each [['upper', 'A-Z'], ['lower', 'a-z'], ['digits', '0-9'], ['symbols', '!@#'], ['avoidAmbiguous', 'No look-alikes']] as [key, label] (key)}
-        {@const on =
-          key === 'upper' ? upper
-          : key === 'lower' ? lower
-          : key === 'digits' ? digits
-          : key === 'symbols' ? symbols
-          : avoidAmbiguous}
+      {#each [
+        { key: 'lower', label: 'a-z', get: () => classLower, set: (v: boolean) => { classLower = v; } },
+        { key: 'upper', label: 'A-Z', get: () => classUpper, set: (v: boolean) => { classUpper = v; } },
+        { key: 'digits', label: '0-9', get: () => classDigits, set: (v: boolean) => { classDigits = v; } },
+        { key: 'symbols', label: '!@#', get: () => classSymbols, set: (v: boolean) => { classSymbols = v; } },
+        { key: 'ambiguous', label: 'No look-alikes', get: () => avoidAmbiguous, set: (v: boolean) => { avoidAmbiguous = v; } },
+      ] as item (item.key)}
         <button
           type="button"
-          aria-pressed={on}
-          onclick={() => {
-            if (key === 'upper') upper = !upper;
-            else if (key === 'lower') lower = !lower;
-            else if (key === 'digits') digits = !digits;
-            else if (key === 'symbols') symbols = !symbols;
-            else avoidAmbiguous = !avoidAmbiguous;
-          }}
+          aria-pressed={item.get()}
+          onclick={() => item.set(!item.get())}
           class="rounded-cryptiq border px-2.5 py-1 text-meta font-medium transition-colors
-                 {on
+                 {item.get()
             ? 'border-cryptiq-accent bg-cryptiq-selected text-cryptiq-accent'
             : 'border-cryptiq-border text-cryptiq-fg-muted hover:border-cryptiq-border-strong'}"
         >
-          {label}
+          {item.label}
         </button>
       {/each}
     </div>
@@ -239,7 +292,7 @@
         <button
           type="button"
           aria-pressed={separator === value}
-          onclick={() => (separator = value as '-' | '.' | '_' | ' ')}
+          onclick={() => (separator = value as string)}
           class="grid size-7 place-items-center rounded-cryptiq border font-mono text-meta transition-colors
                  {separator === value
             ? 'border-cryptiq-accent bg-cryptiq-selected text-cryptiq-accent'
@@ -255,9 +308,9 @@
                  {capitalize ? 'border-cryptiq-accent bg-cryptiq-selected text-cryptiq-accent' : 'border-cryptiq-border text-cryptiq-fg-muted hover:border-cryptiq-border-strong'}"
         >Capitalize</button>
         <button
-          type="button" aria-pressed={includeNumber} onclick={() => (includeNumber = !includeNumber)}
+          type="button" aria-pressed={appendDigit} onclick={() => (appendDigit = !appendDigit)}
           class="rounded-cryptiq border px-2.5 py-1 text-meta font-medium transition-colors
-                 {includeNumber ? 'border-cryptiq-accent bg-cryptiq-selected text-cryptiq-accent' : 'border-cryptiq-border text-cryptiq-fg-muted hover:border-cryptiq-border-strong'}"
+                 {appendDigit ? 'border-cryptiq-accent bg-cryptiq-selected text-cryptiq-accent' : 'border-cryptiq-border text-cryptiq-fg-muted hover:border-cryptiq-border-strong'}"
         >Number</button>
       </span>
     </div>
@@ -268,7 +321,8 @@
     <button
       type="button"
       onclick={() => onUse?.(output)}
-      class="rounded-cryptiq bg-cryptiq-accent py-2 text-body font-semibold text-cryptiq-accent-fg transition-colors hover:bg-cryptiq-accent-hover"
+      disabled={!output || generating}
+      class="rounded-cryptiq bg-cryptiq-accent py-2 text-body font-semibold text-cryptiq-accent-fg transition-colors hover:bg-cryptiq-accent-hover disabled:opacity-50"
     >
       Use this password
     </button>
@@ -276,7 +330,7 @@
     <div class="mt-1 flex items-center gap-2">
       <button
         type="button"
-        onclick={() => onSaveDefault?.()}
+        onclick={() => onSaveDefault?.(opts)}
         class="flex-1 rounded-cryptiq border border-cryptiq-border-strong py-2 text-body font-medium text-cryptiq-fg-muted transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg"
       >
         Save as default
@@ -284,7 +338,8 @@
       <button
         type="button"
         onclick={() => onSaveAsEntry?.(output)}
-        class="flex-1 rounded-cryptiq bg-cryptiq-accent py-2 text-body font-semibold text-cryptiq-accent-fg transition-colors hover:bg-cryptiq-accent-hover"
+        disabled={!output || generating}
+        class="flex-1 rounded-cryptiq bg-cryptiq-accent py-2 text-body font-semibold text-cryptiq-accent-fg transition-colors hover:bg-cryptiq-accent-hover disabled:opacity-50"
       >
         Save as new entry
       </button>

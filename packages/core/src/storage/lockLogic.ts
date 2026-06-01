@@ -102,17 +102,17 @@ export function evaluateLock(
   const stale = isOlderThan30Min(existing.startedAt, opts.nowMs);
 
   if (existing.hostname === self.hostname) {
-    // P3-09: Same machine.
-    if (stale || !opts.pidIsAlive) {
-      // Provably stale: age > 30 min OR PID is dead.
-      const reason =
-        !opts.pidIsAlive
-          ? `pid ${existing.pid} is no longer running`
-          : `lock is older than 30 min (startedAt=${existing.startedAt})`;
-      return { kind: 'take-over-stale', reason };
-    }
-    // Fresh lock + live PID on the same host → truly locked.
-    return { kind: 'locked-by-live', pid: existing.pid, hostname: existing.hostname };
+    // P3-09: Same machine. The single-instance plugin (decision 13) guarantees at most ONE
+    // live Cryptiq process per host, so a same-host lock is always our OWN or a DEAD prior
+    // instance — never a live peer. ALWAYS take over (UAT T5 fix). `opts.pidIsAlive` is no
+    // longer consulted: it false-positived on OS PID reuse after a relaunch (and never
+    // recognised our own PID), wedging unlock with a spurious "locked by another process".
+    // The `locked-by-live` decision is retained in the union for API stability but is no
+    // longer returned from the same-host path.
+    const reason = stale
+      ? `lock is older than 30 min (startedAt=${existing.startedAt})`
+      : `same-host lock (pid ${existing.pid}) — single-instance guarantees no live peer`;
+    return { kind: 'take-over-stale', reason };
   } else {
     // P3-10: Different hostname.
     if (stale) {

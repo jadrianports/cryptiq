@@ -43,6 +43,7 @@ import {
   saveVault,
   unlockVault,
   createVault,
+  changeMasterPassword,
   addEntry,
   updateEntry,
   softDeleteEntry,
@@ -161,12 +162,25 @@ class VaultSession {
     // returns VAULT_LOCK_LOST when the lockfile does not yet exist).
     const warning = await this._acquireLock(adapter.vaultPath);
 
-    // Now that the lock exists, write the newly-created vault to disk.
-    const bytes = await saveVault(vault, vaultKey);
-    await adapter.save(bytes, { contentHash: hashEntriesContent(vault.entries) });
+    // Now that the lock exists, write the newly-created vault to disk. If ANY step here
+    // throws (write failure, etc.), roll back: release the advisory lock we just acquired
+    // and wipe the vault key. Otherwise a failed create leaks the lock — which later
+    // wedges unlock with a spurious "locked by another process" (UAT T5).
+    try {
+      const bytes = await saveVault(vault, vaultKey);
+      await adapter.save(bytes, { contentHash: hashEntriesContent(vault.entries) });
 
-    // Seed the content-hash dedup marker.
-    adapter.initLastSavedHash(hashEntriesContent(vault.entries));
+      // Seed the content-hash dedup marker.
+      adapter.initLastSavedHash(hashEntriesContent(vault.entries));
+    } catch (e) {
+      try {
+        await invoke('vault_lock_release', { vaultPath: adapter.vaultPath });
+      } catch {
+        // Lock file already gone — acceptable.
+      }
+      await secureWipe(vaultKey);
+      throw e;
+    }
 
     this.#vault = vault;
     this.#vaultKey = vaultKey;
@@ -325,6 +339,67 @@ class VaultSession {
     const entry = await regenerateFromPreset(vault, id);
     this.#vault = { ...vault };
     return entry;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Master-password change (AUTH-08 / AUTH-10)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Change the master password for the currently unlocked vault.
+   *
+   * Wraps `changeMasterPassword` from @cryptiq/core so the UI never needs to call
+   * unsafeGetKey() directly. The vault doc is mutated in place; the caller MUST call
+   * save() after this to persist the new master wrap to disk.
+   *
+   * @param currentPassword  The current master password bytes (verifies ownership).
+   * @param newPassword      The new master password bytes.
+   * @throws WrongPasswordError if currentPassword is incorrect.
+   * @throws Error if the session is not unlocked.
+   */
+  async changeMasterPassword(
+    currentPassword: Uint8Array,
+    newPassword: Uint8Array,
+  ): Promise<void> {
+    const vault = this._requireVault();
+    const key = this.#vaultKey;
+    if (key === null) {
+      throw new Error('VaultSession.changeMasterPassword: session is locked.');
+    }
+    await changeMasterPassword(vault, key, { currentPassword, newPassword });
+  }
+
+  /**
+   * AUTH-08: Re-wrap the master key after a recovery-key unlock, where the old
+   * master password is UNKNOWN (and therefore cannot be passed to changeMasterPassword).
+   *
+   * This method is ONLY valid immediately after a recovery-key unlock, before the user
+   * has set any new master password. It uses the internal @cryptiq/core/internal crypto
+   * to directly derive + replace the master wrap using the live vault key.
+   *
+   * After calling this method, call save() to persist the new master wrap to disk.
+   *
+   * @param newPassword  The new master password bytes.
+   */
+  async resetMasterPasswordAfterRecovery(newPassword: Uint8Array): Promise<void> {
+    const vault = this._requireVault();
+    const key = this.#vaultKey;
+    if (key === null) {
+      throw new Error('VaultSession.resetMasterPasswordAfterRecovery: session is locked.');
+    }
+    // Use the internal crypto path to set a new master wrap without needing to verify
+    // the old password (AUTH-08: after recovery unlock, old master password is unknown).
+    // Import the internal crypto verbs from @cryptiq/core/internal (internal.ts exports them).
+    const { calibrateArgon2id, deriveKey, wrapKey } = await import('@cryptiq/core/internal');
+    const { params } = await calibrateArgon2id();
+    const derivedKey = await deriveKey(newPassword, params);
+    try {
+      const newWrap = await wrapKey(key, derivedKey, params);
+      vault.doc.wrappedKeys.master = newWrap;
+      vault.doc.meta.modifiedAt = new Date().toISOString();
+    } finally {
+      await secureWipe(derivedKey);
+    }
   }
 
   // ---------------------------------------------------------------------------

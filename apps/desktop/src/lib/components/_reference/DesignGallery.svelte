@@ -11,7 +11,6 @@
 -->
 <script lang="ts">
   import EntryListRow from '../EntryListRow.svelte';
-  import EntryDetail from '../EntryDetail.svelte';
   import FirstRunStep from '../FirstRunStep.svelte';
   import GeneratorSurface from '../GeneratorSurface.svelte';
 
@@ -44,7 +43,6 @@
   ];
 
   let selectedId = $state('1');
-  const selected = $derived(entries.find((e) => e.id === selectedId) ?? entries[0]!);
 </script>
 
 <div class="min-h-screen space-y-12 bg-cryptiq-bg px-8 py-10">
@@ -101,15 +99,15 @@
       <!-- Detail -->
       <div class="min-w-0 flex-1">
         {#key selectedId}
-          <EntryDetail
-            title={selected.title}
-            username={selected.username}
-            password={selected.password}
-            url={selected.url}
-            notes={selected.notes}
-            favorite={selected.favorite}
-            needsUpdate={selected.needsUpdate}
-          />
+          <!--
+            EntryDetail is now VaultSession-wired (04-05) and requires entryId.
+            The gallery uses a placeholder since no vault is loaded in the preview harness.
+          -->
+          <div class="flex h-full items-center justify-center rounded-cryptiq border border-cryptiq-border bg-cryptiq-surface p-6">
+            <p class="text-body text-cryptiq-fg-muted">
+              EntryDetail requires a live VaultSession — run the app to preview.
+            </p>
+          </div>
         {/key}
       </div>
     </div>
@@ -177,7 +175,13 @@
   <section class="space-y-3">
     <h2 class="text-meta font-semibold tracking-wide text-cryptiq-fg-subtle uppercase">Generator — standalone screen</h2>
     <div class="grid place-items-center rounded-cryptiq-lg border border-cryptiq-border bg-cryptiq-bg p-10">
-      <GeneratorSurface variant="standalone" onSaveDefault={() => {}} onSaveAsEntry={() => {}} />
+      <GeneratorSurface
+        variant="standalone"
+        generate={async (o) => { void o; return '— run app for live generation —'; }}
+        estimateBits={(_o) => 0}
+        onSaveDefault={() => {}}
+        onSaveAsEntry={() => {}}
+      />
     </div>
   </section>
 

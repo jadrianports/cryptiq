@@ -210,7 +210,11 @@ export async function createVault(opts: {
     recoveryKey?: string;
     creationReport: CreationReport;
   } = {
-    vault: { doc, entries: { ...EMPTY_ENTRIES } },
+    // Deep clone: a shallow `{ ...EMPTY_ENTRIES }` would share the inner `entries`
+    // array (and `settings`) with the module-level constant, so every vault created
+    // in one process would mutate the SAME array via addEntry — leaking entries across
+    // vaults. structuredClone gives each vault a fully independent InnerDoc.
+    vault: { doc, entries: structuredClone(EMPTY_ENTRIES) },
     vaultKey,
     creationReport,
   };

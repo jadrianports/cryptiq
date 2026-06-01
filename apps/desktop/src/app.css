@@ -3,46 +3,129 @@
 @import 'tailwindcss';
 
 /*
- * D-12: Dark-mode CSS variable system set up in Phase 1.
+ * Cryptiq design tokens — the single source of truth for the visual language.
  *
- * Phase 1 ships light-only. The @theme block defines color tokens so Phase 4
- * builds components against `var(--color-cryptiq-bg)` etc. instead of literal
- * hex codes — which means the eventual dark theme is a CSS-variable swap, not
- * a per-component retrofit pass.
+ * Phase 1 (D-12) scaffolded a 7-token light-only system so Phase 4 could build
+ * against `var(--color-cryptiq-*)` instead of literal hex. Phase 4 (P4-03)
+ * expands it: semantic surfaces/text/lines, an accent + semantic scale, a type
+ * scale, radii, elevation, and a full dark theme delivered as a token swap.
  *
- * Tailwind v4 auto-exposes every @theme value as a CSS variable AND as a
- * Tailwind utility class (e.g. text-cryptiq-fg / bg-cryptiq-bg are
- * generated automatically).
+ * Aesthetic (P4-02): calm, serious, slightly-premium security vault — Proton
+ * Pass / 1Password lineage. Restraint over flourish. One reserved accent.
+ *
+ * RULES for every component:
+ *   - Never write a literal hex/oklch. Use a token (utility or var()).
+ *   - Light is the @theme default; dark overrides the same vars in the media
+ *     query below, so `bg-cryptiq-surface` etc. swap automatically (P4-03).
+ *   - All secret material (passwords, recovery key) renders in --font-mono.
+ *
+ * Tailwind v4 exposes every @theme value as both a CSS variable AND a utility
+ * (e.g. `bg-cryptiq-surface`, `text-body`, `rounded-cryptiq-lg`,
+ * `shadow-cryptiq-popover`).
  */
 @theme {
-  --color-cryptiq-bg: #fafafa; /* light background */
-  --color-cryptiq-surface: #ffffff; /* card / panel */
-  --color-cryptiq-fg: #0b0d10; /* primary text */
-  --color-cryptiq-fg-muted: #4b5563; /* secondary text */
-  --color-cryptiq-accent: oklch(0.58 0.16 250); /* brand blue-violet */
-  --color-cryptiq-border: #e5e7eb;
-  --color-cryptiq-danger: oklch(0.55 0.22 25);
+  /* ── Surfaces (60/30) ────────────────────────────────────────────────── */
+  --color-cryptiq-bg: #f4f5f7; /* app chrome / sidebar rail (dominant 60%) */
+  --color-cryptiq-surface: #ffffff; /* list rows, detail pane, cards (30%) */
+  --color-cryptiq-surface-2: #f7f8fa; /* inset / nested surfaces (inputs) */
+  --color-cryptiq-hover: #eef0f4; /* row / control hover */
+  --color-cryptiq-selected: #e9edfb; /* selected row — accent-tinted */
 
-  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --radius-cryptiq: 0.5rem;
+  /* ── Text ────────────────────────────────────────────────────────────── */
+  --color-cryptiq-fg: #0b0d10; /* primary */
+  --color-cryptiq-fg-muted: #515a68; /* secondary — labels, usernames */
+  --color-cryptiq-fg-subtle: #828c9a; /* tertiary — metadata, hints */
+
+  /* ── Lines ───────────────────────────────────────────────────────────── */
+  --color-cryptiq-border: #e4e7ec; /* hairlines (default) */
+  --color-cryptiq-border-strong: #d2d7df; /* inputs, weighted dividers */
+
+  /* ── Accent (10% — reserved, brand blue-violet) ──────────────────────── */
+  /* Reserved for: primary CTA, selected nav/row marker, focus ring, links,
+     active toggles, favorite star, strength=excellent. Nothing else. */
+  --color-cryptiq-accent: oklch(0.58 0.16 264);
+  --color-cryptiq-accent-hover: oklch(0.53 0.16 264);
+  --color-cryptiq-accent-fg: #ffffff;
+  --color-cryptiq-ring: oklch(0.58 0.16 264 / 0.5);
+
+  /* ── Semantic ────────────────────────────────────────────────────────── */
+  --color-cryptiq-success: oklch(0.6 0.11 165); /* "saved" / strong */
+  --color-cryptiq-attention: oklch(0.74 0.13 75); /* needs-site-update */
+  --color-cryptiq-danger: oklch(0.55 0.22 25); /* destructive / unrecoverable */
+  --color-cryptiq-danger-fg: #ffffff;
+  --color-cryptiq-danger-surface: oklch(0.965 0.018 25); /* warning panel bg */
+  --color-cryptiq-danger-border: oklch(0.84 0.09 25);
+
+  /* ── Type ────────────────────────────────────────────────────────────── */
+  /* Inter is the named UI face (carried from Phase 1). It is NOT yet bundled,
+     so it currently resolves to system-ui — see README "Font bundling" before
+     shipping. Mono is required for secret material (char disambiguation). */
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace;
+
+  /* 5-step scale — components use exactly these, never arbitrary sizes. */
+  --text-meta: 0.75rem; /* 12 — metadata, eyebrow labels, badges */
+  --text-meta--line-height: 1rem;
+  --text-body: 0.875rem; /* 14 — default UI / body */
+  --text-body--line-height: 1.5rem;
+  --text-emphasis: 1rem; /* 16 — entry title, field emphasis */
+  --text-emphasis--line-height: 1.5rem;
+  --text-title: 1.25rem; /* 20 — pane / section title */
+  --text-title--line-height: 1.75rem;
+  --text-display: 1.75rem; /* 28 — first-run / page title */
+  --text-display--line-height: 2.125rem;
+  --text-display--letter-spacing: -0.015em;
+
+  /* Weights — exactly three: regular / medium / semibold. */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  /* ── Radius / elevation ──────────────────────────────────────────────── */
+  --radius-cryptiq: 0.5rem; /* 8 — controls, rows */
+  --radius-cryptiq-lg: 0.875rem; /* 14 — panels, popover, cards */
+  --shadow-cryptiq-panel: 0 1px 2px rgb(11 13 16 / 0.04), 0 1px 3px rgb(11 13 16 / 0.05);
+  --shadow-cryptiq-popover: 0 1px 2px rgb(11 13 16 / 0.04), 0 10px 28px -8px rgb(11 13 16 / 0.18);
 }
 
 /*
- * Future dark theme (Phase 4 or v2) will look like:
- *
- *   @media (prefers-color-scheme: dark) {
- *     @theme {
- *       --color-cryptiq-bg: #0b0d10;
- *       --color-cryptiq-fg: #fafafa;
- *       ...
- *     }
- *   }
- *
- * Or with a `.dark` class toggle approach.
- * NOT shipped in Phase 1 — variable system only.
+ * Dark theme — P4-03 token swap. System-driven via prefers-color-scheme (no
+ * manual toggle this phase). Overriding the same custom properties is enough;
+ * every `bg-cryptiq-*` / `text-cryptiq-*` utility re-resolves automatically.
  */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-cryptiq-bg: #0b0d10;
+    --color-cryptiq-surface: #141821;
+    --color-cryptiq-surface-2: #1b2029;
+    --color-cryptiq-hover: #1f2530;
+    --color-cryptiq-selected: #1c2740;
 
-/* Resets / base — minimal, lets Tailwind's preflight do the heavy lifting */
+    --color-cryptiq-fg: #f1f3f6;
+    --color-cryptiq-fg-muted: #a6afbd;
+    --color-cryptiq-fg-subtle: #6c7684;
+
+    --color-cryptiq-border: #262c37;
+    --color-cryptiq-border-strong: #353d4a;
+
+    --color-cryptiq-accent: oklch(0.68 0.15 264);
+    --color-cryptiq-accent-hover: oklch(0.73 0.15 264);
+    --color-cryptiq-accent-fg: #0b0d10;
+    --color-cryptiq-ring: oklch(0.68 0.15 264 / 0.55);
+
+    --color-cryptiq-success: oklch(0.72 0.12 165);
+    --color-cryptiq-attention: oklch(0.8 0.13 75);
+    --color-cryptiq-danger: oklch(0.66 0.2 25);
+    --color-cryptiq-danger-fg: #0b0d10;
+    --color-cryptiq-danger-surface: oklch(0.28 0.07 25);
+    --color-cryptiq-danger-border: oklch(0.46 0.12 25);
+
+    --shadow-cryptiq-panel: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.4);
+    --shadow-cryptiq-popover: 0 1px 2px rgb(0 0 0 / 0.4), 0 14px 34px -8px rgb(0 0 0 / 0.6);
+  }
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
 html,
 body,
 #app {
@@ -50,4 +133,19 @@ body,
   background: var(--color-cryptiq-bg);
   color: var(--color-cryptiq-fg);
   font-family: var(--font-sans);
+  /* Premium polish: crisp type + native controls/scrollbars follow the theme. */
+  color-scheme: light dark;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-cryptiq-ring);
+  color: var(--color-cryptiq-fg);
+}
+
+/* Thin, unobtrusive scrollbars — keeps the calm density in the list pane. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-cryptiq-border-strong) transparent;
 }

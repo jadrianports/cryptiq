@@ -56,48 +56,13 @@ fn get_hostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-/// Return `true` if the process with the given PID is still alive.
-///
-/// Windows: `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`
-///   — exit code 259 (STILL_ACTIVE) means the process is running.
-/// macOS: `kill(pid, 0)` signal 0 — returns 0 if alive, -1 (ESRCH) if dead.
-/// Linux (cfg fallback): treated as alive (conservative — no build target for Linux).
-#[cfg(windows)]
-fn pid_is_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    const STILL_ACTIVE: u32 = 259;
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-            // Could not open — process is gone.
-            return false;
-        }
-        let mut exit_code: u32 = 0;
-        let still_running =
-            GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == STILL_ACTIVE;
-        CloseHandle(handle);
-        still_running
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn pid_is_alive(pid: u32) -> bool {
-    // kill(pid, 0): signal 0 — returns 0 if process alive, -1 with ESRCH if dead.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
-// Fallback for platforms not explicitly targeted (should not be reachable at runtime
-// per D-15 — Linux is excluded from the capability manifest and Cargo target gates).
-#[cfg(not(any(windows, target_os = "macos")))]
-fn pid_is_alive(_pid: u32) -> bool {
-    // Conservative: treat as alive so we don't accidentally clobber a live lock.
-    true
-}
+// NOTE: a per-PID liveness probe (`pid_is_alive`) was removed (UAT T5 fix). It was only
+// used by vault_lock_acquire's SAME-HOST branch, where it caused an intermittent-unlock bug:
+// it false-positived on OS PID reuse after a relaunch (a dead prior instance's PID gets
+// reused → looked "alive" → spurious VAULT_LOCKED) and never recognised our OWN PID. The
+// single-instance plugin (decision 13) already guarantees at most one live Cryptiq process
+// per host, so a same-host lock can only be our own or a dead prior instance — never a live
+// peer. Same-host locks are therefore ALWAYS safe to take over; no PID liveness check needed.
 
 /// Return `true` if the ISO 8601 `started_at` timestamp is more than 30 minutes old.
 ///
@@ -730,17 +695,12 @@ pub fn vault_lock_acquire(vault_path: String, started_at: String) -> Result<(), 
             let stale = is_older_than_30_min(&existing.started_at);
 
             if existing.hostname == my_host {
-                // P3-09: Same machine.
-                let pid_dead = !pid_is_alive(existing.pid);
-                if !stale && !pid_dead {
-                    // Fresh lock + live PID on same host → truly locked (single-instance
-                    // plugin should prevent this, but handle it defensively).
-                    return Err(format!(
-                        "VAULT_LOCKED:{}:{}",
-                        existing.pid, existing.hostname
-                    ));
-                }
-                // Stale or dead → take over (fall through to write our lock).
+                // P3-09: Same machine. The single-instance plugin (decision 13) guarantees at
+                // most ONE live Cryptiq process per host, so a same-host lock can only be our own
+                // (self) or a DEAD prior instance — never a live peer. Always take over (fall
+                // through to overwrite). This is the robust fix for the intermittent-unlock bug
+                // (UAT T5): the old PID-liveness gate false-positived on PID reuse after relaunch
+                // and didn't recognise our own PID, wedging unlock with a spurious VAULT_LOCKED.
             } else {
                 // P3-10: Different hostname.
                 if !stale {

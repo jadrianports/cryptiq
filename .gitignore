@@ -46,3 +46,11 @@ src-tauri/Cargo.lock.bak
 # Phase 1, Plan 01-06 Task 1 — local SHA-resolution working note (not for commit).
 # Authoritative SHAs are maintained by Dependabot in .github/workflows/ci.yml itself.
 .github/_resolved-shas.txt
+
+# Vitest browser-mode component-test artifacts (failure screenshots, reports).
+apps/desktop/src/tests/__screenshots__/
+apps/desktop/__screenshots__/
+apps/desktop/html/
+# Obsolete Playwright-CT artifacts (harness replaced by Vitest browser mode in 04-07).
+apps/desktop/playwright-report/
+apps/desktop/test-results/

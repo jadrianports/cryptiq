@@ -46,6 +46,7 @@
     {
       "identifier": "fs:allow-exists",
       "allow": [
+        { "path": "$APPCONFIG/cryptiq" },
         { "path": "$APPCONFIG/cryptiq/config.json" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.1" },
@@ -91,6 +92,10 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" }
       ]
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }]
     }
   ]
 }

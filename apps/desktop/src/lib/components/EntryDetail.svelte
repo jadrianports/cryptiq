@@ -1,97 +1,260 @@
 <!--
   EntryDetail.svelte — the right pane of the master-detail shell (P4-05).
 
-  Canonical reference for the entry detail/edit surface. Demonstrates the locked
-  interaction contract:
-    • Inline edit (Bitwarden-style) — fields read as text, reveal a frame on focus (UI-05)
-    • Auto-save on blur + a "Saved" toast — no Save button (P4-11, UI-12)
+  WIRED: This is the LIVE version. Local-state seeds are replaced with reads
+  from VaultSession. Every field mutation goes through VaultSession.updateEntry
+  + debounced save() + pushToast('Saved') (P4-11/UI-12).
+
+  Interaction contract (all locked, P4-01 design source of truth):
+    • Inline edit (Bitwarden-style) — fields read as text, reveal on focus (UI-05)
+    • Auto-save on blur + "Saved" toast — NO Save button (P4-11, UI-12)
     • Masked password with press-and-hold peek + a click toggle (P4-13)
     • Inline generator as a popover anchored to the password field (P4-12, UI-08)
-    • Per-field copy with confirmation (UI-06)
-    • Open URL, per-entry needs-site-update toggle (UI-09), soft-delete (ENTRY-04)
+      — generated via @cryptiq/core CSPRNG; history auto-pushed by updateEntry (ENTRY-07)
+    • Per-field copy writes to clipboard (write-only, UI-06); never reads it
+    • Open URL via openInBrowser (capability-scoped plugin-opener, UI-07)
+    • needsSiteUpdate toggle persists (ENTRY-08)
+    • Soft-delete (tombstone, ENTRY-04)
+    • Permanent delete gated behind PurgeConfirm modal (ENTRY-06)
+    • "+ New" blank form (P4-14): title required before first save
 
-  Presentation-only. Local $state seeds from props so the reference feels live;
-  the planner replaces these with VaultSession CRUD → save() (mutex + dedup
-  already handle correctness). Filling a new password MUST push the old value to
-  passwordHistory via the core change path (ENTRY-07) — wired by the planner.
+  Threat mitigations honored:
+    T-04-17: copy = writeText only; never readText
+    T-04-18: generation via @cryptiq/core; no Math.random
+    T-04-19: reads from vaultSession.vault ($state.raw); never wraps in deep $state
+    T-04-20: purge gated behind PurgeConfirm explicit confirm
+    T-04-21: no console.* of password/notes; toast text is non-secret
 -->
 <script lang="ts">
   import VisualIdentity from './VisualIdentity.svelte';
   import GeneratorSurface from './GeneratorSurface.svelte';
+  import PurgeConfirm from './PurgeConfirm.svelte';
+  import { vaultSession } from '../state/vault.svelte';
+  import { ui, pushToast } from '../state/ui.svelte';
+  import { debounce } from '../util/debounce';
+  import { copyField } from '../util/copyField';
+  import { openInBrowser } from '../util/openUrl';
+  import { generateFromOptions, estimateEntropyBits } from '@cryptiq/core';
+  import type { GeneratorOptions, Entry } from '@cryptiq/core';
 
+  /**
+   * Cast the opaque vault.entries (typed as `object` at the vault-format layer)
+   * to the InnerDoc shape that all CRUD verbs maintain. This mirrors the pattern
+   * used in MainView.svelte — the single-cast strategy (asInnerDoc() in core/crud.ts).
+   */
+  function getEntries(vault: { entries: object } | null): Entry[] {
+    if (vault === null) return [];
+    const inner = vault.entries as { entries?: Entry[] };
+    return Array.isArray(inner.entries) ? inner.entries : [];
+  }
+
+  // ── Props ──────────────────────────────────────────────────────────────
+  // entryId drives the wired mode (existing entry). When null, a blank "+New"
+  // form is rendered (P4-14): the consumer (MainView) sets this to null to
+  // open a blank form, then sets it to the new entry's id after addEntry.
   type Props = {
-    title?: string;
-    username?: string;
-    password?: string;
-    url?: string;
-    notes?: string;
-    favorite?: boolean;
-    needsUpdate?: boolean;
-    onOpenUrl?: (url: string) => void;
-    onDelete?: () => void;
-    onCopy?: (field: string, value: string) => void;
+    entryId: string | null;
+    onSoftDelete?: (id: string) => void;
+    onPurge?: (id: string) => void;
   };
-  let {
-    title: initialTitle = '',
-    username: initialUsername = '',
-    password: initialPassword = '',
-    url: initialUrl = '',
-    notes: initialNotes = '',
-    favorite: initialFavorite = false,
-    needsUpdate: initialNeedsUpdate = false,
-    onOpenUrl,
-    onDelete,
-    onCopy,
-  }: Props = $props();
+  let { entryId, onSoftDelete, onPurge }: Props = $props();
 
-  // Seed editable local state once from props (the gallery remounts via {#key}
-  // to reseed). Intentional snapshot — the planner replaces these with live
-  // VaultSession state, so prop-resync is a non-goal here.
-  /* svelte-ignore state_referenced_locally */
-  let title = $state(initialTitle);
-  /* svelte-ignore state_referenced_locally */
-  let username = $state(initialUsername);
-  /* svelte-ignore state_referenced_locally */
-  let password = $state(initialPassword);
-  /* svelte-ignore state_referenced_locally */
-  let url = $state(initialUrl);
-  /* svelte-ignore state_referenced_locally */
-  let notes = $state(initialNotes);
-  /* svelte-ignore state_referenced_locally */
-  let favorite = $state(initialFavorite);
-  /* svelte-ignore state_referenced_locally */
-  let needsUpdate = $state(initialNeedsUpdate);
+  // ── Live entry read (T-04-19: read from $state.raw, never re-wrap) ─────
+  // $derived reads re-run whenever vaultSession.vault changes (reassign pattern, P3-02).
+  // getEntries() casts the opaque vault.entries object to Entry[] (same pattern as MainView).
+  const entry = $derived(
+    entryId !== null
+      ? (getEntries(vaultSession.vault).find((e) => e.id === entryId) ?? null)
+      : null,
+  );
 
-  // Two independent reveal affordances (P4-13): sticky toggle OR transient hold.
+  // ── Editable field mirrors ─────────────────────────────────────────────
+  // These hold the current value of the input while the user is typing.
+  // We seed them from `entry` whenever the entry changes (entryId swap).
+  // $state.raw is used for the live values — they hold no secret data longer
+  // than the field-edit session and are never deep-proxied.
+  let title = $state('');
+  let username = $state('');
+  let password = $state('');
+  let url = $state('');
+  let notes = $state('');
+  let favorite = $state(false);
+  let needsUpdate = $state(false);
+
+  // Seed field mirrors whenever the entry identity changes.
+  $effect(() => {
+    if (entry !== null) {
+      title = entry.title;
+      username = entry.username ?? '';
+      password = entry.password ?? '';
+      url = entry.url ?? '';
+      notes = entry.notes ?? '';
+      favorite = entry.favorite ?? false;
+      needsUpdate = entry.needsSiteUpdate ?? false;
+    } else {
+      // Blank "+New" form (P4-14)
+      title = '';
+      username = '';
+      password = '';
+      url = '';
+      notes = '';
+      favorite = false;
+      needsUpdate = false;
+    }
+  });
+
+  // ── Reveal state (P4-13) ──────────────────────────────────────────────
   let toggledReveal = $state(false);
   let heldReveal = $state(false);
   const revealed = $derived(toggledReveal || heldReveal);
 
+  // ── Generator popover ─────────────────────────────────────────────────
   let showGen = $state(false);
-  let copiedField = $state<string | null>(null);
-  let toast = $state<string | null>(null);
 
-  function touchSaved(msg = 'Saved') {
-    // Stand-in for VaultSession.save() → the toast confirms every persist (UI-12).
-    toast = msg;
-    setTimeout(() => (toast = null), 1800);
+  // ── Copy feedback ─────────────────────────────────────────────────────
+  let copiedField = $state<string | null>(null);
+
+  // ── Purge confirm modal ───────────────────────────────────────────────
+  let showPurgeConfirm = $state(false);
+
+  // ── Auto-save (P4-11, D-TIMING 500ms) ─────────────────────────────────
+  // Debounced — chains onto save-mutex + FNV-1a dedup in the adapter.
+  const scheduleSave = debounce(async () => {
+    if (!vaultSession.isUnlocked) return;
+    try {
+      await vaultSession.save();
+      pushToast('Saved'); // UI-12
+    } catch {
+      // Save errors are non-fatal from the component's perspective;
+      // the adapter will surface typed errors to the session if needed.
+    }
+  }, 500);
+
+  // ── Field blur handlers (auto-save path) ──────────────────────────────
+  function handleTitleBlur() {
+    if (entryId === null) return; // blank form — no save until first addEntry
+    if (!title.trim()) return; // P4-14: title required
+    vaultSession.updateEntry(entryId, { title });
+    scheduleSave();
   }
-  function copyField(field: string, value: string) {
-    onCopy?.(field, value);
+
+  function handleUsernameBlur() {
+    if (entryId === null) return;
+    vaultSession.updateEntry(entryId, { username });
+    scheduleSave();
+  }
+
+  function handlePasswordBlur() {
+    if (entryId === null) return;
+    // updateEntry pushes old password to history automatically (ENTRY-07 core change path).
+    vaultSession.updateEntry(entryId, { password });
+    scheduleSave();
+  }
+
+  function handleUrlBlur() {
+    if (entryId === null) return;
+    vaultSession.updateEntry(entryId, { url });
+    scheduleSave();
+  }
+
+  function handleNotesBlur() {
+    if (entryId === null) return;
+    vaultSession.updateEntry(entryId, { notes });
+    scheduleSave();
+  }
+
+  // ── Favorite toggle ────────────────────────────────────────────────────
+  function toggleFavorite() {
+    if (entryId === null) return;
+    const next = !favorite;
+    favorite = next;
+    vaultSession.updateEntry(entryId, { favorite: next });
+    scheduleSave();
+  }
+
+  // ── needsSiteUpdate toggle (ENTRY-08) ──────────────────────────────────
+  function toggleNeedsUpdate() {
+    if (entryId === null) return;
+    const next = !needsUpdate;
+    needsUpdate = next;
+    vaultSession.updateEntry(entryId, { needsSiteUpdate: next });
+    scheduleSave();
+  }
+
+  // ── Copy (UI-06, T-04-17: write-only) ─────────────────────────────────
+  async function handleCopy(field: string, value: string) {
+    await copyField(value); // writes to clipboard; never reads it
     copiedField = field;
     setTimeout(() => (copiedField = copiedField === field ? null : copiedField), 1500);
   }
-  function useGenerated(value: string) {
+
+  // ── Generator "Use" callback ───────────────────────────────────────────
+  // updateEntry's core change path auto-pushes old password to history (ENTRY-07).
+  // Do NOT push manually — that would double-push.
+  async function useGenerated(value: string) {
+    if (entryId === null) {
+      // Blank form: just set the local field mirror.
+      password = value;
+      showGen = false;
+      return;
+    }
     password = value;
     showGen = false;
-    touchSaved('Password updated');
+    vaultSession.updateEntry(entryId, { password: value });
+    await vaultSession.save();
+    pushToast('Password updated');
+  }
+
+  // ── Core CSPRNG generate + entropy (T-04-18) ──────────────────────────
+  // Callbacks injected into GeneratorSurface — never Math.random.
+  async function coreGenerate(opts: GeneratorOptions): Promise<string> {
+    return generateFromOptions(opts);
+  }
+  function coreEstimateBits(opts: GeneratorOptions): number {
+    return estimateEntropyBits(opts);
+  }
+
+  // ── Open URL (UI-07) ──────────────────────────────────────────────────
+  async function handleOpenUrl() {
+    if (!url) return;
+    await openInBrowser(url);
+  }
+
+  // ── Soft-delete (ENTRY-04) ────────────────────────────────────────────
+  async function handleSoftDelete() {
+    if (entryId === null) return;
+    vaultSession.softDeleteEntry(entryId);
+    await vaultSession.save();
+    pushToast('Moved to Recently Deleted');
+    onSoftDelete?.(entryId);
+    ui.selectedEntryId = null;
+  }
+
+  // ── Purge (ENTRY-06) — gated behind PurgeConfirm ─────────────────────
+  async function handlePurgeConfirmed() {
+    if (entryId === null) return;
+    const id = entryId;
+    showPurgeConfirm = false;
+    vaultSession.purgeEntry(id);
+    await vaultSession.save();
+    pushToast('Entry deleted permanently');
+    onPurge?.(id);
+    ui.selectedEntryId = null;
   }
 </script>
+
+{#if showPurgeConfirm}
+  <PurgeConfirm
+    title={title || 'this entry'}
+    onConfirm={handlePurgeConfirmed}
+    onCancel={() => (showPurgeConfirm = false)}
+  />
+{/if}
 
 {#snippet copyButton(field: string, value: string)}
   <button
     type="button"
-    onclick={() => copyField(field, value)}
+    onclick={() => handleCopy(field, value)}
     title="Copy"
     aria-label="Copy {field}"
     class="grid size-8 shrink-0 place-items-center rounded-cryptiq transition-colors hover:bg-cryptiq-hover
@@ -111,15 +274,16 @@
     <VisualIdentity label={title} size={44} />
     <input
       bind:value={title}
-      onblur={() => touchSaved()}
+      onblur={handleTitleBlur}
       placeholder="Title"
       aria-label="Title"
       class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-1.5 py-0.5 text-title font-semibold text-cryptiq-fg
              outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
     />
+    <!-- Favorite toggle -->
     <button
       type="button"
-      onclick={() => { favorite = !favorite; touchSaved(favorite ? 'Added to favorites' : 'Removed from favorites'); }}
+      onclick={toggleFavorite}
       title={favorite ? 'Unfavorite' : 'Favorite'}
       aria-pressed={favorite}
       class="grid size-9 place-items-center rounded-cryptiq transition-colors hover:bg-cryptiq-hover
@@ -129,14 +293,28 @@
         <path d="M12 2.6l2.6 5.55 6.02.78-4.45 4.16 1.16 5.96L12 16.98 6.67 19.81l1.16-5.96L3.38 9.69l6.02-.78L12 2.6z" />
       </svg>
     </button>
+    <!-- Soft-delete (ENTRY-04) -->
     <button
       type="button"
-      onclick={() => { onDelete?.(); touchSaved('Moved to Recently Deleted'); }}
-      title="Delete"
-      aria-label="Delete entry"
+      onclick={handleSoftDelete}
+      title="Move to Recently Deleted"
+      aria-label="Move to Recently Deleted"
       class="grid size-9 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-danger"
     >
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
+    </button>
+    <!-- Permanent delete (ENTRY-06, gated behind PurgeConfirm) -->
+    <button
+      type="button"
+      onclick={() => (showPurgeConfirm = true)}
+      title="Delete permanently"
+      aria-label="Delete entry permanently"
+      class="grid size-9 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-danger"
+    >
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+        <path d="M10 11v6" /><path d="M14 11v6" />
+      </svg>
     </button>
   </header>
 
@@ -148,7 +326,7 @@
       <div class="flex items-center gap-1">
         <input
           bind:value={username}
-          onblur={() => touchSaved()}
+          onblur={handleUsernameBlur}
           placeholder="—"
           aria-label="Username"
           class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
@@ -158,7 +336,7 @@
       </div>
     </div>
 
-    <!-- Password -->
+    <!-- Password (P4-13 reveal, P4-12 generator) -->
     <div class="relative">
       <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Password</span>
       <div class="flex items-center gap-1">
@@ -171,10 +349,22 @@
           onpointercancel={() => (heldReveal = false)}
           role="presentation"
         >
-          <span class="min-w-0 flex-1 truncate font-mono text-body text-cryptiq-fg select-none">
-            {revealed ? password : '•'.repeat(12)}
-          </span>
-          <span class="ml-2 text-meta text-cryptiq-fg-subtle select-none">hold to peek</span>
+          <!-- Password edit input — visible when held or toggled -->
+          {#if revealed}
+            <input
+              type="text"
+              bind:value={password}
+              onblur={handlePasswordBlur}
+              placeholder="—"
+              aria-label="Password"
+              class="min-w-0 flex-1 bg-transparent font-mono text-body text-cryptiq-fg outline-none"
+            />
+          {:else}
+            <span class="min-w-0 flex-1 truncate font-mono text-body text-cryptiq-fg select-none">
+              {'•'.repeat(Math.min(12, password.length || 12))}
+            </span>
+            <span class="ml-2 text-meta text-cryptiq-fg-subtle select-none">hold to peek</span>
+          {/if}
         </div>
 
         <!-- Click toggle (accessibility fallback for press-and-hold). -->
@@ -208,9 +398,19 @@
 
       {#if showGen}
         <!-- Click-away closer + anchored popover. -->
-        <button type="button" class="fixed inset-0 z-10 cursor-default" aria-label="Close generator" onclick={() => (showGen = false)}></button>
+        <button
+          type="button"
+          class="fixed inset-0 z-10 cursor-default"
+          aria-label="Close generator"
+          onclick={() => (showGen = false)}
+        ></button>
         <div class="absolute top-full right-0 z-20 mt-2">
-          <GeneratorSurface variant="popover" onUse={useGenerated} />
+          <GeneratorSurface
+            variant="popover"
+            generate={coreGenerate}
+            estimateBits={coreEstimateBits}
+            onUse={useGenerated}
+          />
         </div>
       {/if}
     </div>
@@ -221,15 +421,16 @@
       <div class="flex items-center gap-1">
         <input
           bind:value={url}
-          onblur={() => touchSaved()}
+          onblur={handleUrlBlur}
           placeholder="https://"
           aria-label="Website URL"
           class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-accent
                  outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
         />
+        <!-- Open URL (UI-07) -->
         <button
           type="button"
-          onclick={() => onOpenUrl?.(url)}
+          onclick={handleOpenUrl}
           disabled={!url}
           title="Open URL"
           aria-label="Open URL in browser"
@@ -246,7 +447,7 @@
       <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Notes</span>
       <textarea
         bind:value={notes}
-        onblur={() => touchSaved()}
+        onblur={handleNotesBlur}
         rows="3"
         placeholder="Add a note…"
         aria-label="Notes"
@@ -255,7 +456,7 @@
       ></textarea>
     </div>
 
-    <!-- Needs-site-update toggle (UI-09) -->
+    <!-- Needs-site-update toggle (ENTRY-08, UI-09) -->
     <label class="flex items-center justify-between gap-3 rounded-cryptiq border border-cryptiq-border bg-cryptiq-surface-2 px-3 py-2.5">
       <span class="min-w-0">
         <span class="block text-body font-medium text-cryptiq-fg">Needs site update</span>
@@ -266,21 +467,11 @@
         role="switch"
         aria-checked={needsUpdate}
         aria-label="Needs site update"
-        onclick={() => { needsUpdate = !needsUpdate; touchSaved(); }}
+        onclick={toggleNeedsUpdate}
         class="relative h-5 w-9 shrink-0 rounded-full transition-colors {needsUpdate ? 'bg-cryptiq-attention' : 'bg-cryptiq-border-strong'}"
       >
         <span class="absolute top-0.5 left-0.5 size-4 rounded-full bg-white shadow-cryptiq-panel transition-transform {needsUpdate ? 'translate-x-4' : ''}"></span>
       </button>
     </label>
   </div>
-
-  <!-- Saved toast -->
-  {#if toast}
-    <div class="pointer-events-none absolute right-5 bottom-5 z-30">
-      <span class="flex items-center gap-1.5 rounded-cryptiq bg-cryptiq-fg px-3 py-1.5 text-meta font-medium text-cryptiq-bg shadow-cryptiq-popover">
-        <svg class="size-3.5 text-cryptiq-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-        {toast}
-      </span>
-    </div>
-  {/if}
 </section>

@@ -28,6 +28,13 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_persisted_scope::init());
     }
 
+    // opener plugin — desktop only (macOS + Windows, per D-15).
+    // Registered AFTER the locked three (single-instance → fs → persisted-scope) per FLAG-4.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        builder = builder.plugin(tauri_plugin_opener::init());
+    }
+
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
