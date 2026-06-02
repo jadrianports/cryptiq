@@ -365,15 +365,21 @@ mod tests {
     // --- UAT Test 3: advisory-lock multi-process decisions ------------------
 
     #[test]
-    fn lock_acquire_blocks_on_fresh_live_same_host_lock() {
-        // P3-09: same machine, fresh timestamp, live PID (our own) => locked.
+    fn lock_acquire_takes_over_fresh_live_same_host_lock() {
+        // P3-09, REVISED by Phase-4 UAT T5: same machine, fresh timestamp, even our own
+        // live PID => TAKE OVER, not block. The single-instance plugin (decision 13)
+        // guarantees at most one live Cryptiq process per host, so a same-host lock can
+        // only be self or a dead prior instance — never a live peer. The old "block on
+        // fresh same-host" behaviour false-positived on PID reuse after relaunch and
+        // wedged unlock with a spurious VAULT_LOCKED. This test now pins the corrected
+        // takeover behaviour implemented in vault_lock_acquire (same-host => fall through).
         let dir = fresh_dir("lock_live");
         let vp = vault_in(&dir);
         write_lock(&vp, std::process::id(), &get_hostname(), "2099-01-01T00:00:00Z");
 
-        let err = vault_lock_acquire(vp.clone(), "2099-01-01T00:00:00Z".to_string())
-            .expect_err("fresh + live + same-host must block");
-        assert!(err.starts_with("VAULT_LOCKED:"), "got: {}", err);
+        vault_lock_acquire(vp.clone(), "2099-01-01T00:00:00Z".to_string())
+            .expect("fresh same-host lock is taken over (single-instance guarantees no live peer)");
+        vault_lock_check(vp.clone()).expect("we own the lock after take-over");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -798,5 +804,55 @@ pub fn vault_lock_release(vault_path: String) -> Result<(), String> {
             format!("vault_lock_release: failed to remove lock file '{}': {}", lock.display(), e)
         })?;
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// vault_export_copy  (EXPORT-01, Phase 6 / P6-10)
+// ---------------------------------------------------------------------------
+
+/// Copy the canonical vault file to a user-chosen destination path.
+///
+/// Called after:
+///   1. The user re-authenticated via the ConfirmMasterPassword gate (P6-09 / AUTH-11).
+///   2. Any in-flight save has completed (save-mutex flushed in JS — P6-10).
+///   3. The native save dialog returned a destination path.
+///
+/// Uses `std::fs::copy` — a simple byte copy; no new crypto, no temp file.
+/// The exported bytes are identical to the already-encrypted `.cryptiq` on disk
+/// (EXPORT-01: "just a file copy, no new crypto").
+///
+/// Security notes:
+///   - Source is the canonical `.cryptiq` file (always-encrypted bytes — T-06-17).
+///   - Destination is OUTSIDE the literal vault scopes by design (the user chose it
+///     via the OS save dialog). `assert_confined` is deliberately NOT applied to the
+///     destination (T-06-18 analysis: write is performed by this Rust command, not by
+///     JS plugin-fs; dialog:allow-save already scopes the write; no single-`*` glob added).
+///   - Error strings contain only paths, never secrets (T-06-19).
+///
+/// The JS invoke call is:
+///   `invoke('vault_export_copy', { sourcePath, destinationPath })`
+/// Tauri v2 maps camelCase keys → snake_case Rust params.
+#[tauri::command]
+pub fn vault_export_copy(source_path: String, destination_path: String) -> Result<(), String> {
+    let src = std::path::PathBuf::from(&source_path);
+    let dst = std::path::PathBuf::from(&destination_path);
+
+    if !src.exists() {
+        return Err(format!(
+            "vault_export_copy: source '{}' does not exist",
+            src.display()
+        ));
+    }
+
+    std::fs::copy(&src, &dst).map_err(|e| {
+        format!(
+            "vault_export_copy: copy '{}' → '{}' failed: {}",
+            src.display(),
+            dst.display(),
+            e
+        )
+    })?;
+
     Ok(())
 }

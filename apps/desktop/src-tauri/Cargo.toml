@@ -21,6 +21,11 @@ tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Clipboard read+write for the sensitive-copy path (LOCK-02/06).
+# default-features = false drops the `image-data` feature (text-only — avoids pulling
+# Gdi / core-graphics). 1Password-maintained (github.com/1Password/arboard), MIT/Apache-2.0.
+arboard = { version = "3", default-features = false }
+
 # Desktop-only plugins per D-15 (Linux dropped; macOS + Windows only).
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 tauri-plugin-single-instance = "2.0.0"
@@ -30,10 +35,26 @@ tauri-plugin-opener = "2"
 # PID liveness check: raw Windows syscalls via windows-sys.
 # windows-sys 0.59.0 is already resolved transitively by Tauri — reuse the same version
 # to avoid pulling a second copy into the binary.
+#
+# Phase 5 additions (do NOT remove the existing two — the PID-liveness check still needs them):
+#   Win32_System_DataExchange    — OpenClipboard / EmptyClipboard / CloseClipboard /
+#                                  SetClipboardData / RegisterClipboardFormatW
+#                                  (Windows owned sensitive write + exclusion markers, LOCK-06)
+#   Win32_System_Memory          — GlobalAlloc / GlobalLock / GlobalUnlock / GMEM_MOVEABLE
+#                                  (HGLOBAL for the CF_UNICODETEXT owned-transaction text write;
+#                                   GlobalFree lives under the already-enabled Win32_Foundation)
+#   Win32_UI_WindowsAndMessaging — WM_POWERBROADCAST + message-only window for the sleep watcher
+#   Win32_System_Power           — PBT_APMSUSPEND (system-sleep detection, LOCK-01)
+#   Win32_System_LibraryLoader   — GetModuleHandleW for the message-only window class
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Power",
+    "Win32_System_LibraryLoader",
 ] }
 
 # PID liveness check on macOS: kill(pid, 0) via libc.
