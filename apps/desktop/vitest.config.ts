@@ -34,6 +34,10 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'src/**/__tests__/**/*.test.ts'],
     // No Argon2id in these tests — no need for singleFork or long timeout.
     testTimeout: 10_000,
+    // Setup file: polyfills window = globalThis in node env so the idle
+    // controller's window.addEventListener / test's window.dispatchEvent
+    // both target the same globalThis EventTarget (Plan 05-03, LOCK-01).
+    setupFiles: ['src/test-setup.ts'],
     alias: {
       'libsodium-wrappers-sumo': libsodiumCjs,
     },
