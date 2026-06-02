@@ -1,5 +1,10 @@
 // packages/core/src/entries/__tests__/crud.test.ts
 //
+// Extended in Phase 5 (Plan 05-01) with P5-12 assertions:
+//   getVaultSettings fills idleMinutes, lockOnMinimize, clearSeconds defaults on
+//   a pre-Phase-5 vault (settings: { generator }) — the three DEFAULT values must
+//   appear on a vault that never had lock/clipboard fields (VALIDATION seam 6).
+//
 // TEST-04 — Entry model suite (Plan 03-02).
 //
 // Requirements covered:
@@ -22,12 +27,14 @@ import { DEFAULT_RANDOM_OPTIONS, DEFAULT_PASSPHRASE_OPTIONS } from '../../genera
 import {
   addEntry,
   updateEntry,
+  restoreEntry,
   softDeleteEntry,
   purgeEntry,
   listEntries,
   getEntry,
   derivePasswordAge,
   regenerateFromPreset,
+  getVaultSettings,
 } from '../crud';
 import type { UnlockedVault } from '../../vault/vault';
 import { createVault, saveVault, unlockVault } from '../../vault/vault';
@@ -380,6 +387,91 @@ describe('softDeleteEntry (ENTRY-03/ENTRY-04)', () => {
   it('throws EntryNotFoundError for an unknown id', async () => {
     const vault = makeVault();
     expect(() => softDeleteEntry(vault, 'unknown')).toThrow(EntryNotFoundError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// restoreEntry (ENTRY-05) — the inverse of softDeleteEntry
+// ---------------------------------------------------------------------------
+
+describe('restoreEntry (ENTRY-05)', () => {
+  it('un-tombstones a soft-deleted entry (deletedAt becomes null)', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput());
+    softDeleteEntry(vault, entry.id);
+    expect(getEntry(vault, entry.id)!.deletedAt).not.toBeNull();
+
+    const restored = restoreEntry(vault, entry.id);
+    expect(restored.deletedAt).toBeNull();
+    // In-place mutation (P3-02): the stored entry reflects the restore.
+    expect(getEntry(vault, entry.id)!.deletedAt).toBeNull();
+  });
+
+  it('returns the restored entry to the active listEntries set', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput({ title: 'Restore Me' }));
+    softDeleteEntry(vault, entry.id);
+
+    // While tombstoned, it is excluded from the default active list.
+    expect(listEntries(vault).length).toBe(0);
+    expect(listEntries(vault, true).length).toBe(1);
+
+    restoreEntry(vault, entry.id);
+
+    // After restore, it is back in the active set.
+    const active = listEntries(vault);
+    expect(active.length).toBe(1);
+    expect(active[0]!.id).toBe(entry.id);
+    expect(active[0]!.title).toBe('Restore Me');
+  });
+
+  it('updates modifiedAt on restore', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput());
+    softDeleteEntry(vault, entry.id);
+    const afterDeleteModifiedAt = getEntry(vault, entry.id)!.modifiedAt;
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const restored = restoreEntry(vault, entry.id);
+
+    expect(new Date(restored.modifiedAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(afterDeleteModifiedAt).getTime(),
+    );
+  });
+
+  it('throws EntryNotFoundError for an unknown id', () => {
+    const vault = makeVault();
+    expect(() => restoreEntry(vault, 'nonexistent-id')).toThrow(EntryNotFoundError);
+  });
+
+  it('throws EntryNotFoundError for an entry that is NOT soft-deleted (active)', async () => {
+    // An already-active entry is not a tombstone; restore is a no-op target → fail closed.
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput());
+    expect(getEntry(vault, entry.id)!.deletedAt).toBeNull();
+    expect(() => restoreEntry(vault, entry.id)).toThrow(EntryNotFoundError);
+  });
+
+  it('updateEntry STILL refuses a soft-deleted entry (semantics unchanged)', async () => {
+    // Regression guard: restoreEntry is the ONLY un-tombstone path; updateEntry
+    // must continue to throw on tombstones (its find uses deletedAt === null).
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput());
+    softDeleteEntry(vault, entry.id);
+    expect(() => updateEntry(vault, entry.id, { deletedAt: null })).toThrow(EntryNotFoundError);
+    // And restoreEntry is the correct tool for the job.
+    expect(restoreEntry(vault, entry.id).deletedAt).toBeNull();
+  });
+
+  it('soft-delete → restore round-trip leaves the entry editable again', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput({ title: 'RoundTrip' }));
+    softDeleteEntry(vault, entry.id);
+    restoreEntry(vault, entry.id);
+
+    // After restore, updateEntry works again (it found an active entry).
+    const updated = updateEntry(vault, entry.id, { title: 'Edited After Restore' });
+    expect(updated.title).toBe('Edited After Restore');
   });
 });
 
@@ -744,6 +836,100 @@ describe('Encrypted save/load round-trip (ENTRY-01/ENTRY-02/ENTRY-03)', () => {
     // Unused but needed to avoid kdfParams unused variable warning
     void kdfParams;
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// P5-12: getVaultSettings fills lock/clipboard defaults on a pre-Phase-5 vault
+// (VALIDATION seam 6 — AUTH-10/11 + LOCK-01 foundation)
+// ---------------------------------------------------------------------------
+
+describe('getVaultSettings — P5-12 default-fill (P5-12 / VALIDATION seam 6)', () => {
+  it('fills idleMinutes=5, lockOnMinimize=false on a vault with no lock field', () => {
+    // A pre-Phase-5 vault: settings only has { generator }, no lock/clipboard.
+    const vault = makeVault();
+    const settings = getVaultSettings(vault);
+    expect(settings.lock).toBeDefined();
+    expect(settings.lock!.idleMinutes).toBe(5);
+    expect(settings.lock!.lockOnMinimize).toBe(false);
+  });
+
+  it('fills clearSeconds=25 on a vault with no clipboard field', () => {
+    const vault = makeVault();
+    const settings = getVaultSettings(vault);
+    expect(settings.clipboard).toBeDefined();
+    expect(settings.clipboard!.clearSeconds).toBe(25);
+  });
+
+  it('does NOT overwrite an existing lock.idleMinutes when already set (idempotent)', () => {
+    // Simulate a vault that already has custom lock settings stored.
+    const inner: InnerDoc = {
+      schemaVersion: 1,
+      entries: [],
+      settings: {
+        generator: DEFAULT_RANDOM_OPTIONS,
+        lock: { idleMinutes: 'never', lockOnMinimize: true },
+      },
+    };
+    const vaultWithLock: UnlockedVault = {
+      doc: {
+        format: 'cryptiq-vault',
+        version: 1,
+        wrappedKeys: {
+          master: {
+            ciphertext: '',
+            nonce: '',
+            kdf: { algorithm: 2, opsLimit: 3, memLimit: 268_435_456, salt: '' },
+          },
+        },
+        data: { ciphertext: '', nonce: '' },
+        meta: { createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString() },
+      },
+      entries: inner,
+    };
+    const settings = getVaultSettings(vaultWithLock);
+    // Must preserve the user value, not reset to default 5.
+    expect(settings.lock!.idleMinutes).toBe('never');
+    expect(settings.lock!.lockOnMinimize).toBe(true);
+  });
+
+  it('does NOT overwrite an existing clipboard.clearSeconds when already set (idempotent)', () => {
+    const inner: InnerDoc = {
+      schemaVersion: 1,
+      entries: [],
+      settings: {
+        generator: DEFAULT_RANDOM_OPTIONS,
+        clipboard: { clearSeconds: 60 },
+      },
+    };
+    const vaultWithClip: UnlockedVault = {
+      doc: {
+        format: 'cryptiq-vault',
+        version: 1,
+        wrappedKeys: {
+          master: {
+            ciphertext: '',
+            nonce: '',
+            kdf: { algorithm: 2, opsLimit: 3, memLimit: 268_435_456, salt: '' },
+          },
+        },
+        data: { ciphertext: '', nonce: '' },
+        meta: { createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString() },
+      },
+      entries: inner,
+    };
+    const settings = getVaultSettings(vaultWithClip);
+    expect(settings.clipboard!.clearSeconds).toBe(60);
+  });
+
+  it('getVaultSettings works before any CRUD call (P5-12 Pitfall 7 — no addEntry needed)', async () => {
+    // On a fresh-unlocked vault, before any mutation, settings must be fully defaulted.
+    const vault = makeVault();
+    // No addEntry or updateEntry — direct call to getVaultSettings.
+    const settings = getVaultSettings(vault);
+    expect(settings.lock!.idleMinutes).toBe(5);
+    expect(settings.lock!.lockOnMinimize).toBe(false);
+    expect(settings.clipboard!.clearSeconds).toBe(25);
+  });
 });
 
 // ---------------------------------------------------------------------------

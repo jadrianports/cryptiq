@@ -1,0 +1,6 @@
+name,url,username,password,note
+Valid Entry,https://valid.example.com,alice,dummy-password-valid,OK note
+,https://no-title.example.com,bob,dummy-password-notitle,Missing name/title field
+
+Extra Columns Site,https://extra.example.com,carol,dummy-password-extra,normal note,unexpected-extra-col
+Another Valid,https://another-valid.example.com,dave,dummy-password-also-valid,Fine

@@ -1,0 +1,4 @@
+name,url,username,password,note
+Example Site,https://example.com,alice@example.com,dummy-password-1,Example note
+Another Login,https://another.example.org,bob,dummy-password-2,
+Empty Note Site,https://site.test,carol,dummy-password-3,

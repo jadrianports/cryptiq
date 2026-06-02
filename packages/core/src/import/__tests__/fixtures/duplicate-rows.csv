@@ -1,0 +1,4 @@
+name,url,username,password,note
+Example Site,https://example.com,alice@example.com,dummy-password-dup1,First entry
+Example Site Duplicate,https://example.com,alice@example.com,dummy-password-dup2,Second entry - same url+username
+New Unique Site,https://unique.example.com,bob,dummy-password-unique,No duplicate

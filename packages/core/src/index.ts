@@ -32,3 +32,15 @@ export * from './generator/passphrase';
 export * from './generator/entropy';
 // Storage — pure lock-decision seam (consumed by TauriVaultStorageAdapter)
 export * from './storage/lockLogic';
+
+// Phase 6 public surface:
+// Import pipeline — types, mappers, detection, mapping, dedup, normalization
+export * from './import/types';
+export * from './import/mappers';
+export * from './import/detect';
+export * from './import/map';
+export * from './import/dedup';
+export * from './import/normalize';
+// Audit — types and orchestration verb
+export * from './audit/types';
+export * from './audit/audit';

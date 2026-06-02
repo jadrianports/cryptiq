@@ -1,0 +1,3 @@
+url,username,password,httpRealm,formActionOrigin,guid,timeCreated
+https://example.com,alice@example.com,dummy-password-ff1,,https://example.com,{abc123},1700000000000
+https://another.example.org,bob,dummy-password-ff2,,https://another.example.org,{def456},1700000001000

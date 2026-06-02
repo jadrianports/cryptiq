@@ -135,11 +135,33 @@ export default [
     },
   },
 
-  // === packages/core tests can use console (relaxation) ===
+  // === packages/core tests can use console + read fixtures from disk (relaxation) ===
+  // Tests are exempt from the no-console rule and are also permitted to use
+  // node:fs / node:path to read committed fixture files under __tests__/fixtures/.
+  // This is safe because: (1) tests never run in production, (2) fixture reads are
+  // read-only and never write secrets to disk, (3) VaultStorageAdapter purity applies
+  // to production core, not to the test harness. All other core-purity restrictions
+  // (no @tauri-apps/*, no svelte, no Math.random, no raw libsodium import) still apply.
   {
     files: ['packages/core/**/__tests__/**/*.ts', 'packages/core/**/*.test.ts'],
     rules: {
       'no-console': 'off',
+      // Allow node:fs and node:path in test files for reading committed fixtures.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'svelte', message: 'packages/core is platform-free — Svelte belongs in apps/desktop.' },
+            { name: 'svelte/store', message: 'packages/core is platform-free.' },
+            { name: 'svelte/internal', message: 'packages/core is platform-free.' },
+            // node:fs and node:path are intentionally NOT banned in test files
+          ],
+          patterns: [
+            ...FORBIDDEN_CORE_IMPORT_PATTERNS,
+            ...FORBIDDEN_RAW_SODIUM_PATTERNS,
+          ],
+        },
+      ],
     },
   },
 

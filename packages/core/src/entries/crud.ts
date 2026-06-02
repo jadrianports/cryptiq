@@ -62,8 +62,33 @@ function asInnerDoc(vault: UnlockedVault): InnerDoc {
   if (settings['generator'] === undefined) {
     settings['generator'] = DEFAULT_RANDOM_OPTIONS;
   }
+  // P5-12: additive lock/clipboard defaults — idempotent; never overwrites a user value.
+  if (settings['lock'] === undefined) {
+    settings['lock'] = { idleMinutes: 5, lockOnMinimize: false };
+  }
+  if (settings['clipboard'] === undefined) {
+    settings['clipboard'] = { clearSeconds: 25 };
+  }
+  // Phase 6 (AUDIT-04): additive audit default — idempotent; single upgrade site (P5-12 pattern).
+  if (settings['audit'] === undefined) {
+    settings['audit'] = { staleThresholdDays: 365 };
+  }
 
   return vault.entries as InnerDoc;
+}
+
+/**
+ * Return a guaranteed-defaulted settings object without mutating any entry.
+ *
+ * This is the canonical accessor for lock/clipboard settings in the desktop idle
+ * controller, clipboard clear timer, and Settings UI (RESEARCH Pitfall 7 / Open Q3).
+ * Calling `asInnerDoc()` ensures the P5-12 defaults (`lock`, `clipboard`) are filled
+ * before any CRUD verb has been invoked — safe to call immediately after unlock.
+ *
+ * Pure function — no Tauri/Svelte/node imports (Core purity rule).
+ */
+export function getVaultSettings(vault: UnlockedVault): InnerDoc['settings'] {
+  return asInnerDoc(vault).settings;
 }
 
 /**
@@ -163,6 +188,35 @@ export function updateEntry(vault: UnlockedVault, id: string, update: EntryUpdat
   }
   if (update.deletedAt !== undefined) entry.deletedAt = update.deletedAt;
 
+  return entry;
+}
+
+/**
+ * Restore a soft-deleted entry by clearing its `deletedAt` tombstone (ENTRY-05).
+ *
+ * The inverse of `softDeleteEntry`: it targets ONLY tombstones (`deletedAt !== null`)
+ * — the exact rows the Recently Deleted view shows. This is a SEPARATE verb from
+ * `updateEntry` because `updateEntry` deliberately refuses soft-deleted entries
+ * (it finds by `deletedAt === null`), so it can never un-tombstone a row.
+ *
+ * - Finds the entry by `id` AND `deletedAt !== null` (a tombstone).
+ * - Sets `deletedAt = null` and updates `modifiedAt` to now (matches the
+ *   updateEntry/softDeleteEntry convention of touching modifiedAt on a state change).
+ * - Mutates the entry in place and returns the restored Entry.
+ *
+ * @throws EntryNotFoundError if `id` is not found OR the entry is NOT soft-deleted
+ *         (an already-active entry is not a tombstone — fail closed, the safe choice).
+ */
+export function restoreEntry(vault: UnlockedVault, id: string): Entry {
+  const inner = asInnerDoc(vault);
+  const entry = inner.entries.find((e) => e.id === id && e.deletedAt !== null);
+  if (entry === undefined) {
+    throw new EntryNotFoundError(
+      `Entry not found or is not soft-deleted: ${id}`,
+    );
+  }
+  entry.deletedAt = null;
+  entry.modifiedAt = nowIso();
   return entry;
 }
 

@@ -1,0 +1,7 @@
+name,url,username,password,note
+Formula In Password,https://example.com,user1,=cmd|' /c calc'!A0,Normal note
+Plus Prefix Password,https://plus.example.com,user2,+1234567890,Another note
+Minus Prefix Password,https://minus.example.com,user3,-1+2+3,Note with text
+At Sign Password,https://at.example.com,user4,@SUM(1+2),Note
+Formula In Note,https://notefield.example.com,user5,dummy-normal-pw,=HYPERLINK("http://evil.example.com")
+Tab Prefix,https://tab.example.com,user6,dummy-pw-2,	tabbed note

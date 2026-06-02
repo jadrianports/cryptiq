@@ -87,6 +87,9 @@ export interface Entry {
  * entry-field additions/renames are needed.
  *
  * `settings.generator` stores the vault-level generator defaults (GEN-04).
+ * `settings.lock` stores the auto-lock preferences (P5-12). Optional — absent on
+ * pre-Phase-5 vaults; `asInnerDoc()` fills defaults idempotently.
+ * `settings.clipboard` stores the clipboard auto-clear preference (P5-12). Optional.
  */
 export interface InnerDoc {
   /** Inner schema version. 1 in v1. */
@@ -97,6 +100,38 @@ export interface InnerDoc {
   settings: {
     /** Default generator options for this vault (GEN-04). */
     generator: GeneratorOptions;
+    /**
+     * Auto-lock preferences (P5-12, P5-03/P5-05).
+     * Optional — absent on pre-Phase-5 vaults; `asInnerDoc()` fills:
+     *   `{ idleMinutes: 5, lockOnMinimize: false }`.
+     */
+    lock?: {
+      /** Idle minutes before auto-lock. `'never'` disables idle timeout. */
+      idleMinutes: number | 'never';
+      /** Lock when the Cryptiq window loses focus / is minimized. Default: false. */
+      lockOnMinimize: boolean;
+    };
+    /**
+     * Clipboard auto-clear preferences (P5-12, P5-08).
+     * Optional — absent on pre-Phase-5 vaults; `asInnerDoc()` fills:
+     *   `{ clearSeconds: 25 }`.
+     */
+    clipboard?: {
+      /** Seconds after which a copied password is automatically cleared. Default: 25. */
+      clearSeconds: number;
+    };
+    /**
+     * Health-audit preferences (Phase 6, AUDIT-04).
+     * Optional — absent on pre-Phase-6 vaults; `asInnerDoc()` fills:
+     *   `{ staleThresholdDays: 365 }`.
+     */
+    audit?: {
+      /**
+       * Days before a password is considered stale. Default: 365.
+       * Configurable in Settings (AUDIT-04). Stored in encrypted InnerDoc.settings.
+       */
+      staleThresholdDays: number;
+    };
   };
 }
 

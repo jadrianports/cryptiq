@@ -1,0 +1,4 @@
+folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp
+,,login,Example Site,BW notes,,0,https://example.com,alice@example.com,dummy-password-bw1,
+Work,1,login,Work Portal,Some notes,,0,https://work.example.org,bob@work.example,dummy-password-bw2,
+,,login,No URL Entry,,,0,,carol,dummy-password-bw3,

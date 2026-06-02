@@ -290,9 +290,11 @@ describe('generatePassphrase (GEN-02/GEN-03)', () => {
   const wordSet = new Set(effWords as string[]);
 
   it('returns the requested number of words joined by separator', async () => {
-    const opts: PassphraseOptions = { mode: 'passphrase', words: 5, separator: '-', capitalize: false, appendDigit: false };
+    // '_' separator (see the wordSet test below): splitting on '-' would over-count
+    // when a hyphenated EFF word (drop-down, felt-tip, t-shirt, yo-yo) is chosen.
+    const opts: PassphraseOptions = { mode: 'passphrase', words: 5, separator: '_', capitalize: false, appendDigit: false };
     const { phrase } = await generatePassphrase(opts);
-    const parts = phrase.split('-');
+    const parts = phrase.split('_');
     expect(parts.length).toBe(5);
   });
 
@@ -326,10 +328,15 @@ describe('generatePassphrase (GEN-02/GEN-03)', () => {
   });
 
   it('capitalizes first letter of each word when capitalize=true', async () => {
-    const opts: PassphraseOptions = { mode: 'passphrase', words: 4, separator: '-', capitalize: true, appendDigit: false };
+    // Use '_' separator + split on '_' (same reasoning as the wordSet test above):
+    // 4 EFF words contain '-' (drop-down, felt-tip, t-shirt, yo-yo). Splitting a
+    // capitalized phrase on '-' would fragment e.g. "T-shirt" into ["T","shirt"] and
+    // falsely fail the first-letter check on "shirt". '_' never appears in an EFF word,
+    // so each split part is a whole (possibly hyphenated) capitalized word.
+    const opts: PassphraseOptions = { mode: 'passphrase', words: 4, separator: '_', capitalize: true, appendDigit: false };
     for (let run = 0; run < 20; run++) {
       const { phrase } = await generatePassphrase(opts);
-      const words = phrase.split('-');
+      const words = phrase.split('_');
       for (const word of words) {
         expect(word.charAt(0)).toBe(word.charAt(0).toUpperCase());
         // The rest should be lowercase (original word body)
@@ -350,7 +357,9 @@ describe('generatePassphrase (GEN-02/GEN-03)', () => {
   });
 
   it('appends a single decimal digit (0-9) when appendDigit=true', async () => {
-    const opts: PassphraseOptions = { mode: 'passphrase', words: 3, separator: '-', capitalize: false, appendDigit: true };
+    // '_' separator (see the wordSet test above): splitting on '-' would over-count
+    // when a hyphenated EFF word (drop-down, felt-tip, t-shirt, yo-yo) is chosen.
+    const opts: PassphraseOptions = { mode: 'passphrase', words: 3, separator: '_', capitalize: false, appendDigit: true };
     for (let run = 0; run < 30; run++) {
       const { phrase } = await generatePassphrase(opts);
       // Last char should be a digit 0-9
@@ -358,7 +367,7 @@ describe('generatePassphrase (GEN-02/GEN-03)', () => {
       expect('0123456789').toContain(lastChar);
       // The phrase without the digit should split into exactly 3 words
       const withoutDigit = phrase.slice(0, -1);
-      expect(withoutDigit.split('-').length).toBe(3);
+      expect(withoutDigit.split('_').length).toBe(3);
     }
   });
 
