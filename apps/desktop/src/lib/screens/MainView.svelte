@@ -35,6 +35,7 @@
   import Sidebar from '../components/Sidebar.svelte';
   import EntryList from '../components/EntryList.svelte';
   import EntryDetail from '../components/EntryDetail.svelte';
+  import RecentlyDeletedList from './RecentlyDeletedList.svelte';
 
   /**
    * Helper to extract the typed Entry array from the vault's opaque `entries` field.
@@ -234,7 +235,14 @@
     </div>
 
     <!-- Entry list or empty/no-results states -->
-    {#if hasNoEntriesAtAll}
+    {#if ui.listFilter === 'recently-deleted'}
+      <!--
+        Recently Deleted branch (ENTRY-05, P5-11): RecentlyDeletedList owns its own
+        empty state and tombstone rows. The active-list empty/no-results states must
+        NOT show for tombstones — RecentlyDeletedList handles that internally.
+      -->
+      <RecentlyDeletedList />
+    {:else if hasNoEntriesAtAll}
       <!-- Empty vault state (UI-11) -->
       <div class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
         <svg
@@ -281,7 +289,37 @@
 
   <!-- ── Column 3: Detail pane (remainder) ───────────────────────────────── -->
   <div class="flex flex-1 flex-col overflow-hidden bg-cryptiq-surface">
-    {#if ui.selectedEntryId !== null}
+    {#if ui.listFilter === 'recently-deleted'}
+      <!--
+        Recently Deleted detail pane (UI-SPEC Surface 5, T-5-RD-READONLY mitigated).
+
+        V1 design choice: tombstone rows carry their own Restore/Purge buttons inline
+        (RecentlyDeletedList renders them per-row). The detail pane shows a neutral
+        placeholder explaining that the user must Restore before making changes.
+        This is the simpler approach explicitly sanctioned by UI-SPEC Surface 5 and the
+        plan architecture note — it avoids touching EntryDetail.svelte (Plan 04 scope).
+      -->
+      <div class="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center">
+        <svg
+          class="size-10 text-cryptiq-fg-subtle"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M3 6h18" />
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+        </svg>
+        <p class="text-body font-medium text-cryptiq-fg">Recently Deleted</p>
+        <p class="text-meta text-cryptiq-fg-muted">
+          This entry is in Recently Deleted. Restore it to make changes.
+        </p>
+      </div>
+    {:else if ui.selectedEntryId !== null}
       <!--
         Detail pane — EntryDetail is the canonical reference component (04-05).
         This plan wires the selection; the full CRUD wiring is completed in 04-05.

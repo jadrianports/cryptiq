@@ -27,7 +27,7 @@
 -->
 <script lang="ts">
   import { vaultSession } from '../state/vault.svelte';
-  import { go } from '../state/view.svelte';
+  import { go, lockState } from '../state/view.svelte';
   import { loadConfig } from '../config/config-adapter';
   import { mapUnlockError } from '../util/errors';
   import { TauriVaultStorageAdapter } from '../adapters/TauriVaultStorageAdapter';
@@ -166,6 +166,18 @@
         </p>
       {/if}
     </div>
+
+    <!-- P5-06 / LOCK-01: Auto-lock inactivity notice (UI-SPEC Surface 2).
+         Shown only when the vault was locked due to idle timeout — plain info,
+         not a danger/error panel. No countdown, no animation. -->
+    {#if lockState.reason === 'idle'}
+      <div
+        class="mb-5 rounded-cryptiq border border-cryptiq-border bg-cryptiq-surface-2 px-4 py-3 text-body text-cryptiq-fg-subtle"
+        role="status"
+      >
+        Your vault was locked due to inactivity.
+      </div>
+    {/if}
 
     <!-- Error message (generic for auth failures, distinct for operational) -->
     {#if error}

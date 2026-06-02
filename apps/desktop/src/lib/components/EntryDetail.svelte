@@ -29,12 +29,16 @@
   import VisualIdentity from './VisualIdentity.svelte';
   import GeneratorSurface from './GeneratorSurface.svelte';
   import PurgeConfirm from './PurgeConfirm.svelte';
+  import ClipboardToast from './ClipboardToast.svelte';
   import { vaultSession } from '../state/vault.svelte';
+  import { clipboardClear, armClipboardClear } from '../state/clipboardGuard.svelte';
   import { ui, pushToast } from '../state/ui.svelte';
   import { debounce } from '../util/debounce';
   import { copyField } from '../util/copyField';
   import { openInBrowser } from '../util/openUrl';
-  import { generateFromOptions, estimateEntropyBits } from '@cryptiq/core';
+  import { invoke } from '@tauri-apps/api/core';
+  import { tick } from 'svelte';
+  import { generateFromOptions, estimateEntropyBits, getVaultSettings } from '@cryptiq/core';
   import type { GeneratorOptions, Entry } from '@cryptiq/core';
 
   /**
@@ -103,6 +107,33 @@
     }
   });
 
+  // ── Jump-to-fix one-shot signals (AUDIT-06 / P6-07) ──────────────────
+  // When HealthView sets ui.openGeneratorFor to this entry's id, auto-open
+  // the inline generator. When ui.openNeedsSiteUpdateFor is set, focus the
+  // needsSiteUpdate toggle. Both signals are cleared immediately after use
+  // (one-shot — EntryDetail is remounted via {#key ui.selectedEntryId} so
+  // this $effect fires once per selection). An id is NOT secret — plain $state.
+  let needsUpdateButtonEl: HTMLButtonElement | null = $state(null);
+
+  $effect(() => {
+    if (entry === null) return;
+    if (ui.openGeneratorFor === entry.id) {
+      ui.openGeneratorFor = null; // consume immediately
+      showGen = true;
+    }
+  });
+
+  $effect(() => {
+    if (entry === null) return;
+    if (ui.openNeedsSiteUpdateFor === entry.id) {
+      ui.openNeedsSiteUpdateFor = null; // consume immediately
+      // Focus the needsSiteUpdate toggle after the DOM has settled.
+      tick().then(() => {
+        needsUpdateButtonEl?.focus();
+      }).catch(() => {});
+    }
+  });
+
   // ── Reveal state (P4-13) ──────────────────────────────────────────────
   let toggledReveal = $state(false);
   let heldReveal = $state(false);
@@ -116,6 +147,16 @@
 
   // ── Purge confirm modal ───────────────────────────────────────────────
   let showPurgeConfirm = $state(false);
+
+  // ── Clipboard auto-clear (P5-08 / LOCK-02/06) ─────────────────────────
+  // The authoritative auto-clear lives in the module-level guard
+  // (state/clipboardGuard.svelte.ts), NOT in this component — so the copied
+  // password's clipboard lifetime survives this component unmounting on
+  // navigation (EntryDetail is remounted via {#key ui.selectedEntryId}, and
+  // navigating to Settings/Generator unmounts it entirely). This component
+  // only ARMS the guard on a password copy and renders the value-free toast
+  // while the guard is active. The value NEVER flows to the guard or toast —
+  // only the duration does (T-5-TOAST invariant).
 
   // ── Auto-save (P4-11, D-TIMING 500ms) ─────────────────────────────────
   // Debounced — chains onto save-mutex + FNV-1a dedup in the adapter.
@@ -181,11 +222,44 @@
     scheduleSave();
   }
 
-  // ── Copy (UI-06, T-04-17: write-only) ─────────────────────────────────
+  // ── Copy (UI-06, T-04-17: write-only; P5-08/09 password path) ─────────
   async function handleCopy(field: string, value: string) {
-    await copyField(value); // writes to clipboard; never reads it
-    copiedField = field;
-    setTimeout(() => (copiedField = copiedField === field ? null : copiedField), 1500);
+    if (field === 'password') {
+      // Password path: route through Rust (markers + stash) and arm the
+      // module-level auto-clear guard (NOT a component-owned timer).
+      //
+      // Cancel-on-re-copy: if a clear is already armed, clear the prior clipboard
+      // value (still-ours check in Rust) before the new write below. armClipboardClear
+      // then resets the timer (it cancels the prior guard timer on re-arm).
+      if (clipboardClear.active) {
+        try {
+          await invoke('clipboard_clear_if_ours');
+        } catch {
+          // Clear failure is non-fatal — the new write below replaces the clipboard anyway.
+        }
+      }
+
+      // Write to clipboard via Rust (markers + stash). Value never flows to the guard.
+      await copyField(value, 'password');
+
+      // Arm the authoritative auto-clear with the vault-configured clearSeconds
+      // (never raw settings). getVaultSettings guarantees the default (25s) when
+      // clipboard settings are absent. The guard's setTimeout survives this
+      // component unmounting — the unmount fix (LOCK-02).
+      const vault = vaultSession.vault;
+      const clearSeconds =
+        vault !== null ? (getVaultSettings(vault).clipboard?.clearSeconds ?? 25) : 25;
+      armClipboardClear(clearSeconds);
+
+      // Show the brief checkmark on the copy button (same as other fields).
+      copiedField = field;
+      setTimeout(() => (copiedField = copiedField === field ? null : copiedField), 1500);
+    } else {
+      // Non-password fields: plain writeText path (username, URL, notes) — no toast.
+      await copyField(value, 'other');
+      copiedField = field;
+      setTimeout(() => (copiedField = copiedField === field ? null : copiedField), 1500);
+    }
   }
 
   // ── Generator "Use" callback ───────────────────────────────────────────
@@ -249,6 +323,10 @@
     onConfirm={handlePurgeConfirmed}
     onCancel={() => (showPurgeConfirm = false)}
   />
+{/if}
+
+{#if clipboardClear.active}
+  <ClipboardToast />
 {/if}
 
 {#snippet copyButton(field: string, value: string)}
@@ -463,6 +541,7 @@
         <span class="block text-meta text-cryptiq-fg-subtle">Flag this login to revisit and rotate later.</span>
       </span>
       <button
+        bind:this={needsUpdateButtonEl}
         type="button"
         role="switch"
         aria-checked={needsUpdate}

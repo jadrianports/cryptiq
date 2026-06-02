@@ -46,6 +46,7 @@ import {
   changeMasterPassword,
   addEntry,
   updateEntry,
+  restoreEntry,
   softDeleteEntry,
   purgeEntry,
   regenerateFromPreset,
@@ -54,6 +55,46 @@ import {
 import type { KdfParams } from '@cryptiq/core/internal';
 import type { TauriVaultStorageAdapter } from '../adapters/TauriVaultStorageAdapter';
 import { hashEntriesContent } from '../adapters/contentHash';
+// P5-08 / LOCK-02: tear down the module-level clipboard auto-clear guard timer on
+// lock so it can NOT fire after the vault is unlocked again. Static import is safe:
+// clipboardGuard.svelte does NOT import vault.svelte (it only imports invoke), so
+// there is no circular dependency — unlike idle.svelte (lazy-imported below) which
+// DOES import vaultSession.
+import { cancelClipboardClear } from './clipboardGuard.svelte';
+// P5-07: cancelIdleTimer is imported lazily inside lock() to avoid a circular
+// module dependency at initialization time (idle.svelte imports vaultSession;
+// vault.svelte imports cancelIdleTimer). A module-level lazy ref breaks the
+// cycle: the import() resolves on first lock() call (after both modules are
+// fully initialized), and subsequent calls use the cached ref.
+let _cancelIdleTimer: (() => void) | null = null;
+async function _getCancelIdleTimer(): Promise<() => void> {
+  if (_cancelIdleTimer !== null) return _cancelIdleTimer;
+  const mod = await import('./idle.svelte');
+  _cancelIdleTimer = mod.cancelIdleTimer;
+  return _cancelIdleTimer;
+}
+
+// LOCK-05 / HMR seam: The hot reference for clearing import.meta.hot.data on
+// lock. In production (Vite dev server), this is import.meta.hot (the real
+// Vite HMR module context). In tests, Vitest node environment does not share
+// import.meta across modules, so the test seam below allows injection of a
+// mock hot reference without relying on import.meta identity.
+//
+// `_setHotForTesting` is consumed by hotData.test.ts to wire the HMR mock.
+// It is ONLY available in non-production builds (import.meta.env.PROD check).
+let _hotRef: { data: Record<string, unknown> } | null | undefined =
+  (import.meta.hot as { data: Record<string, unknown> } | undefined) ?? undefined;
+
+/**
+ * @internal TEST SEAM (LOCK-05): Inject a mock HMR hot reference so lock()
+ * can be tested in Vitest node environment where import.meta is not shared
+ * across modules. Call with `null` to clear the override.
+ *
+ * Plan 05-03 ONLY — not exported from the public API.
+ */
+export function _setHotForTesting(hot: { data: Record<string, unknown> } | null): void {
+  _hotRef = hot ?? undefined;
+}
 
 /** The advisory lock warning for cross-host lock scenarios (P3-10). */
 export interface LockWarning {
@@ -99,6 +140,104 @@ class VaultSession {
    */
   get isSaving(): boolean {
     return this.#adapter?.isSaving ?? false;
+  }
+
+  // P5-07 (LOCK-04 / Pitfall 1): critical-op tracking for EVERY key-reading
+  // operation that runs OUTSIDE the adapter save-mutex under the live #vaultKey —
+  // changeMasterPassword, resetMasterPasswordAfterRecovery (each a ~2s Argon2id
+  // derive), AND the saveVault() encryption phase inside save() (a few-ms AEAD seal
+  // that reads the key before the mutex-guarded byte-write). All route through
+  // #withCriticalOp below. Two consumers read this state:
+  //   1. The idle controller's fast isCriticalOpInProgress check avoids even
+  //      STARTING a lock during a derive.
+  //   2. The EVENT-DRIVEN lock() callers (App.svelte sleep/blur/close) bypass the
+  //      idle guard, so lock() awaits #criticalOpDone BEFORE secureWipe — the key
+  //      buffer is never zeroed while a ~2s Argon2id derive is still reading/
+  //      wrapping it (which would seal an all-zero key → corrupt wrappedKeys.master
+  //      → permanent lockout).
+  //
+  // REF-COUNT design (re-entrancy safe): #criticalOpCount tracks how many critical
+  // ops are concurrently in flight. #criticalOpDone is created on the 0→1 edge and
+  // resolved (never rejected) ONLY on the last 1→0 edge, so two overlapping ops
+  // share ONE promise that a deferring lock() awaits until the LAST op finishes.
+  // #criticalOpDone is non-null whenever ANY critical op is in flight, and null
+  // when none are. #resolveCriticalOp holds the resolver for the shared promise.
+  #criticalOpCount = 0;
+  #criticalOpDone: Promise<void> | null = null;
+  #resolveCriticalOp: (() => void) | null = null;
+
+  /**
+   * True while ANY key-reading critical op (changeMasterPassword,
+   * resetMasterPasswordAfterRecovery, the save() encryption phase, or any future
+   * op routed through #withCriticalOp) is in flight (P5-07). Count-based: true iff
+   * the in-flight count is > 0. Phase-5 LOCK-04 reads isCriticalOpInProgress
+   * alongside isSaving to defer auto-lock.
+   */
+  get isCriticalOpInProgress(): boolean {
+    return this.#criticalOpCount > 0;
+  }
+
+  /**
+   * Run `fn` as a tracked critical op (P5-07 / LOCK-04 / Pitfall 1).
+   *
+   * Guarantees, for the duration of `fn`:
+   *   - isCriticalOpInProgress === true (count > 0).
+   *   - #criticalOpDone is a non-null promise that lock() can await before
+   *     secureWipe so the live #vaultKey is never zeroed mid-derive.
+   *
+   * Re-entrancy safe: the shared #criticalOpDone is created on the 0→1 transition
+   * and resolved on the last 1→0 transition only. Overlapping ops therefore share
+   * ONE promise that resolves when the LAST in-flight op completes — a lock()
+   * awaiting it can never proceed to wipe while any critical op is still running.
+   *
+   * The promise ALWAYS resolves (never rejects) so a rejecting `fn` (e.g. a failed
+   * change-master) can never block lock() — `fn`'s own rejection still propagates
+   * to its caller via the returned promise.
+   */
+  async #withCriticalOp<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.#criticalOpCount === 0) {
+      this.#criticalOpDone = new Promise<void>((resolve) => {
+        this.#resolveCriticalOp = resolve;
+      });
+    }
+    this.#criticalOpCount += 1;
+    try {
+      return await fn();
+    } finally {
+      this.#criticalOpCount -= 1;
+      if (this.#criticalOpCount === 0) {
+        const resolve = this.#resolveCriticalOp;
+        this.#criticalOpDone = null;
+        this.#resolveCriticalOp = null;
+        resolve?.();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public critical-op wrapper (Fix-forward: import-auto-lock regression)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Run `fn` as a tracked critical op, exposed for callers outside VaultSession
+   * (e.g. the ImportView commit loop) that need the LOCK-04 / Pitfall-1 protections
+   * without owning the private #withCriticalOp method directly.
+   *
+   * Guarantees (inherited from #withCriticalOp):
+   *   - isCriticalOpInProgress === true for the entire duration of `fn`.
+   *   - The idle controller defers its lock check while this is in flight
+   *     (SECURITY_INVARIANT 1 / LOCK-04).
+   *   - lock() awaits #criticalOpDone before secureWipe, so the live #vaultKey
+   *     is NEVER zeroed mid-operation (Pitfall-1 backstop).
+   *   - try/finally is enforced INTERNALLY — the counter can NEVER leak even if
+   *     `fn` throws (SECURITY_INVARIANT 5).
+   *
+   * @param fn  The async work to run as a critical op.
+   * @returns   The resolved value of `fn`.
+   * @throws    Re-throws any rejection from `fn`.
+   */
+  async runCriticalOp<T>(fn: () => Promise<T>): Promise<T> {
+    return this.#withCriticalOp(fn);
   }
 
   // ---------------------------------------------------------------------------
@@ -219,39 +358,126 @@ class VaultSession {
   // ---------------------------------------------------------------------------
 
   /**
-   * Lock the session: await any in-flight save (Pitfall 4), zero the vault key
-   * buffer in place (SEC-09), drop all references, and release the advisory lock.
+   * Lock the session: cancel idle timer, clear pending clipboard, await any
+   * in-flight save (Pitfall 4), zero the vault key buffer in place (SEC-09),
+   * drop all references, release the advisory lock, and clear HMR data in dev.
    *
    * Idempotent: locking an already-locked session is a no-op.
    *
    * PITFALL 4 DEFENSE: `await adapter.awaitSaveMutex()` BEFORE zeroing #vaultKey
    * to guarantee that no concurrent save() is using the key when we wipe it.
+   *
+   * PITFALL 1 DEFENSE (P5-07 backstop): `await #criticalOpDone` BEFORE zeroing
+   * #vaultKey to guarantee that no in-flight critical op (any key-reading op routed
+   * through #withCriticalOp — changeMasterPassword AND resetMasterPasswordAfterRecovery,
+   * each a ~2s Argon2id derive, AND the save() saveVault encryption phase, a few-ms
+   * AEAD seal that runs outside the adapter save-mutex) is still reading/wrapping the
+   * key when we wipe it. The count-based #criticalOpDone
+   * stays non-null until the LAST in-flight critical op finishes, so this single
+   * await guards EVERY such op at one choke point — including the event-driven
+   * App.svelte handlers (sleep/blur/close) that bypass the idle controller's
+   * fast guard.
+   *
+   * NOTE: lock() does NOT call go('unlock') — the caller (idle controller,
+   * App.svelte listeners) owns the view transition (separation of concerns).
+   *
+   * ORDERING (P5-07):
+   *   1. Synchronously clear all references (isUnlocked → false immediately).
+   *   2. Cancel idle timer (lazy import — resolves after module init).
+   *   3. Clear pending clipboard (non-fatal invoke, before key zero).
+   *   4. await save-mutex (Pitfall 4 ordering — BEFORE secureWipe).
+   *   4b. await in-flight critical op (Pitfall 1 backstop — BEFORE secureWipe).
+   *   5. secureWipe the key (SEC-09).
+   *   6. Clear HMR data in dev (LOCK-05).
+   *   7. Release advisory lock (P3-08).
    */
   async lock(): Promise<void> {
     const adapter = this.#adapter;
     const vaultPath = this.#vaultPath;
     const key = this.#vaultKey;
+    // Capture the in-flight critical-op promise BEFORE we clear references in
+    // step 1. We await it in step 4b (after the save-mutex, before secureWipe).
+    const criticalOpDone = this.#criticalOpDone;
 
-    // Clear all references FIRST so the session is visually locked immediately.
+    // Step 1: Clear all references FIRST so the session is visually locked
+    // immediately (isUnlocked → false before any await). This is the
+    // synchronous half of lock() — callers observing isUnlocked right after
+    // calling lock() (without awaiting) see false immediately.
     this.#vault = null;
     this.#vaultKey = null;
     this.#adapter = null;
     this.#vaultPath = null;
     this.#lockWarning = null;
 
-    // Pitfall 4: wait for any in-flight save to finish before zeroing the key.
+    // Step 2 (P5-07 / LOCK-01): Cancel the idle timer so it doesn't
+    // double-fire after lock() is called from a non-idle path (sleep/close/
+    // explicit user lock). Lazy import via cached ref breaks the vault ↔ idle
+    // circular dependency at initialization time.
+    const cancelIdleTimer = await _getCancelIdleTimer();
+    cancelIdleTimer();
+
+    // Step 3 (LOCK-02/03): Tear down the module-level clipboard auto-clear guard
+    // timer FIRST so its authoritative setTimeout can NOT fire after this lock (and
+    // after a possible re-unlock). cancelClipboardClear does NOT itself invoke the
+    // Rust clear — we do that immediately below, which is the real clipboard wipe.
+    cancelClipboardClear();
+
+    // Step 3b (LOCK-03): Clear any pending clipboard password before zeroing
+    // the key. Non-fatal: the Rust command no-ops if nothing is stashed.
+    try {
+      await invoke('clipboard_clear_if_ours');
+    } catch {
+      // Non-fatal: clipboard state missing or Tauri command unavailable (e.g.
+      // in unit tests where invoke is mocked to no-op). Continue locking.
+    }
+
+    // Step 4 (Pitfall 4): Wait for any in-flight save to finish BEFORE zeroing
+    // the key. This ordering is locked — MUST NOT move secureWipe before this.
     if (adapter !== null) {
       await adapter.awaitSaveMutex();
     }
 
-    // Zero the key buffer (SEC-09). secureWipe calls sodium.memzero — the desktop layer
-    // never touches raw libsodium. Best-effort defense (JS GC may have copied bytes).
+    // Step 4b (P5-07 / Pitfall 1 backstop): Wait for any in-flight critical op
+    // (changeMasterPassword OR resetMasterPasswordAfterRecovery — each a ~2s
+    // Argon2id derive — OR the save() encryption phase, all routed through
+    // #withCriticalOp) to finish BEFORE zeroing the key. Without this, an
+    // event-driven lock() (App.svelte sleep/blur/close) could secureWipe #vaultKey
+    // while the derive is still reading/wrapping it (sealing an all-zero key →
+    // corrupt wrappedKeys.master → permanent lockout) or while saveVault's AEAD seal
+    // is still reading it (a torn read → corrupt data-blob ciphertext that may not
+    // decrypt). The count-based #criticalOpDone always resolves (never
+    // rejects) when the LAST in-flight op finishes, but we wrap in try/catch as a
+    // belt-and-suspenders so a rejecting/aborted op can NEVER block locking — a
+    // failed critical op must still let the vault lock and wipe its key.
+    if (criticalOpDone !== null) {
+      try {
+        await criticalOpDone;
+      } catch {
+        // A rejected critical op must not block the lock — proceed to secureWipe.
+      }
+    }
+
+    // Step 5 (SEC-09): Zero the key buffer. secureWipe calls sodium.memzero —
+    // the desktop layer never touches raw libsodium. Best-effort defense
+    // (JS GC may have already copied bytes).
     if (key !== null) {
       await secureWipe(key);
     }
 
-    // Release the advisory lock (P3-08). Fire-and-forget any error — if the lock
-    // file is already gone (e.g. OS cleaned it), that is acceptable.
+    // Step 6 (LOCK-05 / Pitfall 4): Clear HMR module data in dev so a
+    // hot-reload does not re-surface the just-zeroed key via
+    // import.meta.hot.data. The guard prevents the production crash where
+    // import.meta.hot is undefined.
+    //
+    // Uses _hotRef (seam-injectable for tests) with fallback to import.meta.hot
+    // (the real Vite HMR context in production dev-server mode).
+    const hot = _hotRef ?? (import.meta.hot as { data: Record<string, unknown> } | undefined);
+    if (hot) {
+      hot.data = {};
+    }
+
+    // Step 7 (P3-08): Release the advisory lock. Fire-and-forget any error —
+    // if the lock file is already gone (e.g. OS cleaned it), that is acceptable.
     if (vaultPath !== null) {
       try {
         await invoke('vault_lock_release', { vaultPath });
@@ -284,7 +510,19 @@ class VaultSession {
     }
 
     // saveVault re-encrypts the entries blob under the vault key with a FRESH nonce (SEC-04).
-    const bytes = await saveVault(vault, key);
+    // P5-07 (LOCK-04 / Pitfall 1): the encryption reads the LIVE #vaultKey inside
+    // crypto_aead_xchacha20poly1305_ietf_encrypt (saveVault → encryptInner → sealData),
+    // and runs OUTSIDE the adapter's save-mutex (the mutex wraps ONLY the vault_write_atomic
+    // byte-write inside adapter.save() below). Without this guard, an event-driven lock()
+    // (App.svelte sleep/blur/close) firing during the encryption phase would secureWipe
+    // #vaultKey mid-encrypt — a torn read sealing a partially-zeroed key → corrupt data-blob
+    // ciphertext that may not decrypt. Route ONLY the key-reading encryption through
+    // #withCriticalOp so lock() defers its secureWipe until the encryption completes (the
+    // adapter.save() write below stays under the save-mutex, which lock() already awaits via
+    // awaitSaveMutex()). #withCriticalOp is ref-counted, so overlapping saves share the
+    // promise; save() never calls lock() and lock() never calls save(), so there is no
+    // deadlock/recursion.
+    const bytes = await this.#withCriticalOp(() => saveVault(vault, key));
 
     // Compute the content hash for P3-11 dedup AFTER saveVault (which may have mutated
     // vault.doc.data and vault.doc.meta.modifiedAt). The entries object itself is unchanged
@@ -318,6 +556,20 @@ class VaultSession {
   updateEntry(id: string, update: EntryUpdate): import('@cryptiq/core').Entry {
     const vault = this._requireVault();
     const entry = updateEntry(vault, id, update);
+    this.#vault = { ...vault };
+    return entry;
+  }
+
+  /**
+   * Restore a soft-deleted entry (ENTRY-05). Clears the tombstone via the core
+   * `restoreEntry` verb, then reassigns #vault for $state.raw reactivity (P3-02).
+   * Distinct from updateEntry because updateEntry refuses tombstones by design.
+   *
+   * @throws EntryNotFoundError if `id` is unknown or the entry is not soft-deleted.
+   */
+  restoreEntry(id: string): import('@cryptiq/core').Entry {
+    const vault = this._requireVault();
+    const entry = restoreEntry(vault, id);
     this.#vault = { ...vault };
     return entry;
   }
@@ -366,7 +618,15 @@ class VaultSession {
     if (key === null) {
       throw new Error('VaultSession.changeMasterPassword: session is locked.');
     }
-    await changeMasterPassword(vault, key, { currentPassword, newPassword });
+    // P5-07 (LOCK-04 / Pitfall 1): run the ~2s Argon2id derive as a tracked
+    // critical op so (1) the idle controller defers auto-lock while it runs and
+    // (2) the event-driven lock() callers (App.svelte sleep/blur/close), which
+    // bypass the idle guard, defer their secureWipe until #criticalOpDone
+    // resolves — the live #vaultKey is NEVER zeroed mid-derive (which would seal
+    // an all-zero key → corrupt wrappedKeys.master → permanent lockout).
+    await this.#withCriticalOp(() =>
+      changeMasterPassword(vault, key, { currentPassword, newPassword }),
+    );
   }
 
   /**
@@ -387,19 +647,116 @@ class VaultSession {
     if (key === null) {
       throw new Error('VaultSession.resetMasterPasswordAfterRecovery: session is locked.');
     }
-    // Use the internal crypto path to set a new master wrap without needing to verify
-    // the old password (AUTH-08: after recovery unlock, old master password is unknown).
-    // Import the internal crypto verbs from @cryptiq/core/internal (internal.ts exports them).
-    const { calibrateArgon2id, deriveKey, wrapKey } = await import('@cryptiq/core/internal');
-    const { params } = await calibrateArgon2id();
-    const derivedKey = await deriveKey(newPassword, params);
-    try {
-      const newWrap = await wrapKey(key, derivedKey, params);
-      vault.doc.wrappedKeys.master = newWrap;
-      vault.doc.meta.modifiedAt = new Date().toISOString();
-    } finally {
-      await secureWipe(derivedKey);
-    }
+    // P5-07 (LOCK-04 / Pitfall 1): like changeMasterPassword, this performs a
+    // long, key-reading derive — wrapKey(key, …) seals the LIVE #vaultKey under
+    // the newly-derived key inside crypto_aead_xchacha20poly1305_ietf_encrypt.
+    // If lock() zeroed #vaultKey mid-derive, wrapKey would seal an all-zero key
+    // and the subsequent save() (UnlockScreen.handleSetNewMaster) would persist a
+    // corrupt wrappedKeys.master → permanent lockout. Route the ENTIRE derive+wrap
+    // through #withCriticalOp so lock() defers its secureWipe of #vaultKey until
+    // this completes. (The derivedKey wiped in the inner finally is a DISTINCT
+    // buffer from the live #vaultKey, which must NOT be wiped while this runs.)
+    await this.#withCriticalOp(async () => {
+      // Use the internal crypto path to set a new master wrap without needing to verify
+      // the old password (AUTH-08: after recovery unlock, old master password is unknown).
+      // Import the internal crypto verbs from @cryptiq/core/internal (internal.ts exports them).
+      const { calibrateArgon2id, deriveKey, wrapKey } = await import('@cryptiq/core/internal');
+      const { params } = await calibrateArgon2id();
+      const derivedKey = await deriveKey(newPassword, params);
+      try {
+        const newWrap = await wrapKey(key, derivedKey, params);
+        vault.doc.wrappedKeys.master = newWrap;
+        vault.doc.meta.modifiedAt = new Date().toISOString();
+      } finally {
+        await secureWipe(derivedKey);
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Export support (Phase 6 — EXPORT-01 / P6-09 / P6-10)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Phase 6 (P6-10): the filesystem path to the current vault file, or null when
+   * the session is locked. Exposed so SettingsShell can pass it to the
+   * vault_export_copy Rust command without touching the private adapter reference.
+   *
+   * Non-secret: this is a filesystem path, not a key or plaintext data.
+   */
+  get vaultPath(): string | null {
+    return this.#vaultPath;
+  }
+
+  /**
+   * Phase 6 (P6-10 / Pitfall 3 defense): await the adapter's save-mutex so the
+   * export pre-flight can guarantee that any in-flight save has completed BEFORE
+   * the vault bytes are copied to the user-chosen destination.
+   *
+   * Why: auto-save-on-blur (P4-11) may be writing the vault when the user clicks
+   * Export. Flushing the mutex guarantees the exported file includes the latest edits
+   * rather than an earlier committed state. The Rust command only copies the canonical
+   * `.cryptiq` (never `.cryptiq.tmp`), so even a racing copy lands on a valid vault —
+   * but the mutex flush eliminates the ambiguity entirely.
+   *
+   * No-op (resolves immediately) when the session is locked or the adapter is null.
+   */
+  async awaitSaveMutex(): Promise<void> {
+    await this.#adapter?.awaitSaveMutex();
+  }
+
+  /**
+   * Phase 6 (P6-09 / AUTH-11 / T-06-15): verify the master password by
+   * ALWAYS re-deriving Argon2id from `passwordBytes` and attempting to unwrap the
+   * master key. Returns `true` if the password is correct, `false` if not.
+   *
+   * Security invariants:
+   *   - ALWAYS re-derives (no cached check) — AUTH-11 / P6-09 always-re-derive contract.
+   *   - The Poly1305 MAC inside `tryUnwrap` IS the correctness proof: a non-null return
+   *     means the password decrypted the master wrap successfully (MAC-authenticated).
+   *   - NEVER compares against the live `#vaultKey` buffer (no memcmp, no key exposure).
+   *   - Derived key and the throwaway unwrapped key are both wiped in `finally`.
+   *   - `#vaultKey` is never rebound — the session continues using its existing key.
+   *   - Never logs the password (T-06-19).
+   *
+   * Runs inside `#withCriticalOp` so the idle controller defers auto-lock for the
+   * ~1s Argon2id re-derive (same protection as changeMasterPassword).
+   *
+   * Returns `false` (not throws) when the password is wrong or the session is locked.
+   *
+   * @param passwordBytes  UTF-8 encoded password bytes. Caller MUST zero in `finally`.
+   */
+  async verifyMasterPassword(passwordBytes: Uint8Array): Promise<boolean> {
+    const vault = this.#vault;
+    if (vault === null) return false;
+
+    return this.#withCriticalOp(async () => {
+      const { deriveKey, tryUnwrap, secureWipe: wipe, getSodium } = await import('@cryptiq/core/internal');
+      const sodium = await getSodium();
+      const masterWrap = vault.doc.wrappedKeys.master;
+
+      // The stored kdf.salt is a base64 string (per WrappedKey wire format, decision 27).
+      // Convert to Uint8Array before passing to deriveKey (which expects KdfParams.salt: Uint8Array).
+      const kdfParams = {
+        algorithm: 2 as const,
+        opsLimit: masterWrap.kdf.opsLimit,
+        memLimit: masterWrap.kdf.memLimit,
+        salt: sodium.from_base64(masterWrap.kdf.salt, sodium.base64_variants.ORIGINAL),
+      };
+
+      const derivedKey = await deriveKey(passwordBytes, kdfParams);
+      let unwrapped: Uint8Array | null = null;
+      try {
+        unwrapped = await tryUnwrap(masterWrap, derivedKey);
+        return unwrapped !== null;
+      } finally {
+        // Zero BOTH throwaway buffers — the live #vaultKey is NEVER touched.
+        await wipe(derivedKey);
+        if (unwrapped !== null) {
+          await wipe(unwrapped);
+        }
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------

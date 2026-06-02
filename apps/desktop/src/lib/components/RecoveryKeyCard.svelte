@@ -7,11 +7,19 @@
     - The "I have saved my recovery key" required checkbox gates the Continue button (AUTH-04).
     - Print button calls window.print() — no server, no upload, no logs.
     - NEVER console.log the recovery key.
+    - Copy routes through clipboard_write_sensitive (LOCK-06 hardening): platform markers +
+      still-ours hash stash + 25s auto-clear countdown toast. The recovery key value NEVER
+      flows to ClipboardToast — only the duration (T-5-TOAST / T-04-17).
 
   Used inside FirstRunWizard.svelte when the user opts into recovery-key generation.
 -->
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { copyField } from '../util/copyField';
+  import ClipboardToast from './ClipboardToast.svelte';
+  import { vaultSession } from '../state/vault.svelte';
+  import { clipboardClear, armClipboardClear } from '../state/clipboardGuard.svelte';
+  import { getVaultSettings } from '@cryptiq/core';
 
   type Props = {
     /** The Crockford Base32 recovery key string (54 chars, returned once from createVault). */
@@ -25,9 +33,39 @@
   let copied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // ── Clipboard auto-clear (LOCK-02/06 hardening) ──────────────────────────
+  // The authoritative auto-clear lives in the module-level guard
+  // (state/clipboardGuard.svelte.ts), NOT in this component — so the copied
+  // recovery key's clipboard lifetime survives this card unmounting when the
+  // first-run wizard advances past the recovery-key step. This component only
+  // ARMS the guard on a copy and renders the value-free toast while the guard
+  // is active. The value NEVER flows to the guard or toast (T-5-TOAST).
+
   async function handleCopy(): Promise<void> {
-    // Write-only clipboard (copyField never reads back — T-04-17).
-    await copyField(recoveryKey);
+    // Cancel-on-re-copy: if a clear is already armed, clear the prior clipboard
+    // value (still-ours check in Rust) before the new write below. armClipboardClear
+    // then resets the timer (it cancels the prior guard timer on re-arm).
+    if (clipboardClear.active) {
+      try {
+        await invoke('clipboard_clear_if_ours');
+      } catch {
+        // Clear failure is non-fatal — the new write below replaces the clipboard anyway.
+      }
+    }
+
+    // Write-only clipboard — routes through Rust (markers + stash).
+    // copyField never reads back (T-04-17); value never flows to the guard.
+    await copyField(recoveryKey, 'password');
+
+    // Arm the authoritative auto-clear with the vault-configured clearSeconds.
+    // Falls back to 25 if the vault is not yet mounted in this context. The
+    // guard's setTimeout survives this card unmounting — the unmount fix (LOCK-02).
+    const vault = vaultSession.vault;
+    const clearSeconds =
+      vault !== null ? (getVaultSettings(vault).clipboard?.clearSeconds ?? 25) : 25;
+    armClipboardClear(clearSeconds);
+
+    // Show the brief checkmark on the copy button.
     copied = true;
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
@@ -39,6 +77,10 @@
     window.print();
   }
 </script>
+
+{#if clipboardClear.active}
+  <ClipboardToast />
+{/if}
 
 <div class="space-y-5">
   <!-- Recovery key display — single-line, truncated; Copy grabs the full value -->
