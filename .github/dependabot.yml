@@ -1,5 +1,5 @@
-# Dependabot — registers the three ecosystems Cryptiq depends on so weekly PRs
-# arrive for outdated GitHub Actions SHAs, npm packages, and Rust crates.
+# Dependabot — registers the three ecosystems Cryptiq depends on (GitHub Actions,
+# npm via pnpm, Rust crates) so weekly PRs arrive for outdated dependencies.
 #
 # SHA-pin maintenance for `.github/workflows/*.yml` is AUTOMATIC: Dependabot detects
 # the existing 40-char @<sha> format after the action ref and preserves it on bumps,
@@ -7,9 +7,18 @@
 # enables this — the format itself triggers the behavior, verified against the official
 # Dependabot configuration reference and dependabot-core source (RESEARCH.md OQ #6).
 #
-# Cryptiq is local-only until v1.5 per project decision 15; this file is committed
-# now so the first push has the config ready, but no PRs will open until the repo
-# goes online.
+# Status: the repo went PUBLIC early on 2026-05-25 (decision 23, superseding decision 15's
+# "local-only until v1.5" plan), so Dependabot is LIVE — expect weekly PRs across all three
+# ecosystems. `groups` (npm) batches dev/prod minor+patch bumps so the open-PR count stays
+# manageable (3 ecosystems x limit 5 would otherwise be up to 15 open PRs); majors still
+# arrive as individual, reviewable PRs.
+#
+# `cooldown` mirrors the pnpm `minimumReleaseAge: 1440` (24h) supply-chain delay (SEC-15) on
+# the Dependabot side: Dependabot has no knowledge of the pnpm-workspace.yaml setting, so
+# without it Dependabot would propose a version the moment it publishes. `default-days: 1`
+# approximates the 24h window (cooldown is days-granular); `@tauri-apps/*` + `@sveltejs/*`
+# are excluded to mirror `minimumReleaseAgeExclude` (fast coordinated releases). cooldown +
+# groups field syntax verified against dependabot-core docs.
 
 version: 2
 updates:
@@ -27,6 +36,28 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Mirror SEC-15's 24h minimumReleaseAge on the Dependabot side (it has no knowledge
+    # of the pnpm-workspace.yaml setting). days-granular; exclude the fast-mover scopes
+    # that minimumReleaseAgeExclude also carves out.
+    cooldown:
+      default-days: 1
+      semver-major-days: 7
+      exclude:
+        - "@tauri-apps/*"
+        - "@sveltejs/*"
+    # Batch minor+patch bumps (prod and dev separately) so routine bumps don't flood the
+    # PR list; majors still get individual, reviewable PRs.
+    groups:
+      prod-minor-patch:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-minor-patch:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Cargo for the Tauri Rust shell.
   - package-ecosystem: cargo
@@ -34,3 +65,7 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Mirror the npm cooldown for Rust crates (no exclude — no fast-mover carve-out needed).
+    cooldown:
+      default-days: 1
+      semver-major-days: 7
