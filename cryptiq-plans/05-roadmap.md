@@ -40,6 +40,14 @@ Small additions that sharpen daily use. None require infrastructure.
   recovery:** an update can ship a broken build; the design must ensure the user can
   recover — at minimum by reinstalling the last-good version from GitHub Releases, ideally
   via the updater's rollback support. Never leave a user with a bricked, non-updatable app.
+- **Plaintext / `.txt` import** — extend the v1 CSV import (Phase 6 / M7) to ingest freeform
+  `.txt` exports. Unlike CSV there is no header row and no delimiter contract, so this needs
+  format sniffing: detect a likely delimiter (tab / comma / `key: value` / `key=value` lines),
+  or offer a "paste a sample and tag the fields" mapping UX, then reuse the existing
+  `import/{detect,map,dedup,normalize}` core pipeline and the column-map UI already shipped in
+  06-02. Keep the same CSV-injection inertness and fresh-UUID/timestamp assignment; it is
+  inherently best-effort, so gate it behind the existing preview-before-commit step. User idea,
+  surfaced mid-Phase-6 (2026-06-03).
 
 ## v2 — bigger pushes, still no mandatory server
 
