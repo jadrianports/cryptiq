@@ -186,10 +186,16 @@
   let showExportConfirm = $state(false);
 
   // ── Audit settings (AUDIT-04 / Phase 6) ───────────────────────────────────
-  const auditSettings = $derived(
-    vaultSession.vault !== null ? getVaultSettings(vaultSession.vault).audit : null,
+  // Read the PRIMITIVE directly off vaultSession.vault (Pitfall 7 defense — same
+  // class as currentIdleMinutes above). Do NOT route through an intermediate
+  // auditSettings object $derived: saveSettingsChange() shallow-copies #vault at
+  // the top level only, so nested settings.audit keeps the SAME object reference,
+  // making the intermediate === its previous value and short-circuiting propagation.
+  const currentStaleThreshold = $derived(
+    vaultSession.vault !== null
+      ? (getVaultSettings(vaultSession.vault).audit?.staleThresholdDays ?? 365)
+      : 365,
   );
-  const currentStaleThreshold = $derived(auditSettings?.staleThresholdDays ?? 365);
 
   // Save audit settings (mirrors saveLockSettings pattern — P5-12 precedent).
   async function saveAuditSettings(
@@ -207,7 +213,7 @@
         settings.audit.staleThresholdDays = update.staleThresholdDays;
       }
     }
-    await vaultSession.save();
+    await vaultSession.saveSettingsChange();
   }
 
   async function handleStaleThresholdChange(e: Event): Promise<void> {
