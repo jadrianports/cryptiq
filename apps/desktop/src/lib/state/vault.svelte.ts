@@ -466,14 +466,24 @@ class VaultSession {
 
     // Step 6 (LOCK-05 / Pitfall 4): Clear HMR module data in dev so a
     // hot-reload does not re-surface the just-zeroed key via
-    // import.meta.hot.data. The guard prevents the production crash where
+    // import.meta.hot.data. The guard handles production, where
     // import.meta.hot is undefined.
     //
     // Uses _hotRef (seam-injectable for tests) with fallback to import.meta.hot
-    // (the real Vite HMR context in production dev-server mode).
+    // (the real Vite HMR context in dev-server mode).
+    //
+    // IMPORTANT: import.meta.hot.data is a GETTER-ONLY property on Vite's real
+    // HMRContext — reassigning it (`hot.data = {}`) throws "Cannot set property
+    // data of #<HMRContext> which has only a getter" and aborts lock(), breaking
+    // every lock path in `tauri dev`. Clear the object IN PLACE (delete its keys)
+    // so persisted state is wiped without reassigning the read-only reference.
+    // (The unit-test seam injects a plain writable object, so the old reassignment
+    // passed tests but failed against the live HMRContext — see hotData.test.ts (c).)
     const hot = _hotRef ?? (import.meta.hot as { data: Record<string, unknown> } | undefined);
-    if (hot) {
-      hot.data = {};
+    if (hot?.data) {
+      for (const k of Object.keys(hot.data)) {
+        delete hot.data[k];
+      }
     }
 
     // Step 7 (P3-08): Release the advisory lock. Fire-and-forget any error —
@@ -533,6 +543,27 @@ class VaultSession {
       maxBackups: opts?.maxBackups ?? 5,
       contentHash,
     });
+  }
+
+  /**
+   * Persist in-place settings mutations and surface them to $state.raw consumers.
+   *
+   * SettingsShell mutates `getVaultSettings(vault).lock` IN PLACE (the
+   * lock-on-minimize toggle, the auto-lock timeout), then calls this. Because
+   * #vault is `$state.raw`, an in-place NESTED mutation does NOT fire reactivity,
+   * so the Settings toggles (`$derived`) and App.svelte's idle `$effect` never
+   * see the change — the toggle looks frozen and a timeout change does not apply
+   * live. Reassign #vault (shallow — the same P3-02 pattern the entry-CRUD
+   * methods use) BEFORE persisting so reactivity fires, then save.
+   *
+   * Scoped to settings edits so the hot, IO-critical save() path keeps its exact
+   * contract (no extra reassign on every autosave).
+   */
+  async saveSettingsChange(opts?: { maxBackups?: number }): Promise<void> {
+    const vault = this._requireVault();
+    // P3-02: surface the in-place settings mutation to $state.raw consumers.
+    this.#vault = { ...vault };
+    await this.save(opts);
   }
 
   // ---------------------------------------------------------------------------

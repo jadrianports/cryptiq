@@ -178,15 +178,67 @@ describe('HMR-clear on lock — LOCK-05', () => {
       expect((import.meta as { hot?: unknown }).hot).toBe(hotMock);
       expect(hotMock.data).toEqual({ testKey: 'testValue' });
 
-      // Simulate what lock() teardown does:
+      // Simulate what lock() teardown does (clear IN PLACE — import.meta.hot.data
+      // is getter-only on the real Vite HMRContext, so it is mutated, not reassigned).
       const hot = (import.meta as { hot?: { data: Record<string, unknown> } }).hot;
-      if (hot) {
-        hot.data = {};
+      if (hot?.data) {
+        for (const k of Object.keys(hot.data)) delete hot.data[k];
       }
 
       expect(hotMock.data).toEqual({});
     } finally {
       restore();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // (c) lock() does NOT throw when import.meta.hot.data is GETTER-ONLY —
+  //     reproduces the real Vite HMRContext. Regression guard for the
+  //     "Cannot set property data of #<HMRContext> which has only a getter"
+  //     dev-lock bug: the plain-object seam used by (a) could not catch it.
+  // -------------------------------------------------------------------------
+
+  it('lock() clears HMR data without throwing when import.meta.hot.data is getter-only (real Vite HMRContext shape)', async () => {
+    const backingData: Record<string, unknown> = {
+      vaultKey: new Uint8Array(32),
+      someState: 'persisted-across-hmr',
+    };
+    const hotMock = {} as { data: Record<string, unknown> };
+    // Getter-only `data` (no setter) — assigning hotMock.data throws, exactly
+    // like Vite's live HMRContext. The contents stay mutable (the Vite contract).
+    Object.defineProperty(hotMock, 'data', {
+      get() {
+        return backingData;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    _setHotForTesting(hotMock);
+
+    try {
+      const { vaultSession } = await import('../vault.svelte');
+      const fakeVaultKey = new Uint8Array(32).fill(0x52);
+      const fakeVault = {
+        doc: {
+          format: 'cryptiq-vault' as const,
+          version: 1 as const,
+          wrappedKeys: {
+            master: { ciphertext: '', nonce: '', kdf: { algorithm: 2 as const, opsLimit: 3, memLimit: 268_435_456, salt: '' } },
+          },
+          data: { ciphertext: '', nonce: '' },
+          meta: { createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString() },
+        },
+        entries: { schemaVersion: 1, entries: [], settings: { generator: { mode: 'random' as const, length: 20, useUppercase: true, useLowercase: true, useNumbers: true, useSymbols: false, customSymbols: null, excludeAmbiguous: true } } },
+      };
+      vaultSession.mount(fakeVault, fakeVaultKey);
+
+      // Must NOT throw — the prior `hot.data = {}` reassignment threw here.
+      await expect(vaultSession.lock()).resolves.toBeUndefined();
+
+      // Security intent preserved: HMR-persisted data wiped in place.
+      expect(Object.keys(backingData).length).toBe(0);
+    } finally {
+      _setHotForTesting(null);
     }
   });
 });

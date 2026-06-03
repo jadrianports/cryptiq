@@ -56,22 +56,26 @@
 
   const generatorDefaultLabel = $derived(getGeneratorDefault(vaultSession.vault));
 
-  // ── Lock settings — read via getVaultSettings (Pitfall 7 defense) ─────────
-  // $derived re-reads when vaultSession.vault reference changes (save() + reassign).
-  // Returns null when the vault is locked (not unlocked) — guards all reads.
-  const lockSettings = $derived(
-    vaultSession.vault !== null ? getVaultSettings(vaultSession.vault).lock : null,
-  );
-
-  // Current idle minutes value (for the select element binding).
-  // Fallback to 5 (default) if settings aren't loaded yet.
+  // ── Lock settings (Pitfall 7 defense) ─────────────────────────────────────
+  // Read the PRIMITIVES directly off vaultSession.vault so each $derived depends
+  // on the #vault reference (reassigned by saveSettingsChange) and yields a
+  // value-type. Do NOT route through an intermediate `lockSettings` object
+  // $derived: an in-place settings mutation keeps the SAME `.lock` object
+  // reference, so that intermediate is === its previous value and Svelte
+  // short-circuits propagation — the toggle then only refreshes on remount
+  // (Svelte 5 ref-equality short-circuit; same class as the Phase 4 entry-list
+  // bug). Reading the boolean/number directly avoids that. Guarded for the
+  // locked state (vault === null).
   const currentIdleMinutes = $derived(
-    lockSettings?.idleMinutes ?? 5,
+    vaultSession.vault !== null
+      ? (getVaultSettings(vaultSession.vault).lock?.idleMinutes ?? 5)
+      : 5,
   );
 
-  // Current lock-on-minimize value.
   const currentLockOnMinimize = $derived(
-    lockSettings?.lockOnMinimize ?? false,
+    vaultSession.vault !== null
+      ? (getVaultSettings(vaultSession.vault).lock?.lockOnMinimize ?? false)
+      : false,
   );
 
   // ── Never danger-ack state ─────────────────────────────────────────────────
@@ -114,7 +118,10 @@
     if (update.lockOnMinimize !== undefined) {
       settings.lock!.lockOnMinimize = update.lockOnMinimize;
     }
-    await vaultSession.save();
+    // saveSettingsChange reassigns #vault ($state.raw) so the toggle/select
+    // $derived values recompute — plain save() mutates in place and the UI
+    // would stay frozen (the lock-on-minimize "stuck toggle" bug).
+    await vaultSession.saveSettingsChange();
   }
 
   // ── Idle timeout select handler ────────────────────────────────────────────
