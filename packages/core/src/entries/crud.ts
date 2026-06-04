@@ -44,6 +44,10 @@ function nowIso(): string {
  * versioned doc is a no-op.
  *
  * This is the ONLY place `vault.entries` is cast — single audit point.
+ *
+ * Phase 8 (D-02/D-10): this function is also the v1→v2 upgrade site. It bumps
+ * `schemaVersion` 1→2 and fills `lostVersions: []` on any entry that lacks it.
+ * Idempotent — never downgrades, never overwrites an existing lostVersions array.
  */
 function asInnerDoc(vault: UnlockedVault): InnerDoc {
   const raw = vault.entries as Record<string, unknown>;
@@ -72,6 +76,18 @@ function asInnerDoc(vault: UnlockedVault): InnerDoc {
   // Phase 6 (AUDIT-04): additive audit default — idempotent; single upgrade site (P5-12 pattern).
   if (settings['audit'] === undefined) {
     settings['audit'] = { staleThresholdDays: 365 };
+  }
+  // Phase 8 (D-02/D-10): additive schemaVersion 1→2 bump + lostVersions default.
+  // idempotent — never downgrades; never overwrites existing lostVersions arrays.
+  if (raw['schemaVersion'] === 1) {
+    raw['schemaVersion'] = 2;
+  }
+  if (Array.isArray(raw['entries'])) {
+    for (const entry of raw['entries'] as Array<Record<string, unknown>>) {
+      if (entry['lostVersions'] === undefined) {
+        entry['lostVersions'] = [];
+      }
+    }
   }
 
   return vault.entries as InnerDoc;

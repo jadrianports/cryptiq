@@ -1,0 +1,813 @@
+// packages/core/src/sync/__tests__/merge.test.ts
+//
+// RED test suite for Phase 8 (08-02): example-based scenarios covering every
+// named ROADMAP Success Criterion (SC-2..SC-5) and every D-NN merge decision.
+//
+// EXPECTED STATE: ALL tests in this file are RED. mergeInnerDocs and
+// findPossibleDuplicates throw new Error('not implemented') (08-01 stubs). The
+// tests fail at the stub — "expected <asserted behavior>, but it threw Error:
+// not implemented". This is the INTENDED state of plan 08-02.
+// Plan 08-03 turns this suite GREEN by implementing the merge engine.
+//
+// Requirements covered (RED gate, proves contract exists before implementation):
+//   MERGE-02 — LWW on modifiedAt; newer wins; loser preserved (SC-2)
+//   MERGE-03 — Create-vs-create: both entries survive (SC-3)
+//   MERGE-04 — Delete-wins; losing edit's snapshot preserved (SC-4)
+//   MERGE-05 — Overwritten password in history; cap 10 (D-03)
+//   MERGE-06 — MergeClockSkewError on |Δ| > 30s (SC-5)
+//   MERGE-07 — Deterministic deviceId tiebreaker (D-13/D-14)
+//   D-04 — Settings: local wins
+//   D-07 — Permanent delete is final; peer content NOT preserved
+//   D-08 — Absent entry (no tombstone): kept
+//   D-09 — schemaVersion mismatch → MergeSchemaMismatchError
+//   D-15 — conflicts[] reason codes
+//   D-16 — Per-device counts (added/updated/deleted/unchanged)
+//   D-17 — Invalid input → MergeInvalidInputError; empty vault is valid
+//   D-19 — Duplicate hint: same title+url flagged; distinct url not flagged
+//
+// Conventions:
+//   - Fixed epoch constants; never Date.now() in test bodies (CLAUDE.md).
+//   - No Math.random; no getSodium() — fixtures use literal id strings (CLAUDE.md).
+//   - Typed-error assertions use expect.objectContaining({ code: '...' })
+//     NOT instanceof, NOT message-text matching (RESEARCH Anti-Patterns).
+//   - Conflict arrays sorted by entryId before asserting (RESEARCH Anti-Patterns).
+
+import { describe, it, expect } from 'vitest';
+import type { InnerDoc, Entry } from '../../entries/types';
+import type { MergeContext } from '../types';
+import { DEFAULT_RANDOM_OPTIONS } from '../../generator/types';
+import { mergeInnerDocs } from '../merge';
+import { findPossibleDuplicates } from '../duplicate';
+
+// ---------------------------------------------------------------------------
+// Fixed epoch constants (never Date.now() — CLAUDE.md / lockLogic.test.ts pattern)
+// ---------------------------------------------------------------------------
+
+// A fixed reference epoch: 2025-01-01T00:00:00.000Z in ms
+const EPOCH_BASE = 1_735_689_600_000;
+// 1 hour later
+const EPOCH_PLUS_1H = EPOCH_BASE + 3_600_000;
+// 2 hours later
+const EPOCH_PLUS_2H = EPOCH_BASE + 7_200_000;
+// Used for deletedAt timestamps in tests
+const EPOCH_PLUS_30M = EPOCH_BASE + 1_800_000;
+const EPOCH_PLUS_45M = EPOCH_BASE + 2_700_000;
+
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+
+/** Build a MergeContext with sensible defaults (equal clocks, distinct deviceIds). */
+function makeCtx(overrides?: Partial<MergeContext>): MergeContext {
+  return {
+    localDeviceId: 'device-local',
+    remoteDeviceId: 'device-remote',
+    localNowMs: EPOCH_BASE,
+    remoteNowMs: EPOCH_BASE,
+    ...overrides,
+  };
+}
+
+/** Build a valid InnerDoc (schemaVersion 2, no entries). */
+function makeInnerDoc(overrides?: Partial<InnerDoc>): InnerDoc {
+  return {
+    schemaVersion: 2,
+    entries: [],
+    settings: { generator: DEFAULT_RANDOM_OPTIONS },
+    ...overrides,
+  };
+}
+
+/** Build a full, valid active Entry with all required fields. */
+function makeEntry(overrides?: Partial<Entry>): Entry {
+  return {
+    id: 'entry-default-001',
+    type: 'login',
+    title: 'Default Entry',
+    username: 'user@example.com',
+    password: 'default-password',
+    url: 'https://example.com',
+    notes: '',
+    tags: [],
+    favorite: false,
+    needsSiteUpdate: false,
+    generatorPreset: null,
+    passwordHistory: [],
+    lostVersions: [],
+    createdAt: new Date(EPOCH_BASE).toISOString(),
+    modifiedAt: new Date(EPOCH_BASE).toISOString(),
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Describe: LWW merge (MERGE-02/D-01)
+// ---------------------------------------------------------------------------
+
+describe('LWW merge (MERGE-02/D-01)', () => {
+  it('LWW: local newer wins; remote password in history', () => {
+    // Local has a NEWER modifiedAt — local's version should win.
+    // Remote's password must appear in the merged entry's passwordHistory.
+    const sharedId = 'entry-lww-001';
+    const localEntry = makeEntry({
+      id: sharedId,
+      password: 'local-new-password',
+      modifiedAt: new Date(EPOCH_PLUS_1H).toISOString(),
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      password: 'remote-old-password',
+      modifiedAt: new Date(EPOCH_BASE).toISOString(),
+    });
+    const local = makeInnerDoc({ entries: [localEntry] });
+    const remote = makeInnerDoc({ entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    // SC-2: local won → merged entry has local's password
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    expect(merged!.password).toBe('local-new-password');
+
+    // D-01: loser's password recoverable in history
+    const allHistory = merged!.passwordHistory;
+    const remoteInHistory = allHistory.some((h) => h.password === 'remote-old-password');
+    expect(remoteInHistory).toBe(true);
+
+    // D-16: updated count — local version was the winner; from local perspective unchanged
+    // The remote was older so local's copy was not changed — D-16: unchanged for local
+    expect(result.counts.unchanged).toBeGreaterThanOrEqual(1);
+  });
+
+  it('LWW: remote newer wins; local password in history', () => {
+    // Remote has a NEWER modifiedAt — remote's version should win.
+    // Local's password must appear in the merged entry's passwordHistory.
+    const sharedId = 'entry-lww-002';
+    const localEntry = makeEntry({
+      id: sharedId,
+      password: 'local-old-password',
+      modifiedAt: new Date(EPOCH_BASE).toISOString(),
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      password: 'remote-new-password',
+      modifiedAt: new Date(EPOCH_PLUS_1H).toISOString(),
+    });
+    const local = makeInnerDoc({ entries: [localEntry] });
+    const remote = makeInnerDoc({ entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    expect(merged!.password).toBe('remote-new-password');
+
+    // D-01: loser's (local) password recoverable in history
+    const localInHistory = merged!.passwordHistory.some((h) => h.password === 'local-old-password');
+    expect(localInHistory).toBe(true);
+
+    // D-16: updated — this device's version was replaced by remote's
+    expect(result.counts.updated).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: Create-vs-create: both survive (MERGE-03/D-08/SC-3)
+// ---------------------------------------------------------------------------
+
+describe('create-vs-create: both survive (MERGE-03/D-08/SC-3)', () => {
+  it('create-vs-create: both entries with distinct ids survive in merged output', () => {
+    // Entries on separate devices with distinct CSPRNG UUIDs — neither has a tombstone.
+    // Both must appear in the merged entry set (SC-3, D-08).
+    const localEntry = makeEntry({ id: 'entry-local-c2c-001', title: 'Local Only' });
+    const remoteEntry = makeEntry({ id: 'entry-remote-c2c-001', title: 'Remote Only' });
+    const local = makeInnerDoc({ entries: [localEntry] });
+    const remote = makeInnerDoc({ entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const ids = result.merged.entries.map((e) => e.id);
+    expect(ids).toContain('entry-local-c2c-001');
+    expect(ids).toContain('entry-remote-c2c-001');
+    expect(result.merged.entries.length).toBe(2);
+
+    // Create-vs-create is NOT a conflict (D-15)
+    expect(result.conflicts.length).toBe(0);
+
+    // D-16: remote entry was new-to-local → added
+    expect(result.counts.added).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: Delete semantics (MERGE-04/D-05/D-06/D-07/SC-4)
+// ---------------------------------------------------------------------------
+
+describe('delete semantics (MERGE-04/D-05/D-06/D-07/SC-4)', () => {
+  it('delete-wins (soft): soft tombstone over newer edit; snapshot preserved (D-05)', () => {
+    // Local: soft-tombstoned entry (deletedAt set).
+    // Remote: a NEWER active edit of the same id.
+    // Rule D-05: delete-wins → merged keeps the tombstone.
+    // Rule D-01: the losing remote edit's password is preserved in the tombstone's history.
+    const sharedId = 'entry-delete-soft-001';
+    const localTombstone = makeEntry({
+      id: sharedId,
+      password: 'pre-delete-password',
+      deletedAt: new Date(EPOCH_BASE).toISOString(),
+      modifiedAt: new Date(EPOCH_BASE).toISOString(),
+    });
+    const remoteEdit = makeEntry({
+      id: sharedId,
+      password: 'remote-newer-password',
+      modifiedAt: new Date(EPOCH_PLUS_1H).toISOString(),
+      deletedAt: null,
+    });
+    const local = makeInnerDoc({ entries: [localTombstone] });
+    const remote = makeInnerDoc({ entries: [remoteEdit] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    // D-05: soft tombstone wins → deletedAt is non-null
+    expect(merged!.deletedAt).not.toBeNull();
+
+    // D-01: remote's losing password must be recoverable
+    const remotePasswordPreserved =
+      merged!.passwordHistory.some((h) => h.password === 'remote-newer-password') ||
+      (merged!.lostVersions ?? []).some((s) => s.password === 'remote-newer-password');
+    expect(remotePasswordPreserved).toBe(true);
+
+    // D-15: delete-wins recorded as a conflict with reason 'delete-wins'
+    const conflict = result.conflicts.find((c) => c.entryId === sharedId);
+    expect(conflict).toBeDefined();
+    expect(conflict!.reason).toBe('delete-wins');
+
+    // D-16: this device already had the tombstone — deleted count from local perspective
+    expect(result.counts.deleted).toBeGreaterThanOrEqual(0);
+  });
+
+  it('delete-wins (permanent): content-wiped tombstone wins; peer content NOT preserved (D-06/D-07)', () => {
+    // Local: permanent tombstone (D-06 marker: deletedAt set + all secret fields wiped).
+    // Remote: a live active entry with the same id.
+    // Rule D-07: permanent tombstone wins everywhere; peer content is NOT preserved.
+    // NOT recorded in conflicts (D-15: permanent-delete-final is the sanctioned exception).
+    const sharedId = 'entry-perm-delete-001';
+    const permanentTombstone = makeEntry({
+      id: sharedId,
+      // D-06 permanent tombstone: deletedAt set + ALL content collapsed to the
+      // secret-free marker (title/url/tags wiped too — a strict empty-marker shape,
+      // so a content-sparse SOFT delete is never misclassified as permanent).
+      title: '',
+      url: '',
+      tags: [],
+      password: '',
+      username: '',
+      notes: '',
+      passwordHistory: [],
+      lostVersions: [],
+      deletedAt: new Date(EPOCH_BASE).toISOString(),
+      modifiedAt: new Date(EPOCH_BASE).toISOString(),
+    });
+    const remoteActive = makeEntry({
+      id: sharedId,
+      password: 'remote-live-password',
+      username: 'remote-user',
+      notes: 'sensitive notes',
+      modifiedAt: new Date(EPOCH_PLUS_1H).toISOString(),
+      deletedAt: null,
+    });
+    const local = makeInnerDoc({ entries: [permanentTombstone] });
+    const remote = makeInnerDoc({ entries: [remoteActive] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    // D-07: permanent tombstone wins — deletedAt preserved
+    expect(merged!.deletedAt).not.toBeNull();
+    // D-07: peer's content is NOT preserved — password remains wiped
+    expect(merged!.password).toBe('');
+    expect(merged!.username).toBe('');
+    // D-07: no resurrection — 'remote-live-password' must NOT appear anywhere
+    const remotePasswordResurrected =
+      merged!.passwordHistory.some((h) => h.password === 'remote-live-password') ||
+      (merged!.lostVersions ?? []).some((s) => s.password === 'remote-live-password');
+    expect(remotePasswordResurrected).toBe(false);
+
+    // D-15: permanent-delete-final is NOT a conflict
+    const conflict = result.conflicts.find((c) => c.entryId === sharedId);
+    expect(conflict).toBeUndefined();
+  });
+
+  it('both tombstoned: earlier deletedAt kept (MERGE-04)', () => {
+    // Both local and remote soft-deleted the same entry at different times.
+    // Rule: keep the EARLIER deletedAt (MERGE-04, D-04 both-tombstoned).
+    const sharedId = 'entry-both-tomb-001';
+    const localTombstone = makeEntry({
+      id: sharedId,
+      deletedAt: new Date(EPOCH_PLUS_30M).toISOString(), // earlier
+      modifiedAt: new Date(EPOCH_PLUS_30M).toISOString(),
+    });
+    const remoteTombstone = makeEntry({
+      id: sharedId,
+      deletedAt: new Date(EPOCH_PLUS_45M).toISOString(), // later
+      modifiedAt: new Date(EPOCH_PLUS_45M).toISOString(),
+    });
+    const local = makeInnerDoc({ entries: [localTombstone] });
+    const remote = makeInnerDoc({ entries: [remoteTombstone] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    // MERGE-04: earlier deletedAt is kept
+    expect(merged!.deletedAt).toBe(new Date(EPOCH_PLUS_30M).toISOString());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: passwordHistory union cap (MERGE-05/D-03)
+// ---------------------------------------------------------------------------
+
+describe('history union cap (MERGE-05/D-03)', () => {
+  it('history union: cap 10 respected, no duplicate (changedAt,password) pairs', () => {
+    // Both sides have 8-item histories (some overlapping, some distinct).
+    // After union: deduped, newest-first, length at most 10.
+    const sharedId = 'entry-history-001';
+
+    // Build 8 history items for local (times: base + 1..8 hours)
+    const makeHistoryItem = (password: string, offsetMs: number) => ({
+      password,
+      changedAt: new Date(EPOCH_BASE + offsetMs).toISOString(),
+    });
+
+    // Local: items at hours 1-8 (8 items, newest = hour 8)
+    const localHistory = [
+      makeHistoryItem('hist-local-8', 8 * 3_600_000),
+      makeHistoryItem('hist-local-7', 7 * 3_600_000),
+      makeHistoryItem('hist-local-6', 6 * 3_600_000),
+      makeHistoryItem('hist-local-5', 5 * 3_600_000),
+      makeHistoryItem('hist-shared-4', 4 * 3_600_000),  // shared
+      makeHistoryItem('hist-shared-3', 3 * 3_600_000),  // shared
+      makeHistoryItem('hist-shared-2', 2 * 3_600_000),  // shared
+      makeHistoryItem('hist-shared-1', 1 * 3_600_000),  // shared
+    ];
+
+    // Remote: same 4 shared items + 4 distinct remote items at different times
+    const remoteHistory = [
+      makeHistoryItem('hist-remote-12', 12 * 3_600_000), // newest overall
+      makeHistoryItem('hist-remote-11', 11 * 3_600_000),
+      makeHistoryItem('hist-remote-10', 10 * 3_600_000),
+      makeHistoryItem('hist-remote-9', 9 * 3_600_000),
+      makeHistoryItem('hist-shared-4', 4 * 3_600_000),  // shared (dup)
+      makeHistoryItem('hist-shared-3', 3 * 3_600_000),  // shared (dup)
+      makeHistoryItem('hist-shared-2', 2 * 3_600_000),  // shared (dup)
+      makeHistoryItem('hist-shared-1', 1 * 3_600_000),  // shared (dup)
+    ];
+
+    const localEntry = makeEntry({
+      id: sharedId,
+      password: 'current-password',
+      modifiedAt: new Date(EPOCH_PLUS_2H).toISOString(),
+      passwordHistory: localHistory,
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      password: 'current-password', // same current password — no LWW change
+      modifiedAt: new Date(EPOCH_PLUS_2H).toISOString(),
+      passwordHistory: remoteHistory,
+    });
+    const local = makeInnerDoc({ entries: [localEntry] });
+    const remote = makeInnerDoc({ entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+
+    // MERGE-05 / D-03: cap at 10
+    expect(merged!.passwordHistory.length).toBeLessThanOrEqual(10);
+
+    // D-03: no duplicate (changedAt, password) pairs
+    const seen = new Set<string>();
+    for (const item of merged!.passwordHistory) {
+      const key = `${item.changedAt}::${item.password}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
+
+    // D-03: newest-first ordering
+    for (let i = 1; i < merged!.passwordHistory.length; i++) {
+      const prev = Date.parse(merged!.passwordHistory[i - 1]!.changedAt);
+      const curr = Date.parse(merged!.passwordHistory[i]!.changedAt);
+      expect(prev).toBeGreaterThanOrEqual(curr);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: clock-skew guard (MERGE-06/D-12/SC-5)
+// ---------------------------------------------------------------------------
+
+describe('clock skew guard (MERGE-06/D-12/SC-5)', () => {
+  it('clock skew > 30s: MergeClockSkewError thrown before any records merge', () => {
+    // |Δ| = 30_001ms — strictly greater than 30s → must throw MERGE_CLOCK_SKEW (D-12).
+    const ctx = makeCtx({ localNowMs: 0, remoteNowMs: 30_001 });
+    const local = makeInnerDoc({ entries: [makeEntry({ id: 'entry-skew-001' })] });
+    const remote = makeInnerDoc({ entries: [makeEntry({ id: 'entry-skew-001' })] });
+
+    expect(() => mergeInnerDocs(local, remote, ctx)).toThrow(
+      expect.objectContaining({ code: 'MERGE_CLOCK_SKEW' }),
+    );
+  });
+
+  it('clock skew = 30s: NO error (strict greater-than boundary — D-12)', () => {
+    // |Δ| = exactly 30_000ms — must NOT throw at all (strict >, not >=).
+    // D-12: the guard is |localNowMs - remoteNowMs| > 30_000 (strict greater-than).
+    // At exactly 30_000ms the merge must proceed and return a MergeResult.
+    // This test asserts the positive case: a valid result is returned, not that
+    // a specific error is absent. The stub always throws, so this is RED until 08-03.
+    const ctx = makeCtx({ localNowMs: 0, remoteNowMs: 30_000 });
+    const local = makeInnerDoc();
+    const remote = makeInnerDoc();
+
+    // Must not throw any error at exactly 30_000ms skew
+    expect(() => mergeInnerDocs(local, remote, ctx)).not.toThrow();
+  });
+
+  it('clock skew > 30s: also throws when the remote is BEHIND local by 30_001ms', () => {
+    // Symmetric: local > remote by 30_001ms (both directions should throw).
+    const ctx = makeCtx({ localNowMs: 30_001, remoteNowMs: 0 });
+
+    expect(() => mergeInnerDocs(makeInnerDoc(), makeInnerDoc(), ctx)).toThrow(
+      expect.objectContaining({ code: 'MERGE_CLOCK_SKEW' }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: tiebreak (MERGE-07/D-13/D-14)
+// ---------------------------------------------------------------------------
+
+describe('tiebreak (MERGE-07/D-13/D-14)', () => {
+  it('tiebreak: lex-greater deviceId wins; loser snapshot preserved (D-13)', () => {
+    // Both versions of the same entry have IDENTICAL modifiedAt but different content.
+    // Tiebreak rule (D-13): lexicographically-greater deviceId ('device-remote' > 'device-local').
+    // The loser ('device-local') must be preserved as a full snapshot (D-01).
+    const sharedId = 'entry-tiebreak-001';
+    const tiedModifiedAt = new Date(EPOCH_BASE).toISOString();
+
+    const localEntry = makeEntry({
+      id: sharedId,
+      password: 'local-tiebreak-password',
+      modifiedAt: tiedModifiedAt,
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      password: 'remote-tiebreak-password',
+      modifiedAt: tiedModifiedAt, // identical modifiedAt
+    });
+    const local = makeInnerDoc({ entries: [localEntry] });
+    const remote = makeInnerDoc({ entries: [remoteEntry] });
+
+    // 'device-remote' > 'device-local' lexicographically → remote wins
+    const ctx = makeCtx({ localDeviceId: 'device-local', remoteDeviceId: 'device-remote' });
+    const result = mergeInnerDocs(local, remote, ctx);
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    // D-13: lex-greater ('device-remote') wins
+    expect(merged!.password).toBe('remote-tiebreak-password');
+
+    // D-01: loser's password preserved
+    const loserPreserved =
+      merged!.passwordHistory.some((h) => h.password === 'local-tiebreak-password') ||
+      (merged!.lostVersions ?? []).some((s) => s.password === 'local-tiebreak-password');
+    expect(loserPreserved).toBe(true);
+
+    // D-15: tiebreak recorded in conflicts with reason 'tiebreak'
+    const conflict = result.conflicts.find((c) => c.entryId === sharedId);
+    expect(conflict).toBeDefined();
+    expect(conflict!.reason).toBe('tiebreak');
+    expect(conflict!.winnerDeviceId).toBe('device-remote');
+    expect(conflict!.loserDeviceId).toBe('device-local');
+  });
+
+  it('tiebreak: equal deviceIds + identical content = unchanged, no conflict (D-14 fallback)', () => {
+    // Same deviceId on both sides and same content → no-op; neither side wins a conflict.
+    // D-14: identical content + equal deviceIds → unchanged.
+    const sharedId = 'entry-tiebreak-equal-001';
+    const tiedModifiedAt = new Date(EPOCH_BASE).toISOString();
+
+    const sharedEntry = makeEntry({
+      id: sharedId,
+      password: 'same-password',
+      modifiedAt: tiedModifiedAt,
+    });
+    const local = makeInnerDoc({ entries: [{ ...sharedEntry }] });
+    const remote = makeInnerDoc({ entries: [{ ...sharedEntry }] });
+
+    // Same device ID on both sides
+    const ctx = makeCtx({ localDeviceId: 'device-same', remoteDeviceId: 'device-same' });
+    const result = mergeInnerDocs(local, remote, ctx);
+
+    // D-14: unchanged — no snapshot added
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    expect(merged!.password).toBe('same-password');
+    expect(merged!.passwordHistory.length).toBe(0);
+
+    // D-16: unchanged count
+    expect(result.counts.unchanged).toBeGreaterThanOrEqual(1);
+    expect(result.counts.updated).toBe(0);
+
+    // D-15: no conflict for equal-deviceId identical content
+    expect(result.conflicts.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: input and schema guards (D-09/D-17)
+// ---------------------------------------------------------------------------
+
+describe('input and schema guards (D-09/D-17)', () => {
+  it('schemaVersion mismatch: MergeSchemaMismatchError before any records merge (D-09)', () => {
+    // local = schemaVersion 2, remote = schemaVersion 1 → throw MERGE_SCHEMA_MISMATCH.
+    // Must throw BEFORE any records are merged.
+    const local: InnerDoc = makeInnerDoc({ schemaVersion: 2 });
+    const remote: InnerDoc = {
+      schemaVersion: 1,
+      entries: [],
+      settings: { generator: DEFAULT_RANDOM_OPTIONS },
+    };
+
+    expect(() => mergeInnerDocs(local, remote, makeCtx())).toThrow(
+      expect.objectContaining({ code: 'MERGE_SCHEMA_MISMATCH' }),
+    );
+  });
+
+  it('invalid entry (bad modifiedAt): MergeInvalidInputError; whole merge refused (D-17)', () => {
+    // One entry has modifiedAt: 'not-a-date' — must throw MERGE_INVALID_INPUT.
+    // The whole merge is refused (never partial).
+    const badEntry = makeEntry({
+      id: 'entry-invalid-001',
+      modifiedAt: 'not-a-date',
+    });
+    const local = makeInnerDoc({ entries: [badEntry] });
+    const remote = makeInnerDoc({ entries: [] });
+
+    expect(() => mergeInnerDocs(local, remote, makeCtx())).toThrow(
+      expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }),
+    );
+  });
+
+  it('invalid entry in REMOTE: MergeInvalidInputError (D-17)', () => {
+    const badEntry = makeEntry({
+      id: 'entry-invalid-002',
+      modifiedAt: 'not-a-date',
+    });
+    const local = makeInnerDoc({ entries: [] });
+    const remote = makeInnerDoc({ entries: [badEntry] });
+
+    expect(() => mergeInnerDocs(local, remote, makeCtx())).toThrow(
+      expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }),
+    );
+  });
+
+  it('empty vault (zero entries) is VALID: merges to the other side without error (D-17)', () => {
+    // D-17: empty vault is NOT an error — it merges to the non-empty side.
+    const remoteEntry = makeEntry({ id: 'entry-from-remote-001', title: 'Remote Entry' });
+    const local = makeInnerDoc({ entries: [] });         // empty
+    const remote = makeInnerDoc({ entries: [remoteEntry] });
+
+    // Must NOT throw
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    // Remote's entry should survive in merged output
+    expect(result.merged.entries.some((e) => e.id === 'entry-from-remote-001')).toBe(true);
+    expect(result.counts.added).toBeGreaterThanOrEqual(1);
+  });
+
+  it('both vaults empty: valid; merged has zero entries (D-17)', () => {
+    const local = makeInnerDoc({ entries: [] });
+    const remote = makeInnerDoc({ entries: [] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    expect(result.merged.entries.length).toBe(0);
+    expect(result.counts.added).toBe(0);
+    expect(result.counts.updated).toBe(0);
+    expect(result.counts.deleted).toBe(0);
+    expect(result.counts.unchanged).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: settings and absent-side semantics (D-04/D-08)
+// ---------------------------------------------------------------------------
+
+describe('settings and absent-side semantics (D-04/D-08)', () => {
+  it('settings: local settings preserved regardless of remote (D-04)', () => {
+    // Remote has different settings (e.g. different idleMinutes).
+    // D-04: merged.settings must deep-equal LOCAL settings.
+    const localSettings = {
+      generator: DEFAULT_RANDOM_OPTIONS,
+      lock: { idleMinutes: 10 as number | 'never', lockOnMinimize: false },
+    };
+    const remoteSettings = {
+      generator: DEFAULT_RANDOM_OPTIONS,
+      lock: { idleMinutes: 'never' as number | 'never', lockOnMinimize: true },
+    };
+    const local: InnerDoc = { schemaVersion: 2, entries: [], settings: localSettings };
+    const remote: InnerDoc = { schemaVersion: 2, entries: [], settings: remoteSettings };
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    // D-04: local settings must win
+    expect(result.merged.settings).toEqual(localSettings);
+    expect(result.merged.settings).not.toEqual(remoteSettings);
+  });
+
+  it('absent entry (no tombstone on either side): kept (D-08/MERGE-03)', () => {
+    // Entry exists only on local, no tombstone anywhere → treated as new, kept.
+    const localOnlyEntry = makeEntry({ id: 'entry-absent-001', title: 'Local Only' });
+    const local = makeInnerDoc({ entries: [localOnlyEntry] });
+    const remote = makeInnerDoc({ entries: [] }); // remote never saw this entry
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    expect(result.merged.entries.some((e) => e.id === 'entry-absent-001')).toBe(true);
+    // From local perspective: unchanged (local already had it)
+    expect(result.counts.unchanged).toBeGreaterThanOrEqual(1);
+  });
+
+  it('entry only on remote (no tombstone): kept as new on local (D-08)', () => {
+    const remoteOnlyEntry = makeEntry({ id: 'entry-absent-002', title: 'Remote Only' });
+    const local = makeInnerDoc({ entries: [] });
+    const remote = makeInnerDoc({ entries: [remoteOnlyEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    expect(result.merged.entries.some((e) => e.id === 'entry-absent-002')).toBe(true);
+    // D-16: new-to-local → added
+    expect(result.counts.added).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: duplicate hint (D-19)
+// ---------------------------------------------------------------------------
+
+describe('duplicate hint (D-19)', () => {
+  it('duplicate hint: same title+url (case-insensitive) flagged as one group', () => {
+    // Two active entries share the same title+url (after lowercasing) →
+    // findPossibleDuplicates returns one group containing both (D-19).
+    const entry1 = makeEntry({
+      id: 'entry-dup-001',
+      title: 'My Bank',
+      url: 'https://bank.example.com',
+    });
+    const entry2 = makeEntry({
+      id: 'entry-dup-002',
+      title: 'MY BANK', // same when lowercased
+      url: 'https://bank.example.com',
+    });
+    const doc = makeInnerDoc({ entries: [entry1, entry2] });
+
+    const groups = findPossibleDuplicates(doc);
+
+    expect(groups.length).toBe(1);
+    const group = groups[0]!;
+    const groupIds = group.entries.map((e) => e.id);
+    expect(groupIds).toContain('entry-dup-001');
+    expect(groupIds).toContain('entry-dup-002');
+  });
+
+  it('duplicate hint: distinct url not flagged — empty result (D-19)', () => {
+    // Same title, different URL → NOT a duplicate (D-19 groups by title+url).
+    const entry1 = makeEntry({
+      id: 'entry-notdup-001',
+      title: 'My Bank',
+      url: 'https://bank1.example.com',
+    });
+    const entry2 = makeEntry({
+      id: 'entry-notdup-002',
+      title: 'My Bank',
+      url: 'https://bank2.example.com', // different URL
+    });
+    const doc = makeInnerDoc({ entries: [entry1, entry2] });
+
+    const groups = findPossibleDuplicates(doc);
+
+    expect(groups.length).toBe(0);
+  });
+
+  it('duplicate hint: soft-deleted entries not counted as duplicates (D-19 active-only)', () => {
+    // One active, one tombstoned entry sharing title+url → not flagged
+    // (findPossibleDuplicates groups ACTIVE entries only — D-19)
+    const activeEntry = makeEntry({
+      id: 'entry-dup-active-001',
+      title: 'Shared Site',
+      url: 'https://shared.example.com',
+      deletedAt: null,
+    });
+    const tombstoneEntry = makeEntry({
+      id: 'entry-dup-tomb-001',
+      title: 'Shared Site',
+      url: 'https://shared.example.com',
+      deletedAt: new Date(EPOCH_BASE).toISOString(), // tombstoned
+    });
+    const doc = makeInnerDoc({ entries: [activeEntry, tombstoneEntry] });
+
+    const groups = findPossibleDuplicates(doc);
+
+    // Only one active entry in the group → not a duplicate (need ≥ 2)
+    expect(groups.length).toBe(0);
+  });
+
+  it('duplicate hint: three entries sharing title+url produces one group of 3 (D-19)', () => {
+    const makeSharedEntry = (id: string) =>
+      makeEntry({ id, title: 'triple dup', url: 'https://triple.example.com', deletedAt: null });
+
+    const doc = makeInnerDoc({
+      entries: [
+        makeSharedEntry('entry-triple-001'),
+        makeSharedEntry('entry-triple-002'),
+        makeSharedEntry('entry-triple-003'),
+      ],
+    });
+
+    const groups = findPossibleDuplicates(doc);
+    expect(groups.length).toBe(1);
+    expect(groups[0]!.entries.length).toBe(3);
+  });
+
+  it('duplicate hint returns empty array when no duplicates (D-19)', () => {
+    const doc = makeInnerDoc({
+      entries: [
+        makeEntry({ id: 'entry-unique-001', title: 'Site A', url: 'https://a.example.com' }),
+        makeEntry({ id: 'entry-unique-002', title: 'Site B', url: 'https://b.example.com' }),
+      ],
+    });
+    const groups = findPossibleDuplicates(doc);
+    expect(groups.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: MergeResult structure (D-11/D-15/D-16)
+// ---------------------------------------------------------------------------
+
+describe('MergeResult structure (D-11/D-15/D-16)', () => {
+  it('MergeResult has merged, counts, and conflicts fields (D-11/D-15/D-16)', () => {
+    const local = makeInnerDoc();
+    const remote = makeInnerDoc();
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    expect(result).toHaveProperty('merged');
+    expect(result).toHaveProperty('counts');
+    expect(result).toHaveProperty('conflicts');
+    expect(result.merged).toHaveProperty('entries');
+    expect(typeof result.counts.added).toBe('number');
+    expect(typeof result.counts.updated).toBe('number');
+    expect(typeof result.counts.deleted).toBe('number');
+    expect(typeof result.counts.unchanged).toBe('number');
+    expect(Array.isArray(result.conflicts)).toBe(true);
+  });
+
+  it('merged InnerDoc inherits local schemaVersion (D-09 already verified they match)', () => {
+    const local = makeInnerDoc({ schemaVersion: 2 });
+    const remote = makeInnerDoc({ schemaVersion: 2 });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    expect(result.merged.schemaVersion).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: Counts semantics (D-16) — verify no negative counts
+// ---------------------------------------------------------------------------
+
+describe('counts non-negative (D-16)', () => {
+  it('all counts are non-negative integers for any valid merge (D-16)', () => {
+    const localEntry = makeEntry({ id: 'entry-count-001' });
+    const remoteEntry = makeEntry({ id: 'entry-count-002' });
+    const local = makeInnerDoc({ entries: [localEntry] });
+    const remote = makeInnerDoc({ entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    expect(result.counts.added).toBeGreaterThanOrEqual(0);
+    expect(result.counts.updated).toBeGreaterThanOrEqual(0);
+    expect(result.counts.deleted).toBeGreaterThanOrEqual(0);
+    expect(result.counts.unchanged).toBeGreaterThanOrEqual(0);
+    expect(Number.isInteger(result.counts.added)).toBe(true);
+    expect(Number.isInteger(result.counts.updated)).toBe(true);
+    expect(Number.isInteger(result.counts.deleted)).toBe(true);
+    expect(Number.isInteger(result.counts.unchanged)).toBe(true);
+  });
+});

@@ -44,3 +44,12 @@ export * from './import/normalize';
 // Audit — types and orchestration verb
 export * from './audit/types';
 export * from './audit/audit';
+
+// Phase 8 public surface:
+// Sync merge engine — pure merge verb, types, and duplicate-detection helper
+export * from './sync/types';
+export * from './sync/merge';
+export * from './sync/duplicate';
+// Note: merge errors (MergeClockSkewError, MergeSchemaMismatchError, MergeInvalidInputError)
+// are in ./errors (already exported above by the Phase 2 block on line 16).
+// They are deliberately NOT re-exported here to avoid a duplicate-export conflict (TS2308).

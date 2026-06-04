@@ -3,10 +3,13 @@
 // The ENTRY-01 full field set + the P3-01 versioned inner document shape.
 // GeneratorOptions is imported from the generator module — a single type for both
 // live generator input and per-entry preset storage (P3-07).
+// EntrySnapshot is imported from sync/types for the Phase 8 additive lostVersions
+// field on Entry (D-01/D-02). The import is type-only — no runtime circular dep.
 //
 // Source: CONTEXT.md P3-01/P3-02/P3-07 + 03-RESEARCH §Entry Model
 
 import type { GeneratorOptions } from '../generator/types';
+import type { EntrySnapshot } from '../sync/types';
 
 /** One entry in `passwordHistory` (newest-first, capped at 10 — ENTRY-07). */
 export interface PasswordHistoryItem {
@@ -26,6 +29,8 @@ export interface PasswordHistoryItem {
  *   - `passwordHistory` — newest-first; cap 10 (ENTRY-07); pushed on any password change
  *   - `generatorPreset` — mirrors GeneratorOptions union exactly (P3-07); `null` = no preset
  *   - `tags` — first-class string array (ENTRY-02)
+ *   - `lostVersions` — Phase 8 (D-01/D-02/D-10): full-entry snapshots of losing sync versions;
+ *     optional — absent on pre-Phase-8 entries; `asInnerDoc()` fills with `[]`; cap 5 newest.
  */
 export interface Entry {
   // -- Identity (immutable after creation) --
@@ -64,6 +69,13 @@ export interface Entry {
    * the `password` field changes.
    */
   passwordHistory: PasswordHistoryItem[];
+  /**
+   * Full-entry snapshots of losing versions overwritten during sync (D-01/D-02).
+   * Capped at 5 newest (T-03-04 plaintext-surface discipline). Filled by `asInnerDoc()`
+   * on any unlock/save after the Phase 8 app update (D-10).
+   * Optional — absent on pre-Phase-8 entries; `asInnerDoc()` fills with `[]`.
+   */
+  lostVersions?: EntrySnapshot[];
 
   // -- Timestamps --
   /** ISO 8601 creation time. Set once on `addEntry`; never updated. */
@@ -92,8 +104,8 @@ export interface Entry {
  * `settings.clipboard` stores the clipboard auto-clear preference (P5-12). Optional.
  */
 export interface InnerDoc {
-  /** Inner schema version. 1 in v1. */
-  schemaVersion: 1;
+  /** Inner schema version. 1 in v1; 2 after the Phase 8 additive bump (D-02/D-10). */
+  schemaVersion: 1 | 2;
   /** All entries (active + tombstones). */
   entries: Entry[];
   /** Vault-level settings. */

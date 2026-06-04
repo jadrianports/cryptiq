@@ -128,3 +128,43 @@ export class GeneratorError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 8 typed errors (DC-9 pattern — Shape B: message-only constructor)
+// ---------------------------------------------------------------------------
+
+/**
+ * The two `InnerDoc`s have different `schemaVersion` values — merge refused before
+ * any records are processed (D-09). Never normalize/guess across schemas.
+ * User-facing effect: "update both apps, then sync."
+ */
+export class MergeSchemaMismatchError extends Error {
+  readonly code = 'MERGE_SCHEMA_MISMATCH';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Wall-clock difference between local and remote exceeds 30 seconds — merge aborted
+ * before any records are processed (D-12, MERGE-06). Strict `> 30_000ms`.
+ * The engine never reads the clock directly; the caller injects both timestamps.
+ */
+export class MergeClockSkewError extends Error {
+  readonly code = 'MERGE_CLOCK_SKEW';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * An entry in either `InnerDoc` has an invalid shape (missing `id`, unparseable
+ * `modifiedAt`, or another required field missing) — the whole merge is refused;
+ * never partial (D-17). An empty vault (zero entries) is valid and does NOT throw.
+ */
+export class MergeInvalidInputError extends Error {
+  readonly code = 'MERGE_INVALID_INPUT';
+  constructor(message: string) {
+    super(message);
+  }
+}
