@@ -26,6 +26,28 @@ serde_json = "1"
 # Gdi / core-graphics). 1Password-maintained (github.com/1Password/arboard), MIT/Apache-2.0.
 arboard = { version = "3", default-features = false }
 
+# Phase 9: Noise handshake + async TCP + QR code generation (apps/desktop/src-tauri ONLY)
+# Human-verified on crates.io 2026-06-04 (checkpoint:human-verify approved by user):
+#   snow 0.10.0    — github.com/mcginty/snow,        MIT OR Apache-2.0
+#   qrcode 0.14.1  — github.com/kennytm/qrcode-rust, MIT OR Apache-2.0
+#   tokio 1.52.3   — github.com/tokio-rs/tokio,       MIT
+# `time` feature required by Plan 09-04 60 s SAS-confirmation timeout (D-02 tokio::time::timeout).
+snow   = "^0.10"
+# L4 (hygiene, mirrors arboard minimization): only the SVG renderer is used. qrcode 0.14.1's
+# default features are ["image", "svg", "pic"] — "image" pulls the `image` crate tree and "pic"
+# the PIC renderer, neither of which Cryptiq uses. There is NO "std" feature in qrcode 0.14
+# (verified against the crate's Cargo.toml: features = bench/pic/svg/image), so the correct
+# minimal set is default-features=false + features=["svg"].
+qrcode = { version = "^0.14", default-features = false, features = ["svg"] }
+tokio  = { version = "^1.49", features = ["net", "io-util", "rt-multi-thread", "macros", "sync", "time"] }
+
+# Phase 9 GAP-B (M1): volatile secret zeroization on all pairing-session removal paths.
+# zeroize is the canonical, audited, no-deps secret-wiping crate (RustCrypto org),
+# MIT OR Apache-2.0. Verified on crates.io 2026-06-06 (latest 1.8.2). It uses
+# core::ptr::write_volatile + a compiler fence so the wipe cannot be elided by the
+# optimizer — unlike the hand-rolled `for b in ..{ *b = 0 }` loops it replaces.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
 # Desktop-only plugins per D-15 (Linux dropped; macOS + Windows only).
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 tauri-plugin-single-instance = "2.0.0"
@@ -55,6 +77,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Power",
     "Win32_System_LibraryLoader",
+    "Win32_Security_Credentials",
 ] }
 
 # PID liveness check on macOS: kill(pid, 0) via libc.

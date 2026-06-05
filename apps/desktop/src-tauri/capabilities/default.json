@@ -26,7 +26,8 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
-        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" }
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" },
+        { "path": "$APPCONFIG/cryptiq/peers.json" }
       ]
     },
     {
@@ -40,7 +41,9 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
-        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" }
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" },
+        { "path": "$APPCONFIG/cryptiq/peers.json" },
+        { "path": "$APPCONFIG/cryptiq/peers.json.tmp" }
       ]
     },
     {
@@ -54,7 +57,8 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
-        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" }
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" },
+        { "path": "$APPCONFIG/cryptiq/peers.json" }
       ]
     },
     {
@@ -66,7 +70,9 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.2" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.3" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.4" },
-        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" }
+        { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
+        { "path": "$APPCONFIG/cryptiq/peers.json" },
+        { "path": "$APPCONFIG/cryptiq/peers.json.tmp" }
       ]
     },
     {

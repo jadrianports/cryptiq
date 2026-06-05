@@ -53,3 +53,9 @@ export * from './sync/duplicate';
 // Note: merge errors (MergeClockSkewError, MergeSchemaMismatchError, MergeInvalidInputError)
 // are in ./errors (already exported above by the Phase 2 block on line 16).
 // They are deliberately NOT re-exported here to avoid a duplicate-export conflict (TS2308).
+
+// Phase 9 public surface:
+// Pairing code validator + D-18 unlock guard (pure core, no Tauri/Svelte/node imports).
+// Note: pairing errors (PairingCodeInvalidError, PairingRequiresUnlockError, etc.)
+// are in ./errors (already exported above). Not re-exported here to avoid TS2308.
+export * from './sync/pairingCode';

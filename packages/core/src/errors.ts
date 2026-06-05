@@ -168,3 +168,98 @@ export class MergeInvalidInputError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 9 typed errors (DC-9 pattern — Shape B: message-only constructor)
+// ---------------------------------------------------------------------------
+
+/**
+ * The pairing code (Base32 + check character) failed local validation before any
+ * network attempt. Avoids an opaque handshake failure on a simple typo (D-11).
+ * Callers branch on `instanceof PairingCodeInvalidError` or `.code === 'PAIRING_CODE_INVALID'`.
+ */
+export class PairingCodeInvalidError extends Error {
+  readonly code = 'PAIRING_CODE_INVALID';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * The SAS codes on both devices did not match, or the SAS window expired. Treat
+ * as a MITM signal — wipe ephemeral state and show interception warning (D-04).
+ * Callers branch on `instanceof PairingSasMismatchError` or `.code === 'PAIRING_SAS_MISMATCH'`.
+ */
+export class PairingSasMismatchError extends Error {
+  readonly code = 'PAIRING_SAS_MISMATCH';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * A re-pair was attempted for a device already in peers.json without an explicit
+ * "Remove and re-pair" flow (D-16). Prevents silent key rotation / replay.
+ * Callers branch on `instanceof PairingAlreadyExistsError` or `.code === 'PAIRING_ALREADY_EXISTS'`.
+ */
+export class PairingAlreadyExistsError extends Error {
+  readonly code = 'PAIRING_ALREADY_EXISTS';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * The Noise handshake failed — wrong PSK, message authentication failure, or
+ * connection drop. Fail closed; never expose internal snow error details.
+ * Callers branch on `instanceof PairingHandshakeError` or `.code === 'PAIRING_HANDSHAKE_FAILED'`.
+ */
+export class PairingHandshakeError extends Error {
+  readonly code = 'PAIRING_HANDSHAKE_FAILED';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Windows Credential Manager operation failed. Wraps the Win32 GetLastError code
+ * as a numeric `win32ErrorCode` field so callers branch on the stable `.code` string
+ * or inspect the numeric error. Error message strings NEVER contain key bytes (SEC-09).
+ * Callers branch on `instanceof CredentialManagerError` or `.code === 'CREDENTIAL_MANAGER_ERROR'`.
+ */
+export class CredentialManagerError extends Error {
+  readonly code = 'CREDENTIAL_MANAGER_ERROR';
+  constructor(
+    message: string,
+    public readonly win32ErrorCode?: number,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * `peers.json` failed schema or JSON validation — fail closed on bad JSON, missing
+ * required fields, or unknown `schemaVersion` (never guess across schemas, mirrors
+ * the `UnknownVaultVersionError` precedent).
+ * Callers branch on `instanceof PeersDocCorruptError` or `.code === 'PEERS_DOC_CORRUPT'`.
+ */
+export class PeersDocCorruptError extends Error {
+  readonly code = 'PEERS_DOC_CORRUPT';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Initiating or accepting a pairing was attempted while the vault is LOCKED (D-18).
+ * The frontend unlock guard in syncBridge.ts / PairingStore throws this before any
+ * `pairing_initiate` / `pairing_connect` / `pairing_confirm` Tauri invoke, ensuring
+ * the vault key is available before any pairing network activity begins.
+ * Callers branch on `instanceof PairingRequiresUnlockError` or `.code === 'PAIRING_REQUIRES_UNLOCK'`.
+ */
+export class PairingRequiresUnlockError extends Error {
+  readonly code = 'PAIRING_REQUIRES_UNLOCK';
+  constructor(message: string) {
+    super(message);
+  }
+}

@@ -41,6 +41,9 @@ pub fn run() {
         // Tauri-managed in-memory clipboard stash (a HASH only, per P5-09). Registered before
         // invoke_handler so the two clipboard commands can inject `State<ClipboardStore>`.
         .manage(commands::clipboard::ClipboardStore::default())
+        // Tauri-managed pairing session map (Plan 09-05). Registered before invoke_handler
+        // so the async pairing commands can inject `State<PairingSessionMap>`.
+        .manage(commands::pairing::PairingSessionMap::new())
         // Native half of LOCK-01: start the system-sleep watcher once the app is built.
         // Gated to (windows, macOS) per D-15; emits "cryptiq-sleep-lock" on system sleep.
         .setup(|app| {
@@ -75,6 +78,19 @@ pub fn run() {
             commands::vault::vault_export_copy,   // Phase 6 — EXPORT-01 / P6-10
             commands::clipboard::clipboard_write_sensitive,
             commands::clipboard::clipboard_clear_if_ours,
+            // Phase 9 — device identity + pairing commands (Plan 09-05)
+            commands::pairing::get_local_device_info,
+            commands::pairing::device_key_write,
+            commands::pairing::device_key_read,
+            commands::pairing::device_key_delete,
+            commands::pairing::generate_qr_svg,
+            commands::pairing::get_lan_ip,
+            commands::pairing::pairing_initiate,
+            commands::pairing::pairing_connect,
+            commands::pairing::pairing_confirm,
+            commands::pairing::pairing_finalize,
+            commands::pairing::unpair_device,
+            commands::pairing::peers_json_read,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");
