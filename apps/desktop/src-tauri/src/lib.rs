@@ -44,6 +44,9 @@ pub fn run() {
         // Tauri-managed pairing session map (Plan 09-05). Registered before invoke_handler
         // so the async pairing commands can inject `State<PairingSessionMap>`.
         .manage(commands::pairing::PairingSessionMap::new())
+        // Phase 10 Plan 02 — sync listener lifecycle state (D-06 listen-while-unlocked).
+        // Holds only a cancel channel; the TransportState lives on the task stack (Pitfall 6).
+        .manage(commands::sync::SyncListenerState::new())
         // Native half of LOCK-01: start the system-sleep watcher once the app is built.
         // Gated to (windows, macOS) per D-15; emits "cryptiq-sleep-lock" on system sleep.
         .setup(|app| {
@@ -91,6 +94,10 @@ pub fn run() {
             commands::pairing::pairing_finalize,
             commands::pairing::unpair_device,
             commands::pairing::peers_json_read,
+            // Phase 10 — sync transport commands (D-05 initiator + D-06 listen lifecycle)
+            commands::sync::sync_now,           // Phase 10 Plan 03 — IK sync initiator
+            commands::sync::sync_listener_start,
+            commands::sync::sync_listener_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");

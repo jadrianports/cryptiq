@@ -294,6 +294,14 @@ pub struct PeerRecord {
     /// ISO 8601 timestamp of when this pairing was established.
     pub paired_at: String,
     pub last_synced_at: Option<String>,
+    // Phase 10 additions — #[serde(default)] so Phase-9-era records parse without error
+    // (missing fields default to None). None = "no stored IP yet" → manual-IP fallback (D-01).
+    /// LAN IPv4 address of the peer, stored after the first successful sync. None = not yet known.
+    #[serde(default)]
+    pub last_known_ip: Option<String>,
+    /// LAN port of the peer, stored after the first successful sync. None = not yet known.
+    #[serde(default)]
+    pub last_known_port: Option<u16>,
 }
 
 /// The peers.json document root.
@@ -2542,6 +2550,8 @@ fn finalize_commit(
         vault_pair_id: vault_pair_id.to_string(),
         paired_at: now_iso8601(),
         last_synced_at: None,
+        last_known_ip: None,
+        last_known_port: None,
     };
 
     // 2. Write the CredManager peer key FIRST (reversible step).
@@ -2907,6 +2917,8 @@ mod tests {
             vault_pair_id: "pair-id-abc".to_string(),
             paired_at: "2026-06-05T12:00:00Z".to_string(),
             last_synced_at: None,
+            last_known_ip: None,
+            last_known_port: None,
         };
 
         let doc = PeersDoc {
@@ -3126,6 +3138,8 @@ mod tests {
             vault_pair_id: "existing-vault-pair-id".to_string(),
             paired_at: "2026-01-01T00:00:00Z".to_string(),
             last_synced_at: None,
+            last_known_ip: None,
+            last_known_port: None,
         };
 
         let doc = PeersDoc {
@@ -3184,6 +3198,8 @@ mod tests {
             vault_pair_id: "vaultpair-id".to_string(),
             paired_at: "2026-01-01T00:00:00Z".to_string(),
             last_synced_at: None,
+            last_known_ip: None,
+            last_known_port: None,
         };
 
         let doc = PeersDoc {
@@ -3873,6 +3889,8 @@ mod tests {
                 vault_pair_id: "vp".to_string(),
                 paired_at: "2026-01-01T00:00:00Z".to_string(),
                 last_synced_at: None,
+                last_known_ip: None,
+                last_known_port: None,
             }],
         };
         write_peers_json_atomic(config_dir, &doc).unwrap();
