@@ -59,3 +59,9 @@ export * from './sync/duplicate';
 // Note: pairing errors (PairingCodeInvalidError, PairingRequiresUnlockError, etc.)
 // are in ./errors (already exported above). Not re-exported here to avoid TS2308.
 export * from './sync/pairingCode';
+
+// Phase 10 public surface:
+// SYNC-05 same-master-password auth check (authCheckBlobAndGetBKey).
+// Note: sync errors (SyncAuthFailedError, SyncPeerUnreachableError, etc.)
+// are in ./errors (already exported above). Not re-exported here to avoid TS2308.
+export * from './sync/syncAuth';

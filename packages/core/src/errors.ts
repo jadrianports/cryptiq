@@ -263,3 +263,66 @@ export class PairingRequiresUnlockError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 10 typed errors (fail-closed sync error set — DC-9 pattern, Shape B)
+//
+// HARDEN-02 (Phase 13) audits and locks this set. Do NOT change the stable
+// `code` strings after Phase 10 — callers branch on them.
+// Do NOT add SyncMergeError here (deferred to Phase 11/13 scope).
+// ---------------------------------------------------------------------------
+
+/**
+ * The sync peer could not be reached within the connect/handshake deadline.
+ * Also used when the IK handshake fails (wrong static key or MAC failure) —
+ * deliberately indistinguishable from "unreachable" to avoid probing (SYNC-06).
+ * Callers branch on `instanceof SyncPeerUnreachableError` or `.code === 'SYNC_PEER_UNREACHABLE'`.
+ * User-facing: "Could not reach [device name] — check that it is on the same network
+ * and the vault is unlocked."
+ */
+export class SyncPeerUnreachableError extends Error {
+  readonly code = 'SYNC_PEER_UNREACHABLE';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * The remote blob failed to decrypt, indicating the peer's vault uses a different
+ * master password. The vaultPairId binding was verified (correct vault) but the keys
+ * diverged (e.g., password changed on one device without syncing). SYNC-05.
+ * Callers branch on `instanceof SyncAuthFailedError` or `.code === 'SYNC_AUTH_FAILED'`.
+ * User-facing: "Master passwords do not match. Ensure both vaults use the same
+ * master password."
+ */
+export class SyncAuthFailedError extends Error {
+  readonly code = 'SYNC_AUTH_FAILED';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * The sync transport encountered a framing, MAC, or IO error after the IK handshake
+ * completed. The vault was not modified. Retry after checking network stability.
+ * Callers branch on `instanceof SyncTransportError` or `.code === 'SYNC_TRANSPORT_ERROR'`.
+ */
+export class SyncTransportError extends Error {
+  readonly code = 'SYNC_TRANSPORT_ERROR';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * The vaultPairId in the binding-check frame did not match the expected value in
+ * peers.json. The remote device is paired to a DIFFERENT vault instance. Abort
+ * immediately — no vault bytes should have been exchanged (SYNC-03).
+ * Callers branch on `instanceof SyncBindingMismatchError` or `.code === 'SYNC_BINDING_MISMATCH'`.
+ */
+export class SyncBindingMismatchError extends Error {
+  readonly code = 'SYNC_BINDING_MISMATCH';
+  constructor(message: string) {
+    super(message);
+  }
+}
