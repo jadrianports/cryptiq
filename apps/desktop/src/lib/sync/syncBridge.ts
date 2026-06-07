@@ -73,6 +73,10 @@ export interface PeerRecord {
   /** ISO 8601 timestamp of when this pairing was established. */
   pairedAt: string;
   lastSyncedAt: string | null;
+  // Phase 10 additions — #[serde(default)] on the Rust side; null = no stored IP,
+  // prompt for manual entry (D-01). Refreshed on every successful sync.
+  lastKnownIp: string | null;
+  lastKnownPort: number | null;
 }
 
 /**
@@ -203,6 +207,68 @@ export async function generateQrSvg(payload: string): Promise<string> {
  */
 export async function getLanIp(): Promise<string> {
   return invoke<string>('get_lan_ip');
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 — Sync transport invoke wrappers
+//
+// These wrappers call the new Rust sync_* commands (sync.rs) registered in lib.rs.
+// They mirror the pairing-wrapper shape: camelCase args, unlock-gated where required,
+// master password NEVER crosses IPC (Pitfall 5 — SYNC-05 auth check runs in JS/WASM).
+//
+// ERROR MAPPING CONVENTION (orchestration layer responsibility, not here):
+//   The orchestration layer (SyncStore / sync orchestration) maps Rust error strings to
+//   the typed TS errors imported from @cryptiq/core:
+//     "sync_now: connect timed out"   → new SyncPeerUnreachableError(msg)
+//     "IK handshake failed"            → new SyncPeerUnreachableError(msg)   // no info leak
+//     "sync_now: binding check"        → new SyncBindingMismatchError(msg)
+//     tryUnwrap returning null          → new SyncAuthFailedError(msg)        // in authCheck
+//     framing / IO errors              → new SyncTransportError(msg)
+// ---------------------------------------------------------------------------
+
+/**
+ * Initiate a vault sync with the stored peer (Device A role — connects to B).
+ *
+ * D-18 unlock guard: assertVaultUnlockedForPairing called before invoke — a locked
+ * vault throws PairingRequiresUnlockError locally, no IPC/network is touched (SYNC-01).
+ *
+ * Returns B's full encrypted vault blob as a number array (Tauri Vec<u8> serialization).
+ * The JS/WASM layer uses these bytes for the SYNC-05 same-master-password auth check.
+ *
+ * The master password NEVER crosses IPC — see Pitfall 5 in 10-RESEARCH.md.
+ */
+export async function syncNow(configDir: string): Promise<number[]> {
+  assertVaultUnlockedForPairing(vaultSession.isUnlocked); // D-18 / SYNC-01 unlock gate
+  return invoke<number[]>('sync_now', { configDir });
+}
+
+/**
+ * Start the sync listener on this device (Device B role — waits for A to connect).
+ *
+ * D-06: Called on vault unlock when a peer exists in peers.json; listener closes on lock.
+ * Reuses port 54321 (same firewall grant from pairing — no new prompt needed).
+ *
+ * `vaultPath` is needed so the listener task can read this device's vault bytes to
+ * send to the initiator.
+ *
+ * No D-18 unlock guard: the caller (vault unlock handler) already verifies unlock state
+ * before calling this; the Rust command checks peers.json and is idempotent if already running.
+ */
+export async function syncListenerStart(
+  configDir: string,
+  vaultPath: string,
+): Promise<void> {
+  return invoke<void>('sync_listener_start', { configDir, vaultPath });
+}
+
+/**
+ * Stop the sync listener on this device.
+ *
+ * D-06: Called on vault lock. Cancels the running listener task via its cancel channel.
+ * Idempotent — safe to call even if no listener is running.
+ */
+export async function syncListenerStop(): Promise<void> {
+  return invoke<void>('sync_listener_stop');
 }
 
 // ---------------------------------------------------------------------------
