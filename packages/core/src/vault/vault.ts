@@ -304,6 +304,45 @@ export async function saveVault(vault: UnlockedVault, vaultKey: Uint8Array): Pro
 }
 
 /**
+ * Re-seal a merged InnerDoc under an existing vault key, preserving the partner's
+ * wrappedKeys, salt, KDF params, version, and format discriminator (D-03, KAT-1..4
+ * wire-format LOCKED boundary). Only `data` and `meta.modifiedAt` change.
+ *
+ * Used twice by Plan 04 (Phase 11): once for A's re-sealed blob and once for B's.
+ * The input `mergedInner` is taken as-is (object spread only — `partnerDoc` is NOT
+ * mutated). Returns the serialized `VaultDocumentV1` bytes.
+ *
+ * SAFE-04 caller-wipe contract: the caller MUST secureWipe `entriesBytes` and the
+ * `mergedInner` JSON source immediately after this returns (Pitfall 3 — the caller
+ * owns the plaintext lifecycle; this verb does not wipe inputs it did not allocate
+ * transiently). Pattern:
+ *   const entriesBytes = new TextEncoder().encode(JSON.stringify(mergedInner));
+ *   try {
+ *     const bytes = await resealInnerDoc(mergedInner, vaultKey, partnerDoc);
+ *   } finally {
+ *     sodium.memzero(entriesBytes);  // wipe JSON bytes
+ *   }
+ *
+ * Propagates typed errors from encryptInner (e.g. VaultCorruptError) to the caller;
+ * performs no internal try/catch.
+ */
+export async function resealInnerDoc(
+  mergedInner: InnerDoc,
+  vaultKey: Uint8Array,
+  partnerDoc: VaultDocumentV1,
+): Promise<Uint8Array> {
+  const entriesBytes = new TextEncoder().encode(JSON.stringify(mergedInner));
+  const data = await encryptInner(entriesBytes, vaultKey);
+  // SAFE-04: caller MUST zero entriesBytes in a finally block immediately after this call.
+  const newDoc: VaultDocumentV1 = {
+    ...partnerDoc,
+    data,
+    meta: { ...partnerDoc.meta, modifiedAt: new Date().toISOString() },
+  };
+  return serializeOuter(newDoc);
+}
+
+/**
  * Change the master password (VAULT-02 envelope benefit): verify `currentPassword` unwraps
  * the master wrap, then re-wrap the SAME vault key under a key derived from `newPassword`.
  * The `data` blob (entries ciphertext) is NEVER re-encrypted. Mutates `vault.doc` in place

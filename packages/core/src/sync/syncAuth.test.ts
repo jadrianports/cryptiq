@@ -20,7 +20,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createVault, saveVault } from '../vault/vault';
-import { serializeOuter } from '../vault/serialize';
+
 import { getSodium } from '../crypto/sodium';
 import { authCheckBlobAndGetBKey } from './syncAuth';
 import { SyncAuthFailedError } from '../errors';
