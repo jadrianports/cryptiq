@@ -635,6 +635,11 @@ class VaultSession {
     // Preserve the existing outer doc (wrappedKeys, modifiedAt already updated by
     // resealInnerDoc in the handler) and replace only the in-memory entries reference.
     this.#vault = { doc: vault.doc, entries: mergedEntries };
+    // D-10: re-seed the adapter's dedup baseline to the just-persisted merged content,
+    // so the NEXT local CRUD save dedups correctly and does NOT rotate a spurious backup
+    // (a sync save always rotated via saveRawBlob's undefined contentHash, leaving the
+    // baseline stale; without this it would prematurely evict the pre-sync backup).
+    this.#adapter?.initLastSavedHash(hashEntriesContent(mergedEntries));
   }
 
   // ---------------------------------------------------------------------------

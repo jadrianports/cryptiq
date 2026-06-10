@@ -174,7 +174,10 @@ function mapRustSyncError(
   }
 
   // D-06: partner's vault locked mid-sync → SyncLockedMidSyncError.
-  if (m.includes('locked mid') || m.includes('locked_mid_sync') || m.includes('locked')) {
+  // Match only the specific mid-sync markers — a bare 'locked' substring would
+  // false-match benign strings like 'unlocked', 'blocked', or 'deadlocked' and
+  // misclassify an unrelated transport error as a lock-mid-sync (wrong recovery hint).
+  if (m.includes('locked mid') || m.includes('locked_mid_sync')) {
     return new SyncLockedMidSyncError(String(raw));
   }
 
@@ -261,28 +264,13 @@ export async function applyRemoteMergedBlob(
   const mergeResult = mergeInnerDocs(aInner, bInner, mergeCtx);
   const merged = mergeResult.merged;
 
-  // Step 2 + 3: Re-seal under A's key and B's key. Wipe merged JSON bytes in finally.
-  // We need the merged JSON bytes to be explicitly allocated so we can memzero them.
-  const { getSodium } = await import('@cryptiq/core/internal');
-  const sodium = await getSodium();
-
-  // Re-seal under A's key.
-  let aNewBlob: Uint8Array;
-  const aMergedJsonBytes = new TextEncoder().encode(JSON.stringify(merged));
-  try {
-    aNewBlob = await resealInnerDoc(merged, aVaultKey, aDoc);
-  } finally {
-    sodium.memzero(aMergedJsonBytes); // SAFE-04: wipe JSON bytes immediately after encryptInner
-  }
-
-  // Re-seal under B's key.
-  let bNewBlob: Uint8Array;
-  const bMergedJsonBytes = new TextEncoder().encode(JSON.stringify(merged));
-  try {
-    bNewBlob = await resealInnerDoc(merged, bVaultKey, bDoc);
-  } finally {
-    sodium.memzero(bMergedJsonBytes); // SAFE-04
-  }
+  // Step 2 + 3: Re-seal the merged InnerDoc under A's key and B's key.
+  // resealInnerDoc OWNS and zeroes the plaintext byte buffer it allocates (SAFE-04,
+  // Pitfall 3) — there is no caller-side plaintext byte buffer to wipe here. The
+  // `merged` OBJECT itself is JS-managed (unwipeable), an accepted residual consistent
+  // with the rest of the vault path.
+  const aNewBlob = await resealInnerDoc(merged, aVaultKey, aDoc);
+  const bNewBlob = await resealInnerDoc(merged, bVaultKey, bDoc);
 
   // Step 4: Cold-verify BOTH blobs BEFORE calling any save callback (SAFE-03/D-03).
   // Uses unlockVault with the master password to re-derive the key from stored KDF
@@ -447,8 +435,14 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
     // Build B's decrypted InnerDoc from the blob returned by authCheckBlobAndGetBKey.
     // parseOuter + decryptInner are CONFIRMED public via index.ts:18 (Plan 04 facts).
     const bDoc = parseOuter(bBytes);
+    // Decrypt B's vault to its InnerDoc, then immediately wipe the plaintext bytes (SAFE-04).
     const bInnerBytes = await decryptInner(bDoc.data, bVaultKey);
-    const bInner = JSON.parse(new TextDecoder().decode(bInnerBytes)) as InnerDoc;
+    let bInner: InnerDoc;
+    try {
+      bInner = JSON.parse(new TextDecoder().decode(bInnerBytes)) as InnerDoc;
+    } finally {
+      await secureWipe(bInnerBytes);
+    }
 
     // A's current InnerDoc: vaultSession.vault.entries is already an upgraded InnerDoc
     // (asInnerDoc is module-private at crud.ts:52 — cast confirmed in Plan 04 facts).
@@ -495,32 +489,39 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
       }
     };
 
-    // LAN wiring for saveABlob: reload A's session from the merged entries, then save
-    // through the adapter (SAFE-02 backup rotation fires — Pitfall 5 / D-10).
-    // The merged InnerDoc is captured after `applyRemoteMergedBlob` returns via
-    // a closure that decrypts aNewBlob with aVaultKey (the same key used to seal it).
-    // This avoids passing plaintext across the DI seam while still reloading correctly.
+    // LAN wiring for saveABlob (D-01: runs ONLY after B saved + acked).
+    // Write the EXACT cold-verified bytes (aNewBlob) through the adapter via saveRawBlob
+    // — NOT vaultSession.save(), which would (1) re-seal a SECOND, never-cold-verified
+    // ciphertext and (2) suppress the pre-sync backup via content-hash dedup when the
+    // merge is a no-op for A (idle peer). saveRawBlob passes no contentHash, so the
+    // SAFE-02 pre-sync backup ALWAYS rotates (D-10). Save FIRST, reload on success — so
+    // a save failure never leaves A's in-memory state ahead of disk (mirrors the B side).
     const saveABlobLan = async (aNewBlob: Uint8Array): Promise<void> => {
-      // Decrypt aNewBlob to get the merged InnerDoc for session reload (D-07).
-      // aNewBlob was just re-sealed by applyRemoteMergedBlob using aVaultKey.
-      // decryptInner + parseOuter are CONFIRMED public (CODEBASE FACTS #1,#2).
       try {
-        const aReloadDoc = parseOuter(aNewBlob);
-        const aReloadBytes = await decryptInner(aReloadDoc.data, aVaultKey);
-        const aReloadInner = JSON.parse(new TextDecoder().decode(aReloadBytes)) as InnerDoc;
-        // Reload A's session with merged entries BEFORE saving (D-07).
-        await vaultSession.reloadFromMergedInner(aReloadInner);
+        await vaultSession.saveRawBlob(aNewBlob, { maxBackups: 5 });
       } catch {
-        // If decode fails, still attempt to save (the in-memory state is unchanged);
-        // non-fatal reload failure should not block the save.
-      }
-      // Route through adapter save (mutex + backup rotation = SAFE-02/D-10).
-      try {
-        await vaultSession.save({ maxBackups: 5 });
-      } catch (e) {
+        // D-06 vs D-02a: a lock stolen mid-save is a lock-mid-sync, not a save failure.
+        if (vaultSession.vault === null) {
+          throw new SyncLockedMidSyncError('Vault locked mid-sync on A side.');
+        }
         throw new SyncPartnerNotSavedError(
           'partner updated; this device did not save — sync again',
         );
+      }
+      // Save committed: reload A's session from the merged entries ($state.raw, D-07).
+      // Decrypt the just-written verified bytes to obtain the merged InnerDoc, then wipe
+      // the plaintext (SAFE-04). A post-commit reload failure is non-fatal — disk already
+      // holds the verified merged blob; the session reflects it on next unlock.
+      let aReloadBytes: Uint8Array | null = null;
+      try {
+        const aReloadDoc = parseOuter(aNewBlob);
+        aReloadBytes = await decryptInner(aReloadDoc.data, aVaultKey);
+        const aReloadInner = JSON.parse(new TextDecoder().decode(aReloadBytes)) as InnerDoc;
+        await vaultSession.reloadFromMergedInner(aReloadInner);
+      } catch {
+        // non-fatal post-commit reload failure (see above).
+      } finally {
+        if (aReloadBytes !== null) await secureWipe(aReloadBytes);
       }
     };
 
@@ -753,8 +754,15 @@ export async function handleMergedBlobForB(
     // decryptInner uses B's SESSION KEY (the in-memory #vaultKey), not a re-derive.
     const bSessionKey = getBSessionKey();
     const receivedBlobDoc = parseOuter(blobBytes);
+    // Decrypt A's merged blob with B's in-memory session key, then wipe the plaintext
+    // bytes immediately (SAFE-04).
     const innerBytes = await decryptInner(receivedBlobDoc.data, bSessionKey);
-    const receivedMerged = JSON.parse(new TextDecoder().decode(innerBytes)) as InnerDoc;
+    let receivedMerged: InnerDoc;
+    try {
+      receivedMerged = JSON.parse(new TextDecoder().decode(innerBytes)) as InnerDoc;
+    } finally {
+      await secureWipe(innerBytes);
+    }
 
     // schemaVersion fail-closed (D-09/HARDEN-02 upstream).
     if (receivedMerged.schemaVersion !== 1 && receivedMerged.schemaVersion !== 2) {
@@ -785,30 +793,22 @@ export async function handleMergedBlobForB(
     // and ensures the save step operates on COMMITTED ciphertext before reload.
     const bFinalBytes = await resealInnerDoc(bFinal, bSessionKey, bDoc);
 
-    // SAFE-04: wipe merged + bFinal JSON bytes in finally — done via try block below.
-    try {
-      // D-07 + D-01 ordering: save FIRST through the adapter (mutex serialized —
-      // Pitfall 5 / SAFE-02 backup rotation), THEN reload the session on success,
-      // THEN confirm to Rust. This ensures no reload on a failed save (plan requirement:
-      // "no reload + status 'error'" on any failure path).
-      syncStore.setStatus('saving');
-      await saveBlob(bFinalBytes);
+    // D-07 + D-01 ordering: save FIRST through the adapter (mutex serialized —
+    // Pitfall 5 / SAFE-02 backup rotation), THEN reload the session on success, THEN
+    // confirm to Rust. A failed save propagates to the catch below → no reload,
+    // confirmSave(false). resealInnerDoc already zeroed its plaintext byte buffer
+    // (SAFE-04); `bFinal` is a live JS object (unwipeable, accepted residual).
+    syncStore.setStatus('saving');
+    await saveBlob(bFinalBytes);
 
-      // Save succeeded: reload the session from merged entries ($state.raw, D-07).
-      await reloadSession(bFinal);
+    // Save succeeded: reload the session from merged entries ($state.raw, D-07).
+    await reloadSession(bFinal);
 
-      // Store per-device counts (D-16).
-      syncStore.storeLastCounts(bMergeResult.counts);
-      // Resolve the Rust oneshot → listener sends ack to A (D-01).
-      await confirmSave(true);
-      syncStore.setStatus('done');
-    } finally {
-      // SAFE-04: wipe merged JSON bytes. bFinalBlob is ciphertext (safe to leave).
-      const { getSodium } = await import('@cryptiq/core/internal');
-      const sodium = await getSodium();
-      const mergedBytes = new TextEncoder().encode(JSON.stringify(bFinal));
-      sodium.memzero(mergedBytes);
-    }
+    // Store per-device counts (D-16).
+    syncStore.storeLastCounts(bMergeResult.counts);
+    // Resolve the Rust oneshot → listener sends ack to A (D-01).
+    await confirmSave(true);
+    syncStore.setStatus('done');
   } catch {
     // Any failure → confirmSave(false) so A surfaces SyncNoAckError (D-02b).
     // Do NOT reload the session on failure (B's state stays consistent).

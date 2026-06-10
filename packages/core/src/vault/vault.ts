@@ -312,19 +312,14 @@ export async function saveVault(vault: UnlockedVault, vaultKey: Uint8Array): Pro
  * The input `mergedInner` is taken as-is (object spread only — `partnerDoc` is NOT
  * mutated). Returns the serialized `VaultDocumentV1` bytes.
  *
- * SAFE-04 caller-wipe contract: the caller MUST secureWipe `entriesBytes` and the
- * `mergedInner` JSON source immediately after this returns (Pitfall 3 — the caller
- * owns the plaintext lifecycle; this verb does not wipe inputs it did not allocate
- * transiently). Pattern:
- *   const entriesBytes = new TextEncoder().encode(JSON.stringify(mergedInner));
- *   try {
- *     const bytes = await resealInnerDoc(mergedInner, vaultKey, partnerDoc);
- *   } finally {
- *     sodium.memzero(entriesBytes);  // wipe JSON bytes
- *   }
+ * SAFE-04: this verb OWNS the lifecycle of the plaintext byte buffer it allocates —
+ * it zeroes the encoded `mergedInner` JSON bytes in a `finally` immediately after AEAD
+ * sealing, so the encrypted plaintext never lingers in a buffer the caller cannot reach
+ * (Pitfall 3). The caller still owns the `mergedInner` OBJECT (and any JSON string it
+ * created elsewhere) — those are JS-managed and unwipeable, an accepted residual
+ * consistent with the rest of the vault path (saveVault, unlockVault).
  *
- * Propagates typed errors from encryptInner (e.g. VaultCorruptError) to the caller;
- * performs no internal try/catch.
+ * Propagates typed errors from encryptInner (e.g. VaultCorruptError) to the caller.
  */
 export async function resealInnerDoc(
   mergedInner: InnerDoc,
@@ -332,14 +327,19 @@ export async function resealInnerDoc(
   partnerDoc: VaultDocumentV1,
 ): Promise<Uint8Array> {
   const entriesBytes = new TextEncoder().encode(JSON.stringify(mergedInner));
-  const data = await encryptInner(entriesBytes, vaultKey);
-  // SAFE-04: caller MUST zero entriesBytes in a finally block immediately after this call.
-  const newDoc: VaultDocumentV1 = {
-    ...partnerDoc,
-    data,
-    meta: { ...partnerDoc.meta, modifiedAt: new Date().toISOString() },
-  };
-  return serializeOuter(newDoc);
+  try {
+    const data = await encryptInner(entriesBytes, vaultKey);
+    const newDoc: VaultDocumentV1 = {
+      ...partnerDoc,
+      data,
+      meta: { ...partnerDoc.meta, modifiedAt: new Date().toISOString() },
+    };
+    return serializeOuter(newDoc);
+  } finally {
+    // SAFE-04: zero the plaintext JSON bytes the moment sealing is done — this verb is
+    // the only code with a reference to this buffer.
+    await secureWipe(entriesBytes);
+  }
 }
 
 /**

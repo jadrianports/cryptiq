@@ -1265,6 +1265,23 @@ pub async fn sync_listener_start(
                 }
             };
 
+            // D-08 (review HIGH): reject an incoming connection while THIS device is mid-sync
+            // as initiator — two overlapping exchanges would race the same vault save path.
+            // Steady-state guard mirroring sync_now's SyncBusyGuard (best-effort: a poisoned
+            // lock degrades to "not busy" rather than panicking the listener task).
+            if app_for_task
+                .state::<SyncBusyGuard>()
+                .busy
+                .lock()
+                .map(|g| *g)
+                .unwrap_or(false)
+            {
+                eprintln!(
+                    "sync listener: busy (local sync in flight) — rejecting incoming (no secret logged)"
+                );
+                continue;
+            }
+
             // ---- Per-connection: handshake → binding → read vault → chunked send. ----
             // On ANY per-connection error we log + `continue` (serve the next peer), never exit.
 
