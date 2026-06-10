@@ -35,6 +35,21 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_opener::init());
     }
 
+    // DEV/TEST ONLY — hypothesi MCP bridge for driving the app during UAT (Phase 9 pairing).
+    // Gated to debug builds: the WebSocket server NEVER starts in a release build. Bound to
+    // 127.0.0.1 (loopback only) instead of the plugin default 0.0.0.0 so it is not reachable
+    // off-box. Pairs with the `mcp-bridge:default` capability (capabilities/mcp-bridge.json)
+    // and the dev-only `withGlobalTauri` override passed via `tauri dev --config`.
+    // Remove this block + the Cargo.toml dep + the capability file when UAT is done.
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.plugin(
+            tauri_plugin_mcp_bridge::Builder::new()
+                .bind_address("127.0.0.1")
+                .build(),
+        );
+    }
+
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())

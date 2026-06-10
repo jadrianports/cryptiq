@@ -37,7 +37,7 @@ snow   = "^0.10"
 # default features are ["image", "svg", "pic"] — "image" pulls the `image` crate tree and "pic"
 # the PIC renderer, neither of which Cryptiq uses. There is NO "std" feature in qrcode 0.14
 # (verified against the crate's Cargo.toml: features = bench/pic/svg/image), so the correct
-# minimal set is default-features=false + features=["svg"].
+# minimal set is default-features=false + features= ["svg"].
 qrcode = { version = "^0.14", default-features = false, features = ["svg"] }
 tokio  = { version = "^1.49", features = ["net", "io-util", "rt-multi-thread", "macros", "sync", "time"] }
 
@@ -47,6 +47,14 @@ tokio  = { version = "^1.49", features = ["net", "io-util", "rt-multi-thread", "
 # core::ptr::write_volatile + a compiler fence so the wipe cannot be elided by the
 # optimizer — unlike the hand-rolled `for b in ..{ *b = 0 }` loops it replaces.
 zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# DEV/TEST ONLY — NOT a production dependency in spirit. hypothesi MCP bridge used to
+# drive the running app over a localhost WebSocket during UAT (Phase 9 device-pairing
+# verification). It is registered ONLY under #[cfg(debug_assertions)] in lib.rs, so the
+# WebSocket server never starts in a release build, and it is bound to 127.0.0.1.
+# API verified on docs.rs 2026-06-07: Builder::new().bind_address(&str).build() -> TauriPlugin.
+# Remove (this line + the lib.rs debug block + capabilities/mcp-bridge.json) when UAT is done.
+tauri-plugin-mcp-bridge = "0.11"
 
 # Desktop-only plugins per D-15 (Linux dropped; macOS + Windows only).
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
