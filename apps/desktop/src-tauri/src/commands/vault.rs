@@ -436,6 +436,81 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    // ---------------------------------------------------------------------------
+    // test_vault_sweep_tmp — D-09 / T-11-12 / T-11-13 / SC-1
+    //
+    // 1. Create a real vault dir with a `vault.cryptiq` primary + a stale `vault.cryptiq.tmp`.
+    // 2. Call vault_sweep_tmp — assert the .tmp is gone and the primary is intact.
+    // 3. Call vault_sweep_tmp again — assert it is idempotent (Ok when no .tmp).
+    // 4. Confinement test: build a .tmp path whose parent escapes the vault dir and assert
+    //    assert_confined returns an error (path confinement violation — T-11-12).
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_vault_sweep_tmp() {
+        let dir = fresh_dir("sweep_tmp");
+        let vault_path_buf = dir.join("vault.cryptiq");
+        let tmp_path_buf = dir.join("vault.cryptiq.tmp");
+        let vault_path_str = vault_path_buf.to_str().unwrap().to_string();
+
+        // Write primary vault file (simulated — just some bytes).
+        {
+            let mut f = File::create(&vault_path_buf).expect("create primary vault");
+            f.write_all(b"fake-vault-bytes").expect("write primary");
+        }
+
+        // Write stale .tmp file (simulated crash residue).
+        {
+            let mut f = File::create(&tmp_path_buf).expect("create stale .tmp");
+            f.write_all(b"stale-tmp-bytes").expect("write stale tmp");
+        }
+
+        assert!(tmp_path_buf.exists(), "stale .tmp must exist before sweep");
+        assert!(vault_path_buf.exists(), "primary must exist before sweep");
+
+        // Call vault_sweep_tmp — should delete the .tmp.
+        let result = vault_sweep_tmp(vault_path_str.clone());
+        assert!(result.is_ok(), "vault_sweep_tmp should return Ok: {:?}", result);
+
+        assert!(!tmp_path_buf.exists(), "stale .tmp must be gone after sweep");
+        assert!(vault_path_buf.exists(), "primary must survive the sweep — SC-1");
+
+        // Idempotent: calling again with no .tmp must still return Ok.
+        let result2 = vault_sweep_tmp(vault_path_str.clone());
+        assert!(
+            result2.is_ok(),
+            "vault_sweep_tmp must be idempotent (Ok when no .tmp): {:?}",
+            result2
+        );
+
+        // Confinement test: create a sibling dir and verify assert_confined rejects
+        // a .tmp in sibling_dir when the parent is the vault dir (T-11-12).
+        let sibling_dir = fresh_dir("sweep_tmp_sibling");
+        let real_parent = dir.clone();
+        let out_of_parent_tmp = sibling_dir.join("vault.cryptiq.tmp");
+        // Create the out-of-parent tmp so assert_confined can canonicalize its parent.
+        {
+            let mut f = File::create(&out_of_parent_tmp).expect("create out-of-parent tmp");
+            f.write_all(b"evil-tmp").expect("write evil tmp");
+        }
+        // assert_confined must reject a tmp in sibling_dir when parent is the vault dir.
+        let confine_result = assert_confined(&out_of_parent_tmp, &real_parent);
+        assert!(
+            confine_result.is_err(),
+            "assert_confined must reject a .tmp outside the vault parent dir (T-11-12)"
+        );
+        let confine_err = confine_result.unwrap_err();
+        assert!(
+            confine_err.contains("confinement") || confine_err.contains("not inside"),
+            "confinement error message should mention 'confinement' or 'not inside', got: {}",
+            confine_err
+        );
+
+        // Cleanup.
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&sibling_dir);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -856,3 +931,42 @@ pub fn vault_export_copy(source_path: String, destination_path: String) -> Resul
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// vault_sweep_tmp  (D-09 stale-.tmp sweep — SC-1 crash residue cleanup)
+// ---------------------------------------------------------------------------
+
+/// Delete a stale `<vault_path>.tmp` if one exists in the same directory.
+///
+/// Called by JS on vault unlock to sweep any orphaned `.tmp` from a prior crash
+/// (D-09 / SC-1). An orphaned `.tmp` means the atomic rename never completed, so
+/// the primary vault file is intact; the `.tmp` is safe residue to delete.
+///
+/// **Idempotent:** returns `Ok(())` even if no `.tmp` file is found.
+///
+/// **Path confinement (T-11-12):** `assert_confined` is called on the `.tmp` path BEFORE
+/// any `remove_file` — a crafted `vault_path` that resolves to a `.tmp` outside the
+/// vault directory is rejected with no delete attempted.
+///
+/// Non-async: mirroring `vault_write_atomic` (`pub fn`, not `pub async fn`).
+///
+/// The JS invoke call is:
+///   `invoke('vault_sweep_tmp', { vaultPath })`
+/// Tauri v2 maps camelCase `vaultPath` → snake_case `vault_path`.
+#[tauri::command]
+pub fn vault_sweep_tmp(vault_path: String) -> Result<(), String> {
+    let (parent, _vault_pb) = resolve_vault_parent(&vault_path)?;
+
+    let tmp_path = PathBuf::from(format!("{}.tmp", vault_path));
+
+    // T-11-12: confine the tmp path before any delete.
+    assert_confined(&tmp_path, &parent)?;
+
+    if tmp_path.exists() {
+        // Best-effort delete: ignore the error (idempotent — the primary is always intact).
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    Ok(())
+}
+

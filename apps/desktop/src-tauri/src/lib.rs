@@ -62,6 +62,12 @@ pub fn run() {
         // Phase 10 Plan 02 — sync listener lifecycle state (D-06 listen-while-unlocked).
         // Holds only a cancel channel; the TransportState lives on the task stack (Pitfall 6).
         .manage(commands::sync::SyncListenerState::new())
+        // Phase 11 Plan 03 — B-side merged-blob oneshot (listener waits for JS confirm-save).
+        .manage(commands::sync::SyncMergedBlobPending::new())
+        // Phase 11 Plan 03 — D-08 single-sync busy guard (cleared on all exits via RAII drop).
+        .manage(commands::sync::SyncBusyGuard::new())
+        // Phase 11 Plan 03 — A-side merged-blob oneshot (sync_now parks; JS resolves via sync_provide_merged_blob).
+        .manage(commands::sync::SyncProvideBlobPending::new())
         // Native half of LOCK-01: start the system-sleep watcher once the app is built.
         // Gated to (windows, macOS) per D-15; emits "cryptiq-sleep-lock" on system sleep.
         .setup(|app| {
@@ -113,6 +119,10 @@ pub fn run() {
             commands::sync::sync_now,           // Phase 10 Plan 03 — IK sync initiator
             commands::sync::sync_listener_start,
             commands::sync::sync_listener_stop,
+            // Phase 11 Plan 03 — D-01 wire protocol: merged-blob + ack legs
+            commands::sync::sync_confirm_save,       // B-side JS→Rust confirm (plan 04 calls this)
+            commands::sync::sync_provide_merged_blob, // A-side oneshot resolver (plan 04 calls this)
+            commands::vault::vault_sweep_tmp,         // D-09 stale .tmp sweep on vault open
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");
