@@ -363,6 +363,11 @@ export async function applyRemoteMergedBlob(
  * @throws {VaultCorruptError}          if B's received blob is not a valid VaultDocumentV1.
  */
 export async function runSyncNow(configDir: string, masterPassword: Uint8Array): Promise<void> {
+  // Mark this device as the sync initiator (D-12 — App.svelte B-side toast must not fire
+  // for A-initiated done transitions). Set BEFORE setStatus so the flag is true for the
+  // entire A-side path. The B-side handleMergedBlobForB never calls runSyncNow, so the
+  // flag stays false for incoming (B-side) syncs.
+  syncStore.setInitiatorMode(true);
   // Transition to 'connecting': the IK handshake + binding check happen in Rust.
   syncStore.setStatus('connecting');
 

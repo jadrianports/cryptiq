@@ -36,7 +36,11 @@
   // Health-audit store: cleared on vault lock to release Entry refs (plaintext) and
   // bound the score-cache memory lifetime to the session (defense-in-depth).
   import { clearHealthAudit } from './lib/state/healthAudit.svelte';
+  import { appConfigDir } from '@tauri-apps/api/path';
   import { loadConfig } from './lib/config/config-adapter';
+  import { pairingStore } from './lib/sync/PairingStore.svelte';
+  import { syncStore } from './lib/sync/SyncStore.svelte';
+  import { pushToast } from './lib/state/ui.svelte';
   import FirstRunWizard from './lib/screens/FirstRunWizard.svelte';
   import UnlockScreen from './lib/screens/UnlockScreen.svelte';
   import RelocateScreen from './lib/screens/RelocateScreen.svelte';
@@ -50,6 +54,11 @@
 
   let sodiumReady = $state(false);
   let showLoadingHint = $state(false);
+
+  // Thread configDir and vaultPath to MainView and SettingsShell (Plan 12-01 Task 3).
+  // Sourced after sodium.ready + loadConfig() resolve; default to '' until then.
+  let configDir = $state('');
+  let vaultPath = $state('');
 
   $effect(() => {
     const t0 = performance.now();
@@ -77,12 +86,21 @@
         }
 
         // Seed the initial view from config (AUTH-09 + P4-10).
+        // Also source configDir + vaultPath for prop threading (Plan 12-01 Task 3).
         try {
-          const config = await loadConfig();
+          // appConfigDir() returns the raw OS app-config directory (e.g.
+          // C:\Users\...\AppData\Roaming\cryptiq on Windows). The Rust pairing
+          // and sync commands receive this and append 'cryptiq/' themselves.
+          const [config, resolvedConfigDir] = await Promise.all([
+            loadConfig(),
+            appConfigDir(),
+          ]);
+          configDir = resolvedConfigDir;
           if (config.vaultPath === null || config.vaultPath === undefined || config.vaultPath === '') {
             // No vault configured → first-run wizard.
             go('first-run');
           } else {
+            vaultPath = config.vaultPath;
             // Vault path is remembered. Check if the file still exists (P4-10).
             const fileExists = await exists(config.vaultPath);
             if (fileExists) {
@@ -178,6 +196,10 @@
       // getVaultSettings guarantees idleMinutes via asInnerDoc(); fallback to
       // 'never' so a missing field never arms an un-configured timer.
       startIdleController(settings.lock?.idleMinutes ?? 'never');
+      // D-03: init the pairing store on unlock so device list is populated.
+      // pairingStore.init() is fail-open (empty list on error). configDir is
+      // available post-loadConfig; '' is safe (init will no-op gracefully).
+      void pairingStore.init(configDir);
     }
 
     return () => {
@@ -186,7 +208,35 @@
       // hold plaintext passwords) and resets the score cache. This bounds the
       // plaintext lifetime to the unlocked session (defense-in-depth, Pitfall 7).
       clearHealthAudit();
+      // D-03: reset the pairing store on lock — clears peers list so secret-adjacent
+      // peer data (device IDs, public keys) does not outlive the unlocked session.
+      pairingStore.reset();
     };
+  });
+
+  // D-12: B-side incoming sync notice — push a counts-only toast when a
+  // non-initiator 'done' transition is observed.
+  //
+  // The initiator-mode gate (syncStore.isInitiatorMode) ensures this effect
+  // only fires for B-side incoming syncs. The A-initiated toast (D-14 full
+  // summary) is owned by Plan 12-04's MainView effect; this effect MUST NOT
+  // fire when this device initiated the sync (double-toast prevention).
+  //
+  // Counts-only fence: interpolates ONLY integer count fields + the device name.
+  // NO entry titles, usernames, passwords, or URLs (UI-18 fence / T-12-01).
+  $effect(() => {
+    if (syncStore.status === 'done' && syncStore.lastCounts !== null && !syncStore.isInitiatorMode) {
+      const peer = pairingStore.peers[0];
+      const deviceName = peer?.deviceName ?? 'the other device';
+      const { added, updated } = syncStore.lastCounts;
+      if (added > 0 || updated > 0) {
+        pushToast(
+          `Vault updated from ${deviceName} — ${String(added)} added, ${String(updated)} updated`,
+        );
+      } else {
+        pushToast('Vault up to date.');
+      }
+    }
   });
 </script>
 
@@ -223,11 +273,11 @@
       <RelocateScreen />
     </div>
   {:else if view.current === 'main'}
-    <MainView />
+    <MainView {configDir} {vaultPath} />
   {:else if view.current === 'generator'}
     <GeneratorScreen />
   {:else if view.current === 'settings'}
-    <SettingsShell />
+    <SettingsShell {configDir} {vaultPath} />
   {:else if view.current === 'change-master'}
     <div class="h-screen">
       <ChangeMasterView />

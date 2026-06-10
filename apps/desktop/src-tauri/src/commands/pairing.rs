@@ -2602,6 +2602,45 @@ fn finalize_commit(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 12 — read-only SAS poll fallback (Plan 12-01 Task 2)
+// ---------------------------------------------------------------------------
+
+/// Read-only SAS display string for a known pairing session (Phase 12 D-07 poll fallback).
+///
+/// Returns the already-computed SAS display string (e.g. "042 318") from the
+/// in-memory session map. This command does NOT mutate the Noise state, does NOT
+/// call `get_handshake_hash()`, and does NOT affect the wire protocol — it is a
+/// plain HashMap read.
+///
+/// Used by the JS renderer as a fallback when the `pairing://sas` Tauri event is
+/// missed (i.e., the JS listener was registered after the event was emitted). The
+/// event is the primary path; this is belt-and-suspenders.
+///
+/// Returns `Err` if:
+///  - the session_id is not found in the map
+///  - sas_display is empty (SAS not yet derived for this session)
+///
+/// SECURITY: The SAS is public display data — it is intentionally compared aloud
+/// between users on both devices. It contains no key material, no PSK, no Noise
+/// state (T-12-03: disposed as "accept"). The command is registered in lib.rs
+/// alongside the other pairing commands.
+#[tauri::command]
+pub async fn pairing_get_sas(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<String, String> {
+    let sessions = app.state::<PairingSessionMap>();
+    let map = sessions.0.lock().unwrap();
+    let session = map
+        .get(&session_id)
+        .ok_or_else(|| format!("pairing_get_sas: session '{}' not found", session_id))?;
+    if session.sas_display.is_empty() {
+        return Err("pairing_get_sas: SAS not yet derived for this session".to_string());
+    }
+    Ok(session.sas_display.clone())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -52,6 +52,13 @@ class SyncStore {
   // True while the Rust sync_listener_start task is believed to be running.
   #listenerActive = false;
 
+  // NON-reactive: plain boolean guard for the D-12 App.svelte B-side toast effect.
+  // True when THIS device initiated the sync (runSyncNow called), false on the B-side
+  // incoming path (handleMergedBlobForB never calls runSyncNow, so this stays false).
+  // NOT in the reactive graph — held as a plain private field (mirrors #listenerActive).
+  // MUST NOT use $state or $state.raw (Phase 12 Plan 12-01 Task 2 / T-12-05 mitigate).
+  #isInitiatorMode = false;
+
   // $state.raw: per-device merge counts from the last completed sync (D-16).
   // Starts null; set by storeLastCounts() after a successful sync; cleared by reset().
   // Use $state.raw (NOT $state) — same discipline as #status and #lastError.
@@ -101,6 +108,29 @@ class SyncStore {
   }
 
   /**
+   * Whether THIS device initiated the current or most recent sync (D-12).
+   *
+   * NON-reactive — plain private field, not in the reactive graph. The App.svelte
+   * D-12 toast effect reads this to distinguish A-initiated vs B-side incoming done.
+   * Set by runSyncNow (A-side initiator path); stays false on the B-side path
+   * (handleMergedBlobForB never calls runSyncNow).
+   *
+   * SECURITY: holds a boolean only — no vault key, no master password (T-12-05).
+   */
+  get isInitiatorMode(): boolean {
+    return this.#isInitiatorMode;
+  }
+
+  /**
+   * Set the initiator-mode flag. Called by runSyncNow at the top of the A-side path.
+   *
+   * @param value true when this device initiated the sync, false otherwise.
+   */
+  setInitiatorMode(value: boolean): void {
+    this.#isInitiatorMode = value;
+  }
+
+  /**
    * Per-device merge counts from the last completed sync (D-16).
    *
    * Reactive via $state.raw — Phase-12 components read this to render the sync
@@ -147,13 +177,14 @@ class SyncStore {
   }
 
   /**
-   * Reset status to 'idle' and clear the last error and counts. Called at the start
-   * of a new sync attempt so stale state does not persist.
+   * Reset status to 'idle' and clear the last error, counts, and initiator mode.
+   * Called at the start of a new sync attempt so stale state does not persist.
    */
   reset(): void {
     this.#status = 'idle';
     this.#lastError = null;
     this.#lastCounts = null;
+    this.#isInitiatorMode = false;
   }
 
   /**

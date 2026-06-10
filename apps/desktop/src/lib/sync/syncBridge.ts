@@ -156,6 +156,23 @@ export async function pairingFinalize(
   return invoke<void>('pairing_finalize', { configDir, sessionId });
 }
 
+/**
+ * Fetch the already-computed SAS display string for a known pairing session.
+ *
+ * Read-only poll fallback (Phase 12 D-07): used when the JS listener for
+ * `pairing://sas` may have been registered after the event was emitted.
+ * The primary path is the Tauri event; this is belt-and-suspenders.
+ *
+ * NO unlock guard — the SAS is public display data compared aloud between
+ * users. It contains no key material (T-12-03).
+ *
+ * @param sessionId The session ID returned by pairingInitiate/pairingConnect.
+ * @returns         The formatted 6-digit SAS string (e.g. "042 318").
+ */
+export async function pairingGetSas(sessionId: string): Promise<string> {
+  return invoke<string>('pairing_get_sas', { sessionId });
+}
+
 // ---------------------------------------------------------------------------
 // Device info + peers
 // ---------------------------------------------------------------------------

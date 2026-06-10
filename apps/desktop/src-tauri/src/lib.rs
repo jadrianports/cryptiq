@@ -115,6 +115,7 @@ pub fn run() {
             commands::pairing::pairing_finalize,
             commands::pairing::unpair_device,
             commands::pairing::peers_json_read,
+            commands::pairing::pairing_get_sas,  // Phase 12 Plan 12-01 — read-only SAS poll fallback
             // Phase 10 — sync transport commands (D-05 initiator + D-06 listen lifecycle)
             commands::sync::sync_now,           // Phase 10 Plan 03 — IK sync initiator
             commands::sync::sync_listener_start,

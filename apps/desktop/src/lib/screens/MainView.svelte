@@ -38,6 +38,19 @@
   import RecentlyDeletedList from './RecentlyDeletedList.svelte';
 
   /**
+   * Props contract for Phase 12 (Plan 12-01 Task 3).
+   * configDir and vaultPath are threaded from App.svelte so Plan 12-04 can
+   * mount SyncNowButton + D-11 lock predicate without prop-drilling at that stage.
+   */
+  type Props = {
+    /** Tauri app config directory (passed to sync/pairing Rust commands). */
+    configDir: string;
+    /** Filesystem path to the vault file (passed to Rust sync listener). */
+    vaultPath: string;
+  };
+  let { configDir, vaultPath }: Props = $props();
+
+  /**
    * Helper to extract the typed Entry array from the vault's opaque `entries` field.
    * `UnlockedVault.entries` is typed as `object` in Phase 2 (opaque to vault format
    * layer); Phase 3 writes an `InnerDoc` into it. This cast is safe — all CRUD verbs

@@ -39,6 +39,19 @@
   import ConfirmMasterPassword from '../components/ConfirmMasterPassword.svelte';
   import AboutView from './AboutView.svelte';
 
+  /**
+   * Props contract for Phase 12 (Plan 12-01 Task 3).
+   * configDir and vaultPath are threaded from App.svelte so Plan 12-03 can
+   * host the Sync section + PairingScreen sub-view without prop-drilling.
+   */
+  type Props = {
+    /** Tauri app config directory (passed to sync/pairing Rust commands). */
+    configDir: string;
+    /** Filesystem path to the vault file (passed to Rust sync listener). */
+    vaultPath: string;
+  };
+  let { configDir, vaultPath }: Props = $props();
+
   // ── Favicon toggle local state (UI-10) ────────────────────────────────────
   // OFF by default. NOT persisted — the toggle is a preview of the control
   // shape for a future update. No network call made regardless of state.
