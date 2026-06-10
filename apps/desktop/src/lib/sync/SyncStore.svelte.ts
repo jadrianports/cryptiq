@@ -36,7 +36,7 @@
 // Source: 10-05-PLAN.md Task 1, 10-PATTERNS.md §"SyncStore.svelte.ts (NEW)",
 //   CLAUDE.md frontend/security, PairingStore.svelte.ts pattern.
 
-export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'done' | 'error';
+export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'merging' | 'saving' | 'done' | 'error';
 
 class SyncStore {
   // $state.raw: status reassigned on state transitions — no deep proxy (Pitfall 7).
@@ -51,6 +51,12 @@ class SyncStore {
   // NON-reactive: plain boolean guard for the D-06 $effect. Not in the reactive graph.
   // True while the Rust sync_listener_start task is believed to be running.
   #listenerActive = false;
+
+  // $state.raw: per-device merge counts from the last completed sync (D-16).
+  // Starts null; set by storeLastCounts() after a successful sync; cleared by reset().
+  // Use $state.raw (NOT $state) — same discipline as #status and #lastError.
+  // NEVER store keys, titles, or entry content here (T-11-19).
+  #lastCounts = $state.raw<import('@cryptiq/core').MergeCounts | null>(null);
 
   // ---------------------------------------------------------------------------
   // Readable state (reactive via $state.raw)
@@ -94,6 +100,18 @@ class SyncStore {
     return this.#listenerActive;
   }
 
+  /**
+   * Per-device merge counts from the last completed sync (D-16).
+   *
+   * Reactive via $state.raw — Phase-12 components read this to render the sync
+   * summary counts. null until the first successful sync or after reset().
+   *
+   * SECURITY: counts only — never entry titles, passwords, or key material (T-11-19).
+   */
+  get lastCounts(): import('@cryptiq/core').MergeCounts | null {
+    return this.#lastCounts;
+  }
+
   // ---------------------------------------------------------------------------
   // State mutations (whole-value reassignment for $state.raw reactivity)
   // ---------------------------------------------------------------------------
@@ -129,12 +147,27 @@ class SyncStore {
   }
 
   /**
-   * Reset status to 'idle' and clear the last error. Called at the start of a new
-   * sync attempt so stale error state does not persist.
+   * Reset status to 'idle' and clear the last error and counts. Called at the start
+   * of a new sync attempt so stale state does not persist.
    */
   reset(): void {
     this.#status = 'idle';
     this.#lastError = null;
+    this.#lastCounts = null;
+  }
+
+  /**
+   * Store per-device merge counts after a successful sync (D-16).
+   *
+   * Phase-12 UI reads `lastCounts` to render the sync summary. Whole-value
+   * reassignment fires $state.raw reactivity. Call ONLY after ack + A-save
+   * both succeed (Pitfall 7 — not before full success).
+   *
+   * SECURITY: counts only — no entry titles, passwords, or key material (T-11-19).
+   */
+  storeLastCounts(counts: import('@cryptiq/core').MergeCounts): void {
+    // Whole-value reassignment fires $state.raw reactivity.
+    this.#lastCounts = counts;
   }
 
   // ---------------------------------------------------------------------------

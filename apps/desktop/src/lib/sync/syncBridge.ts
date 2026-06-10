@@ -272,6 +272,69 @@ export async function syncListenerStop(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 11 — Merge continuation invoke wrappers (D-01/D-09/SAFE-04)
+//
+// Three new wrappers for the Phase-11 merge + ack protocol.
+// Command names are LOCKED (registered in lib.rs / sync.rs from Plan 03):
+//   sync_provide_merged_blob — A resolves the Rust oneshot with B's sealed blob
+//   sync_confirm_save        — B resolves the Rust oneshot with saveOk boolean
+//   vault_sweep_tmp          — sweep orphaned .tmp at vault open (D-09)
+//
+// SAFE-04 note: only sealed ciphertext bytes, a boolean, and a vault path
+// cross IPC — no key material, no plaintext InnerDoc.
+//
+// Tauri v2 maps camelCase JS object keys → snake_case Rust params automatically:
+//   mergedBlobBytes → merged_blob_bytes
+//   saveOk          → save_ok
+//   vaultPath       → vault_path
+// ---------------------------------------------------------------------------
+
+/**
+ * A-side: resolve the `sync_now` oneshot with B's freshly re-sealed blob bytes.
+ *
+ * Passes the ALREADY-SEALED (under B's vault key) blob back to the live `sync_now`
+ * transport via the Plan-03 `SyncProvideBlobPending` oneshot resolver. The bytes
+ * are ciphertext — no key or plaintext ever crosses IPC (SAFE-04).
+ *
+ * No D-18 unlock guard needed: this is called mid-sync after the guard-gated
+ * `syncNow()` already established the transport.
+ *
+ * @param mergedBlobBytes B's re-sealed VaultDocumentV1 as a plain number array
+ *                        (Array.from(Uint8Array) — Tauri Vec<u8> convention).
+ */
+export async function syncProvideMergedBlob(mergedBlobBytes: number[]): Promise<void> {
+  return invoke<void>('sync_provide_merged_blob', { mergedBlobBytes });
+}
+
+/**
+ * B-side: resolve the `sync-merged-blob-received` handler's Rust oneshot.
+ *
+ * Called by the JS handler after B has verified, re-merged, re-sealed, and
+ * adapter-saved the received merged blob. `saveOk = true` signals success and
+ * causes the Rust listener to send the ack to A; `saveOk = false` signals
+ * failure and causes the listener to skip the ack (A surfaces SyncNoAckError).
+ *
+ * No D-18 guard: Rust-only state — not a network/pairing operation.
+ */
+export async function syncConfirmSave(saveOk: boolean): Promise<void> {
+  return invoke<void>('sync_confirm_save', { saveOk });
+}
+
+/**
+ * Sweep any orphaned `.tmp` file beside the vault at vault open (D-09).
+ *
+ * Called best-effort at vault open. An orphaned `.tmp` = the rename in a
+ * prior `vault_write_atomic` never completed (e.g. process killed mid-sync).
+ * The primary vault file is intact. Idempotent and non-fatal.
+ *
+ * @param vaultPath Filesystem path to the vault file (the `.tmp` path is
+ *                  derived from this by Rust: `<vaultPath>.tmp`).
+ */
+export async function vaultSweepTmp(vaultPath: string): Promise<void> {
+  return invoke<void>('vault_sweep_tmp', { vaultPath });
+}
+
+// ---------------------------------------------------------------------------
 // Credential Manager pass-through commands (low-level — for advanced use only)
 // ---------------------------------------------------------------------------
 

@@ -262,6 +262,13 @@ class VaultSession {
     // Acquire advisory lock BEFORE mounting — fail if another live process holds it.
     const warning = await this._acquireLock(adapter.vaultPath);
 
+    // D-09: sweep any orphaned .tmp file from a prior killed sync (best-effort, non-fatal).
+    try {
+      await invoke('vault_sweep_tmp', { vaultPath: adapter.vaultPath });
+    } catch {
+      // Non-fatal: .tmp may not exist or Rust command may be unavailable in test env.
+    }
+
     // Seed the content-hash dedup from the loaded content (Pitfall 8 defense).
     adapter.initLastSavedHash(hashEntriesContent(vault.entries));
 
@@ -564,6 +571,70 @@ class VaultSession {
     // P3-02: surface the in-place settings mutation to $state.raw consumers.
     this.#vault = { ...vault };
     await this.save(opts);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase-11: B-side raw-blob save (sync path, SAFE-02, D-10)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Save pre-sealed vault bytes directly through the adapter.
+   *
+   * Used by the B-side sync handler after `resealInnerDoc` produces a sealed blob.
+   * Bypasses the re-encryption step of `save()` because the bytes are already sealed
+   * by `resealInnerDoc`. Runs through the adapter's save-mutex + backup rotation
+   * exactly like `save()` does — no vault_write_atomic invoke (Pitfall 5 / SAFE-02).
+   *
+   * SECURITY: `sealedBytes` MUST be ciphertext produced by `resealInnerDoc` (never
+   * plaintext). The caller owns wiping any plaintext that produced these bytes (SAFE-04).
+   *
+   * @internal — sync orchestration only; do NOT call from UI code.
+   * @param sealedBytes Pre-sealed vault document bytes (output of resealInnerDoc).
+   * @param opts        Optional save options (maxBackups defaults to 5).
+   */
+  async saveRawBlob(sealedBytes: Uint8Array, opts?: { maxBackups?: number }): Promise<void> {
+    const adapter = this.#adapter;
+    if (adapter === null) {
+      throw new Error('VaultSession.saveRawBlob: session is locked — no adapter mounted.');
+    }
+    await adapter.save(sealedBytes, {
+      maxBackups: opts?.maxBackups ?? 5,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase-11: B-side session reload after sync (D-07)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reload the in-memory vault session from a freshly-merged InnerDoc.
+   *
+   * Called by the B-side `sync-merged-blob-received` event handler in
+   * syncOrchestration.ts AFTER B has re-merged, re-sealed, and adapter-saved the
+   * merged blob. Takes the ALREADY-DECRYPTED InnerDoc (not ciphertext — all crypto
+   * runs in WASM). Uses the P3-02 whole-value reassignment pattern so $state.raw
+   * reactivity fires and open list/detail views re-render from the merged data.
+   * A tombstoned open entry falls back to the list automatically (D-07).
+   *
+   * D-06 lock-wins: if the vault locked mid-sync (#vault is null), returns early
+   * WITHOUT throwing. The lock takes precedence; the caller confirms failure with
+   * `syncConfirmSave(false)`.
+   *
+   * SAFE-04: `mergedEntries` is the plaintext — the caller MUST secureWipe the
+   * source JSON bytes (the entriesBytes Uint8Array from TextEncoder) immediately
+   * after this returns, before any await. This method stores `mergedEntries` by
+   * reference in #vault; the caller should null-out the source reference after wipe.
+   *
+   * @param mergedEntries  The merged InnerDoc (already decrypted + re-merged by
+   *                       the B-side handler — NOT ciphertext).
+   */
+  async reloadFromMergedInner(mergedEntries: object): Promise<void> {
+    const vault = this.#vault;
+    if (vault === null) return; // D-06 lock-wins: session locked mid-sync — no-op
+    // P3-02: whole-value reassignment fires $state.raw reactivity.
+    // Preserve the existing outer doc (wrappedKeys, modifiedAt already updated by
+    // resealInnerDoc in the handler) and replace only the in-memory entries reference.
+    this.#vault = { doc: vault.doc, entries: mergedEntries };
   }
 
   // ---------------------------------------------------------------------------
