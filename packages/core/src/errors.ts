@@ -326,3 +326,70 @@ export class SyncBindingMismatchError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 11 typed errors (partial-commit states + busy guard — DC-9 pattern, Shape B)
+//
+// D-02a: ack received but A's save failed — partner updated; this device did not save.
+// D-02b: no ack received — neither side known committed; sync did not complete.
+// D-08: second sync attempted while one is in flight — partner busy.
+// D-06: partner's vault locked mid-sync — abort, no save, no ack.
+//
+// HARDEN-02 (Phase 13) audits and locks this set. Do NOT change the stable `code` strings.
+// Do NOT add SyncMergeError here — deferred to Phase 13 HARDEN-02 scope.
+// ---------------------------------------------------------------------------
+
+/**
+ * D-02a: The ack was received (partner's save succeeded) but this device's own save
+ * failed. B definitely committed; A definitely did not. The user should sync again to
+ * bring A up to date with B's committed state.
+ * User-facing: "partner updated; this device did not save — sync again"
+ * Callers branch on `instanceof SyncPartnerNotSavedError` or `.code === 'SYNC_PARTNER_NOT_SAVED'`.
+ */
+export class SyncPartnerNotSavedError extends Error {
+  readonly code = 'SYNC_PARTNER_NOT_SAVED';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * D-02b: No ack was received — the sync did not complete and neither side is known to
+ * have committed. The user should sync again; both vaults remain in their pre-sync state.
+ * User-facing: "sync did not complete — no changes confirmed on this device; sync again"
+ * Callers branch on `instanceof SyncNoAckError` or `.code === 'SYNC_NO_ACK'`.
+ */
+export class SyncNoAckError extends Error {
+  readonly code = 'SYNC_NO_ACK';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * D-08: A second sync was attempted while one is already in flight. The busy guard
+ * (SyncBusyGuard managed state) rejects concurrent syncs to prevent interleaved
+ * partial-commit states. Retry after the in-flight sync completes.
+ * User-facing: "sync already in progress — try again in a moment"
+ * Callers branch on `instanceof SyncPartnerBusyError` or `.code === 'SYNC_PARTNER_BUSY'`.
+ */
+export class SyncPartnerBusyError extends Error {
+  readonly code = 'SYNC_PARTNER_BUSY';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * D-06: The partner's vault locked mid-sync. Lock wins — the in-flight sync is aborted
+ * with no save and no ack on either device. The user must unlock the partner vault and
+ * sync again.
+ * User-facing: "partner locked mid-sync — unlock and sync again"
+ * Callers branch on `instanceof SyncLockedMidSyncError` or `.code === 'SYNC_LOCKED_MID_SYNC'`.
+ */
+export class SyncLockedMidSyncError extends Error {
+  readonly code = 'SYNC_LOCKED_MID_SYNC';
+  constructor(message: string) {
+    super(message);
+  }
+}

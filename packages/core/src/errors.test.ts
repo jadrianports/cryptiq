@@ -28,6 +28,10 @@ import {
   CredentialManagerError,
   PeersDocCorruptError,
   PairingRequiresUnlockError,
+  SyncPartnerNotSavedError,
+  SyncNoAckError,
+  SyncPartnerBusyError,
+  SyncLockedMidSyncError,
 } from './errors';
 
 describe('Phase 9 pairing typed errors — stable code regression guard', () => {
@@ -156,6 +160,86 @@ describe('Phase 9 pairing typed errors — stable code regression guard', () => 
 
     it('is instanceof Error', () => {
       const err = new PairingRequiresUnlockError('vault must be unlocked before pairing');
+      expect(err).toBeInstanceOf(Error);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 11 sync-errors — stable code regression guard
+//
+// Pins the four partial-commit / busy / mid-sync typed errors introduced in Phase 11
+// (D-02a, D-02b, D-08, D-06). Any Phase-13 rename of a code string breaks this test
+// immediately — callers in mapRustSyncError + Phase-12 UI branch on `.code`.
+//
+// Filter: `pnpm --filter @cryptiq/core test -- --run sync-errors` (11-VALIDATION row)
+// ---------------------------------------------------------------------------
+
+describe('Phase 11 sync-errors — stable code regression guard', () => {
+  describe('SyncPartnerNotSavedError (D-02a)', () => {
+    it('carries code SYNC_PARTNER_NOT_SAVED', () => {
+      const err = new SyncPartnerNotSavedError('partner updated; this device did not save — sync again');
+      expect(err.code).toBe('SYNC_PARTNER_NOT_SAVED');
+    });
+
+    it('preserves the error message', () => {
+      const err = new SyncPartnerNotSavedError('partner updated; this device did not save — sync again');
+      expect(err.message).toBe('partner updated; this device did not save — sync again');
+    });
+
+    it('is instanceof Error', () => {
+      const err = new SyncPartnerNotSavedError('partner updated; this device did not save — sync again');
+      expect(err).toBeInstanceOf(Error);
+    });
+  });
+
+  describe('SyncNoAckError (D-02b)', () => {
+    it('carries code SYNC_NO_ACK', () => {
+      const err = new SyncNoAckError('sync did not complete — no changes confirmed on this device; sync again');
+      expect(err.code).toBe('SYNC_NO_ACK');
+    });
+
+    it('preserves the error message', () => {
+      const err = new SyncNoAckError('sync did not complete — no changes confirmed on this device; sync again');
+      expect(err.message).toBe('sync did not complete — no changes confirmed on this device; sync again');
+    });
+
+    it('is instanceof Error', () => {
+      const err = new SyncNoAckError('sync did not complete — no changes confirmed on this device; sync again');
+      expect(err).toBeInstanceOf(Error);
+    });
+  });
+
+  describe('SyncPartnerBusyError (D-08)', () => {
+    it('carries code SYNC_PARTNER_BUSY', () => {
+      const err = new SyncPartnerBusyError('sync already in progress — try again in a moment');
+      expect(err.code).toBe('SYNC_PARTNER_BUSY');
+    });
+
+    it('preserves the error message', () => {
+      const err = new SyncPartnerBusyError('sync already in progress — try again in a moment');
+      expect(err.message).toBe('sync already in progress — try again in a moment');
+    });
+
+    it('is instanceof Error', () => {
+      const err = new SyncPartnerBusyError('sync already in progress — try again in a moment');
+      expect(err).toBeInstanceOf(Error);
+    });
+  });
+
+  describe('SyncLockedMidSyncError (D-06)', () => {
+    it('carries code SYNC_LOCKED_MID_SYNC', () => {
+      const err = new SyncLockedMidSyncError('partner locked mid-sync — unlock and sync again');
+      expect(err.code).toBe('SYNC_LOCKED_MID_SYNC');
+    });
+
+    it('preserves the error message', () => {
+      const err = new SyncLockedMidSyncError('partner locked mid-sync — unlock and sync again');
+      expect(err.message).toBe('partner locked mid-sync — unlock and sync again');
+    });
+
+    it('is instanceof Error', () => {
+      const err = new SyncLockedMidSyncError('partner locked mid-sync — unlock and sync again');
       expect(err).toBeInstanceOf(Error);
     });
   });
