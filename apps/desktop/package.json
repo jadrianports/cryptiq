@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:bridge": "tauri dev --config src-tauri/tauri.mcp-bridge.conf.json",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",

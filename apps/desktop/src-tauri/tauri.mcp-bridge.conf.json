@@ -1,0 +1,19 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        "cryptiq-main",
+        "cryptiq-bootstrap",
+        {
+          "identifier": "mcp-bridge-dev",
+          "description": "DEV/TEST ONLY — grants the hypothesi tauri-plugin-mcp-bridge its commands so the MCP bridge can drive the main window during UAT. Merged ONLY via `tauri dev --config` (pnpm dev:bridge); never present in a production `tauri build`. The plugin itself is #[cfg(debug_assertions)]-gated in lib.rs and bound to 127.0.0.1. Kept OUT of capabilities/default.json and bootstrap.json so the production capability surface is unchanged.",
+          "windows": ["main"],
+          "permissions": ["mcp-bridge:default"],
+          "platforms": ["windows", "macOS"]
+        }
+      ]
+    }
+  }
+}
