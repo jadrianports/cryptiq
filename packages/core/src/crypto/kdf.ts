@@ -10,8 +10,8 @@
 //   ≥ SETTLE_MS. On OOM, STOP and keep the last successful params — never write params
 //   that OOM'd on the calibrating machine.
 //
-//   DELIBERATE DEVIATION: this supersedes ROADMAP success-criterion #1's 512 MiB / 10
-//   ops ceiling and STATE.md decision 8's ceiling. DC-1 removes the ceiling; DC-2's
+//   DELIBERATE DEVIATION (DC-1, historical): an earlier ROADMAP draft cited a 512 MiB /
+//   10 ops ceiling; DC-1 removed that ceiling entirely — there is NO upper cap. DC-2's
 //   portabilityWarning (memLimit > 512 MiB) is the mitigation — the Phase-4 creation
 //   report surfaces the disclosure + an "older machines" opt-down. Intentional, locked.
 //

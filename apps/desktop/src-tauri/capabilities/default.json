@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "cryptiq-main",
-  "description": "Cryptiq main window — vault file IO, config IO, clipboard write/clear, dialogs. Literal-path fs scopes only; defends GHSA-6mv3-wm7j-h4w5.",
+  "description": "Cryptiq main window — vault file IO, config IO, clipboard write/clear, dialogs. Literal-path fs scopes only; defends GHSA-6mv3-wm7j-h4w5. NOTE: sync_now / sync_listener_start / pairing_* are app-defined Tauri commands invokable by default; raw TCP (port 54321) is opened by Rust-side tokio and is outside the Tauri capability model — gated by #[cfg(target_os = \"windows\")] and NoopCredentialStore at the Rust level.",
   "windows": ["main"],
   "platforms": ["windows", "macOS"],
   "permissions": [
@@ -43,7 +43,8 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" },
         { "path": "$APPCONFIG/cryptiq/peers.json" },
-        { "path": "$APPCONFIG/cryptiq/peers.json.tmp" }
+        { "path": "$APPCONFIG/cryptiq/peers.json.tmp" },
+        { "path": "$APPCONFIG/cryptiq/vaults/**" }
       ]
     },
     {
