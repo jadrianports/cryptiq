@@ -38,6 +38,8 @@
   import { setNativeDialogOpen, clearNativeDialogOpen } from '../state/dialogGuard.svelte';
   import ConfirmMasterPassword from '../components/ConfirmMasterPassword.svelte';
   import AboutView from './AboutView.svelte';
+  import PairingScreen from '../sync/PairingScreen.svelte';
+  import SyncSettingsSection from '../sync/SyncSettingsSection.svelte';
 
   /**
    * Props contract for Phase 12 (Plan 12-01 Task 3).
@@ -195,6 +197,22 @@
   // ── About sub-view (P6-12) ────────────────────────────────────────────────
   let showAbout = $state(false);
 
+  // ── Pairing sub-view (Plan 12-03 / D-02) ──────────────────────────────────
+  // Mirrors the showAbout/AboutView pattern. When true, PairingScreen replaces
+  // the settings shell content (sub-view, not a modal).
+  let showPairing = $state(false);
+
+  /**
+   * D-18 onSyncNow handler: concrete navigation to the main vault view so the
+   * user lands at the header Sync Now button (Plan 12-04 — the daily sync trigger).
+   * Closes any open sub-view and routes via go('main').
+   */
+  function handleSyncNowFromSettings(): void {
+    showPairing = false;
+    showAbout = false;
+    go('main');
+  }
+
   // ── Export confirm-master gate flag (P6-09) ────────────────────────────────
   let showExportConfirm = $state(false);
 
@@ -309,6 +327,9 @@
 {#if showAbout}
   <!-- About & Security sub-view (P6-12) — rendered over Settings -->
   <AboutView onBack={() => { showAbout = false; }} />
+{:else if showPairing}
+  <!-- Pairing sub-view (Plan 12-03 / D-02) — mirrors showAbout/AboutView pattern -->
+  <PairingScreen onBack={() => { showPairing = false; }} {configDir} {vaultPath} />
 {:else}
 <div class="flex h-screen flex-col bg-cryptiq-bg">
   <!-- Page header with back navigation -->
@@ -505,6 +526,21 @@
             </div>
           {/if}
 
+        </div>
+      </section>
+
+      <!-- ── Section: Sync (Plan 12-03 / D-01/D-02/D-16/D-17/D-18) ──────── -->
+      <section aria-labelledby="sync-heading">
+        <h2 id="sync-heading" class="mb-2 px-1 text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">
+          Sync
+        </h2>
+        <div class="overflow-hidden rounded-cryptiq-lg border border-cryptiq-border bg-cryptiq-surface shadow-cryptiq-panel">
+          <SyncSettingsSection
+            {configDir}
+            {vaultPath}
+            onPair={() => { showPairing = true; }}
+            onSyncNow={handleSyncNowFromSettings}
+          />
         </div>
       </section>
 
