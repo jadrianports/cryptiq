@@ -2436,18 +2436,23 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             "locked",
-            "lock-during-sync error string must be exactly 'locked' \
-             (mapRustSyncError matches this string for SyncLockedMidSyncError)"
+            "lock-during-sync error string must be exactly 'locked'; \
+             this Err(\"locked\") value is the B-side oneshot resolution that makes the \
+             B listener skip the ack, so A times out and surfaces SyncNoAckError — \
+             the literal string never crosses to A's mapRustSyncError"
         );
 
-        // ---- (d) Simulate BusyGuardHold RAII drop: busy must clear to false. ----
-        // In production this is done by BusyGuardHold::drop. Simulated here by
-        // directly setting busy = false, mirroring the drop implementation.
-        *guard.busy.lock().unwrap() = false; // simulates BusyGuardHold::drop
-        assert!(
-            !*guard.busy.lock().unwrap(),
-            "SyncBusyGuard.busy must be false after BusyGuardHold drop — \
-             all exit paths must clear the guard (D-08 / T-13-09)"
-        );
+        // ---- (d) BusyGuardHold RAII actually clears busy on scope-exit drop (D-08, all exit paths). ----
+        {
+            *guard.busy.lock().unwrap() = true;
+            {
+                let _hold = BusyGuardHold(&guard);
+                assert!(*guard.busy.lock().unwrap(), "busy stays true while the hold is alive");
+            } // _hold drops here → real Drop impl must clear busy
+            assert!(
+                !*guard.busy.lock().unwrap(),
+                "BusyGuardHold::drop must clear busy=false on every exit path (D-08)"
+            );
+        }
     }
 }

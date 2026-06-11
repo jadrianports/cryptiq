@@ -468,9 +468,10 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
     // must validate (D-09 / 13-RESEARCH Discretion Item 4 "A-side also receives a B-side
     // InnerDoc"). Forward-compatible checks (>= 1) are FORBIDDEN — Pitfall 3.
     if (!KNOWN_INNER_DOC_SCHEMA_VERSIONS.has(bInner.schemaVersion)) {
-      throw new MergeSchemaMismatchError(
-        `Peer vault has unknown schemaVersion ${String(bInner.schemaVersion)} — ` +
-        `update both apps to the same version, then sync.`,
+      const detail = `Peer vault has unknown schemaVersion ${String(bInner.schemaVersion)}.`;
+      throw new SyncMergeError(
+        `${detail} Update both apps to the same version, then sync.`,
+        new MergeSchemaMismatchError(detail),
       );
     }
 
@@ -604,7 +605,9 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
             : e instanceof SyncPartnerNotSavedError
               ? 'Sync failed: partner updated but this device did not save. Sync again.'
               : e instanceof SyncMergeError
-                ? 'Sync failed: vault schemas are incompatible. Update both apps to the same version.'
+                ? (e.cause instanceof MergeInvalidInputError
+                    ? 'Sync failed: the partner sent a malformed vault entry. Sync again; if it persists, check the partner device.'
+                    : 'Sync failed: vault schemas are incompatible. Update both apps to the same version.')
                 : 'Sync failed: merge or save error. Try again.',
         );
       }

@@ -43,8 +43,7 @@
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.bak.5" },
         { "path": "$APPCONFIG/cryptiq/vaults/vault.cryptiq.lock" },
         { "path": "$APPCONFIG/cryptiq/peers.json" },
-        { "path": "$APPCONFIG/cryptiq/peers.json.tmp" },
-        { "path": "$APPCONFIG/cryptiq/vaults/**" }
+        { "path": "$APPCONFIG/cryptiq/peers.json.tmp" }
       ]
     },
     {

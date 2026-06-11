@@ -70,6 +70,9 @@ jobs:
       - name: Custom lint — supply chain
         run: node scripts/lint/lint-supply-chain.mjs
 
+      - name: Custom lint — sync capabilities
+        run: node scripts/lint/lint-sync-capabilities.mjs
+
       - name: svelte-check + tsc --noEmit
         run: pnpm run typecheck
 

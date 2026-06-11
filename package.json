@@ -12,7 +12,7 @@
     "build": "pnpm -r build && pnpm --filter ./apps/desktop tauri build",
     "dev": "pnpm --filter ./apps/desktop tauri dev",
     "lint": "eslint . && node scripts/lint/lint-workflow-sha-pins.mjs && node scripts/lint/lint-capability-globs.mjs && node scripts/lint/lint-capability-platforms.mjs && node scripts/lint/lint-csp.mjs && node scripts/lint/lint-supply-chain.mjs && node scripts/lint/lint-sync-capabilities.mjs",
-    "lint:custom": "node scripts/lint/lint-workflow-sha-pins.mjs && node scripts/lint/lint-capability-globs.mjs && node scripts/lint/lint-capability-platforms.mjs && node scripts/lint/lint-csp.mjs && node scripts/lint/lint-supply-chain.mjs",
+    "lint:custom": "node scripts/lint/lint-workflow-sha-pins.mjs && node scripts/lint/lint-capability-globs.mjs && node scripts/lint/lint-capability-platforms.mjs && node scripts/lint/lint-csp.mjs && node scripts/lint/lint-supply-chain.mjs && node scripts/lint/lint-sync-capabilities.mjs",
     "test": "vitest run",
     "typecheck": "pnpm -r --workspace-concurrency=1 run typecheck",
     "format": "prettier --write .",

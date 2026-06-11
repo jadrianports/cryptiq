@@ -1,10 +1,10 @@
 # Cryptiq Custom Lint Scripts
 
-Five `.mjs` scripts that enforce security and supply-chain invariants ESLint cannot inspect (JSON capability files, YAML workflow files, cross-file CSP constraints).
+Six `.mjs` scripts that enforce security and supply-chain invariants ESLint cannot inspect (JSON capability files, YAML workflow files, cross-file CSP constraints).
 
 **No external dependencies — pure Node 20+ stdlib.** Each runs in well under a second. CI (Plan 01-06) wires each as a separate job so a failure points at the specific invariant that broke.
 
-Run the full chain (ESLint + all 5) via `pnpm lint` from the workspace root. Run only the custom lints via `pnpm lint:custom`. Each can also be invoked standalone.
+Run the full chain (ESLint + all 6) via `pnpm lint` from the workspace root. Run only the custom lints via `pnpm lint:custom`. Each can also be invoked standalone.
 
 ## Scripts
 
@@ -63,6 +63,14 @@ Asserts:
 
 ```
 node scripts/lint/lint-supply-chain.mjs
+```
+
+### `lint-sync-capabilities.mjs` — HARDEN-01
+
+Walks `apps/desktop/src-tauri/capabilities/*.json` and asserts every `fs:allow-write-file` path in the allow list for `peers.json` and `peers.json.tmp` is a literal path (no wildcards). Pins the peers.json capability scopes to prevent accidental expansion.
+
+```
+node scripts/lint/lint-sync-capabilities.mjs
 ```
 
 ## Self-test discipline

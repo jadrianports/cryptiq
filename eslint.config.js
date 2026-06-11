@@ -175,8 +175,13 @@ export default [
       },
     },
     plugins: { svelte: sveltePlugin },
+    processor: sveltePlugin.processors.svelte,
     rules: {
       ...sveltePlugin.configs.recommended.rules,
+      // svelte/comment-directive enables <!-- eslint-disable-next-line --> in .svelte templates.
+      // Not automatically active from the recommended spread (recommended.rules is undefined in
+      // flat-config mode — the rules live on the array items, not on recommended itself).
+      'svelte/comment-directive': 'error',
       // Phase 1 has no entry data to leak yet, but ban {@html ...} now so
       // Phase 4 can never accidentally render vault entry data as HTML
       // (defends Pitfall 7 / ARCHITECTURE.md §4.2).
