@@ -64,6 +64,9 @@ import {
   SyncPartnerBusyError,
   SyncLockedMidSyncError,
   MergeSchemaMismatchError,
+  MergeClockSkewError,
+  MergeInvalidInputError,
+  SyncMergeError,
 } from '@cryptiq/core';
 import type { InnerDoc, MergeCounts, MergeContext } from '@cryptiq/core';
 import {
@@ -80,6 +83,17 @@ import {
 } from './syncBridge';
 import { syncStore } from './SyncStore.svelte';
 import { vaultSession } from '../state/vault.svelte';
+import { loadConfig } from '../config/config-adapter';
+
+// ---------------------------------------------------------------------------
+// HARDEN-02: exact-match set of InnerDoc schema versions this build understands.
+//
+// Forward-compatible checks (>= 1) are FORBIDDEN — they would silently accept a
+// future schema version whose semantics are unknown to this build, risking
+// corrupted merges (Phase 8 D-09 / 13-RESEARCH Pitfall 3).
+// Extend this set ONLY when a new schemaVersion is fully understood and tested.
+// ---------------------------------------------------------------------------
+const KNOWN_INNER_DOC_SCHEMA_VERSIONS = new Set([1, 2]);
 
 // ---------------------------------------------------------------------------
 // Error-mapping convention (mirrors the comment in syncBridge.ts)
@@ -449,6 +463,17 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
       await secureWipe(bInnerBytes);
     }
 
+    // HARDEN-02: A-side exact-match schemaVersion check on the received B InnerDoc
+    // BEFORE passing to applyRemoteMergedBlob / mergeInnerDocs. Both receive paths
+    // must validate (D-09 / 13-RESEARCH Discretion Item 4 "A-side also receives a B-side
+    // InnerDoc"). Forward-compatible checks (>= 1) are FORBIDDEN — Pitfall 3.
+    if (!KNOWN_INNER_DOC_SCHEMA_VERSIONS.has(bInner.schemaVersion)) {
+      throw new MergeSchemaMismatchError(
+        `Peer vault has unknown schemaVersion ${String(bInner.schemaVersion)} — ` +
+        `update both apps to the same version, then sync.`,
+      );
+    }
+
     // A's current InnerDoc: vaultSession.vault.entries is already an upgraded InnerDoc
     // (asInnerDoc is module-private at crud.ts:52 — cast confirmed in Plan 04 facts).
     const aVault = vaultSession.vault;
@@ -531,18 +556,33 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
     };
 
     // Run the transport-agnostic merge pipeline.
-    const counts = await applyRemoteMergedBlob({
-      aInner,
-      aVaultKey,
-      aDoc,
-      bInner,
-      bVaultKey,
-      bDoc,
-      mergeCtx,
-      saveBBlob: saveBBlobLan,
-      saveABlob: saveABlobLan,
-      masterPassword,
-    });
+    // HARDEN-02: wrap Merge* failures from the merge step in SyncMergeError so callers
+    // receive a typed sync-path error with the precise Merge* cause preserved (D-07).
+    // SyncMergeError is NOT added to mapRustSyncError — it is TS-thrown (Pitfall 5).
+    let counts: MergeCounts;
+    try {
+      counts = await applyRemoteMergedBlob({
+        aInner,
+        aVaultKey,
+        aDoc,
+        bInner,
+        bVaultKey,
+        bDoc,
+        mergeCtx,
+        saveBBlob: saveBBlobLan,
+        saveABlob: saveABlobLan,
+        masterPassword,
+      });
+    } catch (e) {
+      if (
+        e instanceof MergeSchemaMismatchError ||
+        e instanceof MergeClockSkewError ||
+        e instanceof MergeInvalidInputError
+      ) {
+        throw new SyncMergeError(e.message, e);
+      }
+      throw e;
+    }
 
     // Full success: store counts (D-16) and update status.
     // Pitfall 7: lastSyncedAt is updated on A only after full success (ack + A-save done).
@@ -554,7 +594,8 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
       e instanceof SyncNoAckError ||
       e instanceof SyncPartnerNotSavedError ||
       e instanceof SyncTransportError ||
-      e instanceof SyncLockedMidSyncError
+      e instanceof SyncLockedMidSyncError ||
+      e instanceof SyncMergeError
     ) {
       if (syncStore.status !== 'error') {
         syncStore.setError(
@@ -562,7 +603,9 @@ export async function runSyncNow(configDir: string, masterPassword: Uint8Array):
             ? 'Sync failed: no ack from partner — no changes confirmed. Try again.'
             : e instanceof SyncPartnerNotSavedError
               ? 'Sync failed: partner updated but this device did not save. Sync again.'
-              : 'Sync failed: merge or save error. Try again.',
+              : e instanceof SyncMergeError
+                ? 'Sync failed: vault schemas are incompatible. Update both apps to the same version.'
+                : 'Sync failed: merge or save error. Try again.',
         );
       }
       throw e;
@@ -615,6 +658,14 @@ export async function startSyncListenerIfPaired(
 ): Promise<void> {
   // Guard: do not double-start if we believe the listener is already active.
   if (syncStore.listenerActive) return;
+
+  // Kill-switch gate (D-01/D-02/D-03): read the device-local listenerEnabled preference
+  // from config.json. When false, the inbound listener MUST NOT start; absent/undefined
+  // defaults to true (default ON — preserves upgrade behavior for existing installs, D-01).
+  // This gate is INBOUND ONLY — runSyncNow / outbound Sync Now is NOT gated here (D-02).
+  // The flag is read from config.json only, NEVER from vaultSession/InnerDoc.settings (D-03).
+  const cfg = await loadConfig();
+  if ((cfg.listenerEnabled ?? true) === false) return;
 
   try {
     // Register the B-side event handler EAGERLY before starting the Rust listener
@@ -775,10 +826,12 @@ export async function handleMergedBlobForB(
       await secureWipe(innerBytes);
     }
 
-    // schemaVersion fail-closed (D-09/HARDEN-02 upstream).
-    if (receivedMerged.schemaVersion !== 1 && receivedMerged.schemaVersion !== 2) {
+    // HARDEN-02: schemaVersion exact-match fail-closed (D-09 / 13-RESEARCH Pitfall 3).
+    // Forward-compatible checks (>= 1) are FORBIDDEN — use Set membership only.
+    if (!KNOWN_INNER_DOC_SCHEMA_VERSIONS.has(receivedMerged.schemaVersion)) {
       throw new MergeSchemaMismatchError(
-        `Received merged blob has unsupported schemaVersion: ${String(receivedMerged.schemaVersion)}`,
+        `Received merged blob has unknown schemaVersion ${String(receivedMerged.schemaVersion)} — ` +
+        `update both apps to the same version, then sync.`,
       );
     }
 
@@ -793,7 +846,22 @@ export async function handleMergedBlobForB(
       localNowMs: Date.now(),
       remoteNowMs: Date.now(),
     };
-    const bMergeResult = mergeInnerDocs(bCurrentInner, receivedMerged, bCtx);
+    let bMergeResult: import('@cryptiq/core').MergeResult;
+    try {
+      bMergeResult = mergeInnerDocs(bCurrentInner, receivedMerged, bCtx);
+    } catch (e) {
+      // HARDEN-02: wrap Merge* failures on the sync path in SyncMergeError, preserving
+      // the precise cause. SyncMergeError is NOT added to mapRustSyncError (it is a
+      // TS-thrown error, not a Rust error string — 13-RESEARCH Pitfall 5).
+      if (
+        e instanceof MergeSchemaMismatchError ||
+        e instanceof MergeClockSkewError ||
+        e instanceof MergeInvalidInputError
+      ) {
+        throw new SyncMergeError(e.message, e);
+      }
+      throw e;
+    }
     const bFinal = bMergeResult.merged;
 
     // Re-seal under B's key (uses session key directly — no re-derive on B).
