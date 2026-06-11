@@ -35,7 +35,14 @@ export function parseConfig(bytes: Uint8Array): CryptiqConfig {
     throw new ConfigCorruptError(`config.json: unsupported schemaVersion ${String(schemaVersion)}.`);
   }
 
-  return { vaultPath, schemaVersion };
+  // listenerEnabled: optional boolean, default true (D-03 / Phase 13).
+  // Old builds write config.json without this field; new builds read it as true if absent.
+  const listenerEnabled = obj.listenerEnabled;
+  if (listenerEnabled !== undefined && typeof listenerEnabled !== 'boolean') {
+    throw new ConfigCorruptError('config.json: listenerEnabled must be boolean or absent.');
+  }
+
+  return { vaultPath, schemaVersion, listenerEnabled: (listenerEnabled as boolean | undefined) ?? true };
 }
 
 /** Serialize a CryptiqConfig to UTF-8 JSON bytes. */
