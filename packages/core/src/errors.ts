@@ -393,3 +393,30 @@ export class SyncLockedMidSyncError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 13 typed errors (HARDEN-02 — sync-path merge failures)
+//
+// SyncMergeError wraps MergeSchemaMismatchError / MergeClockSkewError /
+// MergeInvalidInputError encountered ON the sync path (received InnerDoc
+// validation, upstream schemaVersion check). Does NOT replace the Merge* errors —
+// preserves them as `cause` so callers can inspect the precise failure.
+// D-07: granular Merge* set is unchanged; this is a thin sync-layer wrapper.
+// ---------------------------------------------------------------------------
+
+/**
+ * A merge failure encountered on the sync path — schema mismatch, clock skew,
+ * or invalid input in a received InnerDoc. Wraps the underlying Merge* error
+ * as `cause` so callers can inspect the precise failure.
+ * D-07: does NOT replace the Merge* errors; surfaces them on the sync path.
+ * Callers branch on `instanceof SyncMergeError` or `.code === 'SYNC_MERGE_ERROR'`.
+ */
+export class SyncMergeError extends Error {
+  readonly code = 'SYNC_MERGE_ERROR';
+  constructor(
+    message: string,
+    public override readonly cause?: MergeSchemaMismatchError | MergeClockSkewError | MergeInvalidInputError,
+  ) {
+    super(message);
+  }
+}
