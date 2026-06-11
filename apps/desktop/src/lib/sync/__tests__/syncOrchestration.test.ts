@@ -38,6 +38,7 @@ import { getSodium } from '@cryptiq/core/internal';
 import {
   applyRemoteMergedBlob,
   handleMergedBlobForB,
+  startSyncListenerIfPaired,
 } from '../syncOrchestration';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,27 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   exists: vi.fn(),
   readFile: vi.fn(),
   stat: vi.fn(),
+}));
+
+// ---------------------------------------------------------------------------
+// GAP-B module mocks — syncBridge and config-adapter
+// (Only startSyncListenerIfPaired / stopSyncListener / runSyncNow use these;
+//  existing applyRemoteMergedBlob / handleMergedBlobForB tests do not.)
+// ---------------------------------------------------------------------------
+
+vi.mock('../syncBridge', () => ({
+  syncNow: vi.fn(async () => []),
+  syncListenerStart: vi.fn(async () => {}),
+  syncListenerStop: vi.fn(async () => {}),
+  syncProvideMergedBlob: vi.fn(async () => {}),
+  syncConfirmSave: vi.fn(async () => {}),
+}));
+
+// config-adapter path: test file is in __tests__/, syncOrchestration.ts is in sync/.
+// vi.mock paths resolve relative to the test file, so ../../config/config-adapter
+// reaches apps/desktop/src/lib/config/config-adapter from __tests__/.
+vi.mock('../../config/config-adapter', () => ({
+  loadConfig: vi.fn(async () => ({ vaultPath: null, schemaVersion: 1 })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -311,5 +333,151 @@ describe('handleMergedBlobForB', () => {
       expect(reloadSession).not.toHaveBeenCalled();
     },
     30_000,
+  );
+
+  // -------------------------------------------------------------------------
+  // GAP-A (SC-2b): HARDEN-02 fail-closed schema validation
+  //
+  // Requirement: handleMergedBlobForB MUST fail closed when the received merged
+  // blob decrypts to an InnerDoc with an UNKNOWN schemaVersion (e.g. 99).
+  //
+  // The HARDEN-02 check at syncOrchestration.ts:834 throws MergeSchemaMismatchError,
+  // which the outer bare `catch {}` at line 894 traps and converts into the
+  // observable fail-closed side effects: confirmSave(false), no saveBlob call,
+  // no reloadSession call.
+  //
+  // Note: resealInnerDoc does NOT validate schemaVersion, so schemaVersion=99 survives
+  // the seal step and is only caught on the receive/decrypt path — exactly where
+  // the HARDEN-02 guard must fire. This is the behavioral proof that the fail-closed
+  // guarantee is enforced on the DI-seam side effects, not via a thrown error
+  // (handleMergedBlobForB swallows the typed error in the bare catch).
+  // -------------------------------------------------------------------------
+  it(
+    'B handler FAIL CLOSED: confirms false and does not save or reload when received blob has unknown schemaVersion (HARDEN-02 SC-2b)',
+    async () => {
+      const masterPw = pw('b-handler-schema-mismatch-test!');
+      const bFixture = await makeVaultFixture(masterPw);
+
+      // Build a blob whose decrypted InnerDoc carries an UNKNOWN schemaVersion (99).
+      // resealInnerDoc seals whatever InnerDoc we give it — no schemaVersion validation.
+      // The HARDEN-02 Set.has() check fires AFTER decryption, not during sealing.
+      const badInner: InnerDoc = { ...bFixture.innerDoc, schemaVersion: 99 } as InnerDoc;
+      const blobBytes = await resealInnerDoc(badInner, bFixture.vaultKey, bFixture.doc);
+
+      const confirmSave = vi.fn(async (_saveOk: boolean) => {});
+      const reloadSession = vi.fn(async (_entries: object) => {});
+      const saveBlob = vi.fn(async (_sealedBytes: Uint8Array) => {});
+
+      // handleMergedBlobForB must NOT throw (it swallows errors internally and calls
+      // confirmSave(false) instead). Await must resolve — not reject.
+      await handleMergedBlobForB(blobBytes, {
+        getBSessionKey: () => bFixture.vaultKey,
+        getBCurrentInner: () => bFixture.innerDoc,
+        getBDoc: () => bFixture.doc,
+        saveBlob,
+        reloadSession,
+        confirmSave,
+      });
+
+      // HARDEN-02 fail-closed: schema mismatch must produce confirmSave(false).
+      expect(confirmSave).toHaveBeenCalledWith(false);
+
+      // Must NOT call confirmSave(true) on a schema-mismatch path.
+      expect(confirmSave).not.toHaveBeenCalledWith(true);
+
+      // Fail-closed: no disk write and no session reload must occur on this path.
+      expect(saveBlob).not.toHaveBeenCalled();
+      expect(reloadSession).not.toHaveBeenCalled();
+    },
+    30_000, // real Argon2id via makeVaultFixture
+  );
+});
+
+// ---------------------------------------------------------------------------
+// GAP-B (D-01): startSyncListenerIfPaired kill-switch gate
+//
+// Requirement: startSyncListenerIfPaired MUST NOT start the Rust listener when
+// the device-local config has listenerEnabled === false, and MUST start it when
+// listenerEnabled is true or absent (default ON).
+//
+// Gate at syncOrchestration.ts:670-671:
+//   const cfg = await loadConfig();
+//   if ((cfg.listenerEnabled ?? true) === false) return;
+//
+// syncListenerStart (from ./syncBridge) is the observable Rust-bind call.
+// ---------------------------------------------------------------------------
+
+describe('startSyncListenerIfPaired (kill-switch gate)', () => {
+  // Import the mocked modules so we can control per-test behavior.
+  // vi.mock is hoisted, so these are already replaced at module evaluation time.
+  let syncListenerStartMock: ReturnType<typeof vi.fn>;
+  let loadConfigMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    // Grab references to the mocked functions from the mocked modules.
+    const syncBridgeMod = await import('../syncBridge');
+    const configAdapterMod = await import('../../config/config-adapter');
+    syncListenerStartMock = syncBridgeMod.syncListenerStart as ReturnType<typeof vi.fn>;
+    loadConfigMock = configAdapterMod.loadConfig as ReturnType<typeof vi.fn>;
+
+    // CRITICAL test isolation: startSyncListenerIfPaired early-returns if
+    // syncStore.listenerActive is already true (line 663).
+    // Import syncStore and reset it to inactive state so each test starts clean.
+    const { syncStore } = await import('../SyncStore.svelte');
+    syncStore.markListenerInactive();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it(
+    'does NOT start the Rust listener when listenerEnabled is false (kill-switch OFF)',
+    async () => {
+      // Config explicitly disables the inbound listener.
+      loadConfigMock.mockResolvedValue({ vaultPath: null, schemaVersion: 1, listenerEnabled: false });
+
+      await startSyncListenerIfPaired('cfgdir', 'vault.cryptiq');
+
+      // Kill-switch must gate syncListenerStart — no Rust bind must occur.
+      expect(syncListenerStartMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'starts the Rust listener when listenerEnabled is explicitly true (kill-switch ON)',
+    async () => {
+      // Config explicitly enables the inbound listener.
+      loadConfigMock.mockResolvedValue({ vaultPath: null, schemaVersion: 1, listenerEnabled: true });
+
+      // Ensure we start from inactive so the listenerActive guard does not short-circuit.
+      const { syncStore } = await import('../SyncStore.svelte');
+      syncStore.markListenerInactive();
+
+      await startSyncListenerIfPaired('cfgdir', 'vault.cryptiq');
+
+      // When enabled, syncListenerStart must be called exactly once.
+      expect(syncListenerStartMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it(
+    'starts the Rust listener when listenerEnabled is absent — default ON (D-01 upgrade behavior)',
+    async () => {
+      // Config omits listenerEnabled entirely — simulates an existing install after upgrade.
+      // The ?? true semantic must treat absent as ON.
+      loadConfigMock.mockResolvedValue({ vaultPath: null, schemaVersion: 1 });
+
+      // Ensure we start from inactive so the listenerActive guard does not short-circuit.
+      const { syncStore } = await import('../SyncStore.svelte');
+      syncStore.markListenerInactive();
+
+      await startSyncListenerIfPaired('cfgdir', 'vault.cryptiq');
+
+      // Absent listenerEnabled must default to ON — syncListenerStart called once.
+      expect(syncListenerStartMock).toHaveBeenCalledTimes(1);
+    },
   );
 });
