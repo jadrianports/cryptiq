@@ -229,10 +229,12 @@
   let _preSync_modifiedAt = $state<string | null>(null);
 
   /**
-   * D-14 double-fire guard: track the last status+counts key we toasted for, so
-   * a re-render of the $effect does not push a duplicate toast.
+   * D-14 double-fire guard (FIX 6): track the last completion id we toasted for, so a
+   * re-render of the $effect does not push a duplicate toast. Replaces the fragile
+   * counts-string key — two consecutive same-count syncs now each bump syncCompletionId
+   * and therefore each toast exactly once.
    */
-  let _lastToastedKey = $state('');
+  let _lastToastedId = $state(-1);
 
   /**
    * D-14 / D-20 success effect:
@@ -266,10 +268,12 @@
     // D-14: push A-side counts-only success toast (only for initiator, not B-side).
     // formatSyncSummary returns "Already up to date." when added+updated+deleted === 0,
     // or "Synced — N added, M updated, ..." for non-zero-change syncs (UI-18 fence).
+    // FIX 6: dedup on syncStore.syncCompletionId (bumped once per 'done' transition) so
+    // two consecutive same-count syncs each toast exactly once, and unrelated reactive
+    // churn while status stays 'done' does not re-fire.
     if (syncStore.isInitiatorMode && counts !== null) {
-      const toastKey = `done:${String(counts.added)}:${String(counts.updated)}:${String(counts.deleted)}:${String(counts.unchanged)}`;
-      if (_lastToastedKey !== toastKey) {
-        _lastToastedKey = toastKey;
+      if (_lastToastedId !== syncStore.syncCompletionId) {
+        _lastToastedId = syncStore.syncCompletionId;
         // Zero-change sync: formatSyncSummary returns "Already up to date."
         // Non-zero sync: "Synced — N added, M updated, D deleted, U unchanged"
         pushToast(formatSyncSummary(counts));

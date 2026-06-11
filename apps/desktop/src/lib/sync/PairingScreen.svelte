@@ -84,6 +84,10 @@
   // D-08 reaper: detect re-entry with a stale session
   let hasStaleSession = $state<boolean>(false);
 
+  // FIX 3b: id of the in-flight SAS poll fallback. Bumped on each new poll start so a
+  // stale poll loop (from a prior session/state) self-cancels when it next checks.
+  let sasPollToken = 0;
+
   // ---------------------------------------------------------------------------
   // Event listeners (SECURITY: registered BEFORE pairingInitiate/pairingConnect — Pitfall 1)
   // ---------------------------------------------------------------------------
@@ -96,13 +100,26 @@
     // Tauri events are fire-and-forget; missed events cannot be replayed (Pitfall 1).
     void (async () => {
       unlistenSas = await listen<{ sessionId: string; sasDisplay: string }>('pairing://sas', (event) => {
-        if (event.payload.sessionId === currentSessionId) {
-          sasDisplay = event.payload.sasDisplay;
-          pairingState = 'SAS_WINDOW';
-          sasExpired = false;
+        // FIX 3a: accept the event when its sessionId matches the live session OR when
+        // we are awaiting a SAS (CONNECTING / WAITING_FOR_PEER) and have not yet shown
+        // one (sasDisplay still null). In the latter case ADOPT the event's sessionId —
+        // Rust can emit pairing://sas from the handshake task BEFORE the connect/initiate
+        // await assigns currentSessionId, which would otherwise drop the event and hang
+        // the joiner on "Connecting…".
+        const matchesLive = event.payload.sessionId === currentSessionId;
+        const awaitingSas =
+          (pairingState === 'CONNECTING' || pairingState === 'WAITING_FOR_PEER') &&
+          sasDisplay === null;
+        if (matchesLive || awaitingSas) {
+          if (!matchesLive && awaitingSas) {
+            currentSessionId = event.payload.sessionId; // adopt the late-bound session id
+          }
+          // FIX 5: set-once per session — ignore if a SAS is already shown.
+          setSasOnce(event.payload.sasDisplay);
           // Belt-and-suspenders (Pitfall 1): if event arrived with empty display, poll fallback
-          if (!sasDisplay && currentSessionId) {
-            void pairingGetSas(currentSessionId).then((s) => { sasDisplay = s; }).catch(() => {/* non-fatal */});
+          if (sasDisplay === null && currentSessionId !== null) {
+            const sid = currentSessionId;
+            void pairingGetSas(sid).then((s) => { setSasOnce(s); }).catch(() => {/* non-fatal */});
           }
         }
       });
@@ -110,10 +127,10 @@
       unlistenError = await listen<{ sessionId: string; message: string }>(
         'pairing://error',
         (event) => {
-          if (
-            event.payload.sessionId === currentSessionId ||
-            currentSessionId === null
-          ) {
+          // FIX 4: only fail when the error's sessionId matches the LIVE currentSessionId.
+          // The `|| currentSessionId === null` arm was removed so a late/stale error from a
+          // cancelled or reaped prior session cannot slam a fresh IDLE screen into FAILED.
+          if (event.payload.sessionId === currentSessionId) {
             // T-12-11: coalesced safe copy — no handshake-vs-network distinction surfaced
             pairingState = 'FAILED';
             failedMessage = "Pairing didn't complete — try again.";
@@ -123,10 +140,17 @@
       );
     })();
 
-    // Teardown: unregister listeners when component unmounts
+    // Teardown: unregister listeners when component unmounts.
+    // FIX 7 (Pitfall 3): on unmount (e.g. auto-lock mid-pairing) the listeners are torn
+    // down — best-effort restart the sync listener and reaper-finalize any open session so
+    // the sync listener is not left down and no Rust pairing session dangles. Idempotent:
+    // safe if the normal handler-driven restarts already ran.
     return () => {
       unlistenSas?.();
       unlistenError?.();
+      sasPollToken += 1; // cancel any in-flight poll
+      void restartListener();
+      void reaperFinalizePrior(currentSessionId);
     };
   });
 
@@ -140,12 +164,83 @@
     }
   }
 
+  // FIX 5: set the SAS display AT MOST ONCE per session. If a non-empty SAS is already
+  // shown for the current session, ignore subsequent sets (from a duplicate event or the
+  // poll fallback) so the {#key currentSessionId} ring is not remounted mid-window.
+  // Only a non-empty value transitions into SAS_WINDOW.
+  function setSasOnce(value: string): void {
+    if (sasDisplay !== null) return; // already set for this session — ignore
+    if (!value) return; // empty/falsey SAS is not a valid set
+    sasDisplay = value;
+    pairingState = 'SAS_WINDOW';
+    sasExpired = false;
+  }
+
+  // FIX 3b: independent bounded poll fallback for the SAS. Started right after
+  // currentSessionId is assigned in handleConnect/handleStartSharing. NOT nested inside
+  // the event handler — it covers the case where the pairing://sas event was emitted and
+  // missed before the listener/sessionId were ready. Polls pairingGetSas up to `tries`
+  // times, ~500ms apart, stopping on success (set-once), unmount/new-poll (token change),
+  // or once a SAS is already shown.
+  function startSasPoll(sessionId: string): void {
+    sasPollToken += 1;
+    const myToken = sasPollToken;
+    const tries = 10;
+    const delayMs = 500;
+    void (async () => {
+      for (let i = 0; i < tries; i += 1) {
+        // Stop if a newer poll started / unmounted, the SAS is already shown, or the
+        // session changed out from under us.
+        if (myToken !== sasPollToken) return;
+        if (sasDisplay !== null) return;
+        if (currentSessionId !== sessionId) return;
+        try {
+          const s = await pairingGetSas(sessionId);
+          if (myToken !== sasPollToken) return;
+          if (s) {
+            setSasOnce(s); // guarded: never double-sets / never remounts the ring (FIX 5)
+            return;
+          }
+        } catch {
+          // non-fatal — Rust may not have the SAS yet; retry until tries exhausted
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+    })();
+  }
+
   async function restartListener(): Promise<void> {
     try {
       await startSyncListenerIfPaired(configDir, vaultPath);
     } catch {
       // Non-fatal — the listener will retry on next entry
     }
+  }
+
+  // FIX 10: validate that a string is a private/LAN IPv4 address before using it in the
+  // manual-IP override. Accepts only RFC1918 (10/8, 172.16/12, 192.168/16), loopback
+  // (127/8), and link-local (169.254/16). Rejects anything else (public IPs, malformed
+  // input, IPv6). Counts/entry-data-free.
+  function isPrivateLanIpv4(raw: string): boolean {
+    const parts = raw.split('.');
+    if (parts.length !== 4) return false;
+    let a = 0;
+    let b = 0;
+    for (let i = 0; i < 4; i += 1) {
+      const p = parts[i] ?? '';
+      // Reject empty, non-digit, or leading-zero-padded segments; bound 0–255.
+      if (!/^\d{1,3}$/.test(p)) return false;
+      const n = Number(p);
+      if (n < 0 || n > 255) return false;
+      if (i === 0) a = n;
+      else if (i === 1) b = n;
+    }
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 127) return true; // 127.0.0.0/8 loopback
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
+    return false;
   }
 
   // D-08 reaper: finalize any lingering prior session (idempotent)
@@ -181,16 +276,10 @@
         return;
       }
 
-      // D-09 firewall heads-up: show before first pairingInitiate if not yet acked
-      if (!firewallAck) {
-        // The notice is rendered inline — user must click "Got it" to proceed
-        // We set pairingState to a special transient value indicating we're waiting
-        // for firewall ack before continuing. We handle this via the firewallAck flag.
-        // The "Start sharing" button is replaced by the firewall notice when !firewallAck.
-        firewallAck = false; // will be set to true when user clicks "Got it"
-        isWorking = false;
-        return;
-      }
+      // FIX 9: removed the unreachable firewall-ack guard here. The "Share this code"
+      // button is already `disabled={... || !firewallAck}`, so handleStartSharing can
+      // never run while !firewallAck — the dead block (with its no-op self-assignment)
+      // could never execute. The disabled attribute is the single firewall gate.
 
       // Pitfall 3: stop sync listener BEFORE pairingInitiate (frees port 54321)
       await stopSyncListener();
@@ -201,6 +290,9 @@
       bundledCode = result.base32Code;
       pairingState = 'WAITING_FOR_PEER';
       hasStaleSession = false;
+      // FIX 3b: start the independent SAS poll fallback now that currentSessionId is set,
+      // in case the pairing://sas event fires before the listener observes it.
+      startSasPoll(currentSessionId);
     } catch (err) {
       pairingState = 'FAILED';
       failedMessage = "Pairing didn't complete — try again.";
@@ -220,9 +312,22 @@
     isWorking = true;
     codeError = '';
 
-    const codeToUse = manualIp.trim()
-      ? joinerCode.trim().replace(/^[^:]+:[^:]+:/, `${manualIp.trim()}:54321:`)
-      : joinerCode.trim();
+    // FIX 10: when the manual-IP override is used, validate it is a private/LAN IPv4
+    // before substituting, and use a replacement FUNCTION so `$` in the input/captured
+    // groups is never interpreted as a replacement pattern. Invalid input shows a safe
+    // inline message and does NOT proceed.
+    let codeToUse: string;
+    const ip = manualIp.trim();
+    if (ip) {
+      if (!isPrivateLanIpv4(ip)) {
+        codeError = 'Enter a valid local IP address.';
+        isWorking = false;
+        return;
+      }
+      codeToUse = joinerCode.trim().replace(/^[^:]+:[^:]+:/, () => `${ip}:54321:`);
+    } else {
+      codeToUse = joinerCode.trim();
+    }
 
     try {
       // D-08 reaper: finalize prior session before starting new
@@ -232,11 +337,9 @@
         await reaperFinalizePrior(previousSessionId);
       }
 
-      // D-09 firewall heads-up before first connection attempt
-      if (!firewallAck) {
-        isWorking = false;
-        return;
-      }
+      // FIX 9: removed the unreachable firewall-ack guard here. The "Connect" button is
+      // already `disabled={... || !firewallAck}`, so handleConnect can never run while
+      // !firewallAck. The disabled attribute is the single firewall gate.
 
       // Pitfall 3: stop sync listener before pairingConnect
       await stopSyncListener();
@@ -245,6 +348,9 @@
       currentSessionId = result.sessionId;
       pairingState = 'CONNECTING';
       hasStaleSession = false;
+      // FIX 3b: start the independent SAS poll fallback now that currentSessionId is set,
+      // covering the race where Rust emits pairing://sas before the await resolved.
+      startSasPoll(currentSessionId);
     } catch (err) {
       if (err instanceof PairingCodeInvalidError) {
         codeError = 'Invalid code — check for typos and try again.';
@@ -635,11 +741,19 @@
             </p>
 
             <!-- SAS countdown ring with digits -->
+            <!--
+              FIX 5: key the ring on currentSessionId (the session), NOT on sasDisplay.
+              Combined with the set-once guard, this prevents a poll-fallback set from
+              remounting/restarting the 60 s ring + timer mid-window — the ring mounts
+              once per session and runs its full 60 s.
+            -->
             {#if sasDisplay !== null}
-              <SasCountdownRing
-                sasDisplay={sasDisplay}
-                onExpired={handleSasExpired}
-              />
+              {#key currentSessionId}
+                <SasCountdownRing
+                  sasDisplay={sasDisplay}
+                  onExpired={handleSasExpired}
+                />
+              {/key}
             {/if}
 
             <!-- SAS mismatch warning (if user notices mismatch before cancelling) -->

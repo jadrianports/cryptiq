@@ -197,9 +197,11 @@
       // 'never' so a missing field never arms an un-configured timer.
       startIdleController(settings.lock?.idleMinutes ?? 'never');
       // D-03: init the pairing store on unlock so device list is populated.
-      // pairingStore.init() is fail-open (empty list on error). configDir is
-      // available post-loadConfig; '' is safe (init will no-op gracefully).
-      void pairingStore.init(configDir);
+      // pairingStore.init() is fail-open (empty list on error).
+      // FIX 8: only init with a real configDir — an empty string would read a relative
+      // `cryptiq/peers.json`. This effect depends on configDir, so it re-runs and inits
+      // once configDir resolves to a real OS path post-loadConfig.
+      if (configDir) void pairingStore.init(configDir);
     }
 
     return () => {
@@ -222,10 +224,22 @@
   // summary) is owned by Plan 12-04's MainView effect; this effect MUST NOT
   // fire when this device initiated the sync (double-toast prevention).
   //
+  // FIX 6: dedup on syncStore.syncCompletionId (bumped once per 'done' transition)
+  // instead of re-firing every time this reactive effect re-runs while status stays
+  // 'done' (e.g. peers/pairingStore.init churn). Track the last id this effect toasted
+  // in a plain local `let` and only push when the id changes.
+  //
   // Counts-only fence: interpolates ONLY integer count fields + the device name.
   // NO entry titles, usernames, passwords, or URLs (UI-18 fence / T-12-01).
+  let lastBSideToastedId = -1;
   $effect(() => {
-    if (syncStore.status === 'done' && syncStore.lastCounts !== null && !syncStore.isInitiatorMode) {
+    if (
+      syncStore.status === 'done' &&
+      syncStore.lastCounts !== null &&
+      !syncStore.isInitiatorMode &&
+      syncStore.syncCompletionId !== lastBSideToastedId
+    ) {
+      lastBSideToastedId = syncStore.syncCompletionId;
       const peer = pairingStore.peers[0];
       const deviceName = peer?.deviceName ?? 'the other device';
       const { added, updated } = syncStore.lastCounts;

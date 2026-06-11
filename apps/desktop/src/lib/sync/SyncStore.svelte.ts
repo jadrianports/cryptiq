@@ -65,6 +65,13 @@ class SyncStore {
   // NEVER store keys, titles, or entry content here (T-11-19).
   #lastCounts = $state.raw<import('@cryptiq/core').MergeCounts | null>(null);
 
+  // $state.raw: monotonic completion counter (FIX 2/6). Bumped by 1 inside setStatus
+  // ONLY when the new status === 'done'. Toast effects (App.svelte B-side, MainView
+  // A-side) dedup on this id so each completed sync toasts EXACTLY once, regardless of
+  // identical counts or unrelated reactive churn (peers/init). Reactive via $state.raw —
+  // same discipline as #status/#lastError. Counter only — no keys/titles/entry content.
+  #syncCompletionId = $state.raw<number>(0);
+
   // ---------------------------------------------------------------------------
   // Readable state (reactive via $state.raw)
   // ---------------------------------------------------------------------------
@@ -142,6 +149,20 @@ class SyncStore {
     return this.#lastCounts;
   }
 
+  /**
+   * Monotonic completion id, bumped once per 'done' transition (FIX 2/6).
+   *
+   * Reactive via $state.raw. The App.svelte B-side and MainView A-side toast effects
+   * track the last id they toasted and only push when this id changes — so a completed
+   * sync toasts EXACTLY once per side, even when two consecutive syncs have identical
+   * counts or unrelated reactive churn re-runs the effect while status stays 'done'.
+   *
+   * SECURITY: an integer counter only — no keys, titles, or entry content (T-12-05).
+   */
+  get syncCompletionId(): number {
+    return this.#syncCompletionId;
+  }
+
   // ---------------------------------------------------------------------------
   // State mutations (whole-value reassignment for $state.raw reactivity)
   // ---------------------------------------------------------------------------
@@ -158,6 +179,11 @@ class SyncStore {
     // do not persist into a new connecting/syncing cycle.
     if (status !== 'error') {
       this.#lastError = null;
+    }
+    // FIX 2/6: bump the monotonic completion id ONLY on a 'done' transition so the
+    // toast effects can dedup per-completion (each completed sync toasts exactly once).
+    if (status === 'done') {
+      this.#syncCompletionId = this.#syncCompletionId + 1;
     }
   }
 

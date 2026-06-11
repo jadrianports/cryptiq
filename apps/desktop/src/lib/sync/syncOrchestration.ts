@@ -742,6 +742,12 @@ export async function handleMergedBlobForB(
 ): Promise<void> {
   const { getBSessionKey, getBCurrentInner, getBDoc, saveBlob, reloadSession, confirmSave } = deps;
 
+  // FIX 1: reset the initiator flag FIRST so it is a true per-sync side indicator.
+  // runSyncNow sets it true on the A-side; this B-side path always sets it false.
+  // Without this, after an A-initiated sync the flag stays true and the next incoming
+  // B-side 'done' would mis-fire the A-side (MainView) toast instead of the B-side one.
+  syncStore.setInitiatorMode(false);
+
   syncStore.setStatus('merging');
 
   try {
