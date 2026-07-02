@@ -25,6 +25,10 @@ export * from './vault/migrations/index';
 export * from './entries/types';
 export * from './entries/crud';
 export * from './entries/uuid';
+// Phase 16 public surface:
+// Origin matching — eTLD+1 extraction + metadata-only match (FILL-03, BRIDGE-08)
+export * from './entries/originMatch';
+export * from './entries/matchByOrigin';
 // Generator — options types, defaults, and verb exports
 export * from './generator/types';
 export * from './generator/random';
