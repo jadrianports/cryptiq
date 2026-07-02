@@ -8,6 +8,19 @@
 // Every outbound request (sendEcho) is timeout-guarded (Pitfall 4 /
 // BRIDGE-07): a native-port round trip that never replies surfaces a typed
 // rejection instead of hanging the caller forever.
+//
+// Plan 06 (BRIDGE-04/06/10): on first need, associate once (plaintext
+// handshake via bridgeRpc.sendAssociate), persist the returned
+// { hostPublicKey, pairingToken } via associationStore.saveAssociation,
+// and thereafter speak every RPC through bridgeRpc.sendRpc (box-wrapped,
+// token INSIDE the box). The identity keypair + association are loaded
+// from chrome.storage.local on EVERY call (Pitfall 2) — never regenerated
+// — so a reconnect after an MV3 SW restart is silently trusted (SC-1),
+// exactly like the lazy getPort() pattern below already does for the pipe
+// connection itself.
+
+import { sendAssociate, sendRpc, bytesToBase64, type BridgeErrorResult } from '../src/lib/bridgeRpc';
+import { getOrCreateIdentityKeypair, loadAssociation, saveAssociation } from '../src/lib/associationStore';
 
 export default defineBackground(() => {
   const ECHO_TIMEOUT_MS = 5000; // Pitfall 4: never a silent hang.
@@ -126,6 +139,101 @@ export default defineBackground(() => {
     });
   }
 
+  // --- Plan 06: authenticated association wiring (BRIDGE-04/06/10) -------
+
+  // Detect the browser for the auto-labeled association (D-02). Only
+  // Chrome/Edge matter for v1 (STACK.md); anything else falls back to a
+  // generic label rather than guessing.
+  function detectBrowserLabel(): string {
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    if (ua.includes('Edg/')) return 'Edge';
+    if (ua.includes('Chrome/')) return 'Chrome';
+    return 'Browser';
+  }
+
+  // Last known bridge state, queryable by a freshly (re)opened popup via
+  // 'cryptiq-get-bridge-state' — a popup can open AFTER the SW already
+  // resolved the handshake, so it needs to be able to ask, not just listen.
+  let lastKnownBridgeState: Record<string, unknown> = { type: 'cryptiq-bridge-state', state: 'unknown' };
+
+  function broadcastBridgeState(message: Record<string, unknown>): void {
+    lastKnownBridgeState = message;
+    // No popup may be open to receive this — chrome.runtime.sendMessage
+    // rejects with "Could not establish connection" in that case, which is
+    // expected and safe to ignore (D-10: this carries no secrets anyway).
+    chrome.runtime.sendMessage(message).catch(() => {});
+  }
+
+  /**
+   * Ensure the extension has a persisted association before speaking any
+   * authenticated RPC. Loads the PERSISTED identity keypair (never
+   * regenerated — Pitfall 2) and, only when no association exists (or the
+   * caller forces re-association after the app reports `not-associated`),
+   * runs the one-time plaintext `associate` handshake and persists the
+   * result. On an MV3 SW restart, `loadAssociation()` returns the SAME
+   * stored record, so no re-approval is ever triggered (SC-1).
+   */
+  async function ensureAssociation(forceReassociate = false): Promise<{ ok: true } | BridgeErrorResult> {
+    const identity = await getOrCreateIdentityKeypair();
+    const existing = forceReassociate ? null : await loadAssociation();
+    if (existing) return { ok: true };
+
+    broadcastBridgeState({ type: 'cryptiq-bridge-state', state: 'waiting-for-approval' });
+
+    const label = detectBrowserLabel();
+    const result = await sendAssociate(getPort(), {
+      clientPublicKey: bytesToBase64(identity.publicKey),
+      label,
+    });
+
+    if (!result.ok) {
+      broadcastBridgeState({ type: 'cryptiq-bridge-state', state: 'error', code: result.code, message: result.message });
+      return result;
+    }
+
+    await saveAssociation({ hostPublicKey: result.hostPublicKey, pairingToken: result.pairingToken, label });
+    broadcastBridgeState({ type: 'cryptiq-bridge-state', state: 'associated' });
+    return { ok: true };
+  }
+
+  /**
+   * Route a real RPC through the authenticated channel: ensure an
+   * association exists, send the box-wrapped `rpc`, and — fail closed —
+   * forward ANY of the four error codes (not-associated/invalid-token/
+   * app-outdated/extension-outdated) to the popup rather than silently
+   * hanging or partially proceeding. A single `not-associated` response
+   * from an already-"associated" extension (e.g. the app revoked it) is
+   * retried once via re-association; this is the ONLY case that clears the
+   * "association exists" fast path (per Task 2 acceptance criteria).
+   */
+  async function sendAuthenticatedRpc(
+    innerPayload: Record<string, unknown>,
+  ): Promise<{ ok: true; payload: unknown } | BridgeErrorResult> {
+    const ensured = await ensureAssociation();
+    if (!ensured.ok) return ensured;
+
+    let result = await sendRpc(getPort(), innerPayload);
+
+    if (!result.ok && result.code === 'not-associated') {
+      const reassociated = await ensureAssociation(true);
+      if (!reassociated.ok) return reassociated;
+      result = await sendRpc(getPort(), innerPayload);
+    }
+
+    if (!result.ok) {
+      broadcastBridgeState({ type: 'cryptiq-bridge-state', state: 'error', code: result.code, message: result.message });
+    }
+
+    return result;
+  }
+
+  // Kick off the association handshake on first SW load/wake. Fire-and-
+  // forget (WXT's background main() cannot be async) — errors are
+  // swallowed here because ensureAssociation() already broadcasts a typed
+  // error state to the popup; there is no additional secret-free context to
+  // log (D-10).
+  void ensureAssociation();
+
   // Bridge for the popup (D-18/D-20): the popup's dev-only echo button
   // triggers sendEcho() via a runtime message rather than importing this
   // module directly (service worker and popup are separate JS contexts).
@@ -134,6 +242,12 @@ export default defineBackground(() => {
       sendEcho().then(sendResponse);
       return true; // keep the message channel open for the async response
     }
+
+    if (message?.type === 'cryptiq-get-bridge-state') {
+      sendResponse(lastKnownBridgeState);
+      return false; // synchronous response, no need to keep the channel open
+    }
+
     return false;
   });
 });
