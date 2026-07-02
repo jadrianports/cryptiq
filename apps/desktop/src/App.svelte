@@ -41,6 +41,7 @@
   import { pairingStore } from './lib/sync/PairingStore.svelte';
   import { syncStore } from './lib/sync/SyncStore.svelte';
   import { extensionPeerStore } from './lib/bridge/ExtensionPeerStore.svelte';
+  import { registerRpcDispatch } from './lib/bridge/rpcDispatch';
   import ExtensionApprovalModal from './lib/bridge/ExtensionApprovalModal.svelte';
   import { pushToast } from './lib/state/ui.svelte';
   import FirstRunWizard from './lib/screens/FirstRunWizard.svelte';
@@ -73,6 +74,17 @@
     let unlistenSleepPromise: Promise<() => void> | null = null;
     let unlistenBlurPromise: Promise<() => void> | null = null;
     let unlistenClosePromise: Promise<() => void> | null = null;
+    // Phase 16 Plan 03 (XSEC-05/D-12, Pitfall 2): the bridge RPC dispatch
+    // listener is registered here — app-globally, at the SAME lifetime tier
+    // as the other Tauri lock-event listeners and <ExtensionApprovalModal />
+    // below — and is DELIBERATELY NOT gated on vaultSession.isUnlocked. A
+    // locked vault must still have a live listener so it can answer the
+    // typed `vault-locked` response (XSEC-06); moving this registration
+    // inside the isUnlocked $effect would silently break that guarantee.
+    // rpcDispatch.ts itself never imports idle.svelte.ts / resetTimer, so a
+    // burst of RPC traffic can never keep the vault unlocked past its idle
+    // timeout (see rpcDispatch.test.ts for the regression guard).
+    let unlistenRpcDispatchPromise: Promise<() => void> | null = null;
 
     // Real sodium.ready gate — replaces the Phase-1 Promise.resolve() stub.
     // getSodium() awaits sodium.ready exactly once and memoizes the instance.
@@ -162,6 +174,10 @@
         unlistenClosePromise = listen('cryptiq-window-close', async () => {
           await vaultSession.lock();
         });
+
+        // Phase 16 Plan 03: app-global RPC dispatch listener — see the
+        // declaration comment above for why this is NOT isUnlocked-gated.
+        unlistenRpcDispatchPromise = registerRpcDispatch();
       })
       .catch(() => {
         // sodium init failure is fatal — at minimum show the hint.
@@ -180,6 +196,9 @@
       }
       if (unlistenClosePromise !== null) {
         unlistenClosePromise.then((u) => u()).catch(() => {});
+      }
+      if (unlistenRpcDispatchPromise !== null) {
+        unlistenRpcDispatchPromise.then((u) => u()).catch(() => {});
       }
     };
   });
