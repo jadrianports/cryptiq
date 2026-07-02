@@ -42,6 +42,27 @@ let _mockVaultPath: string | null = '/fake/vault.cryptiq';
 let _mockVaultBytes: Uint8Array | null = null;
 
 /**
+ * In-memory browser-extension association list, seeded by tests via
+ * setMockExtensionAssociations(). Backs extension_peers_list / rename_extension_association /
+ * revoke_extension_association_cmd so ExtensionSettingsSection.spec.ts can exercise the
+ * real store + component without a live Tauri backend.
+ */
+interface MockExtensionAssociation {
+  clientId: string;
+  clientPublicKey: string;
+  label: string;
+  pairedAt: string;
+  lastUsedAt: string | null;
+  pairingTokenHash: string;
+}
+let _mockExtensionAssociations: MockExtensionAssociation[] = [];
+
+/** Seed the association list extension_peers_list will return. */
+export function setMockExtensionAssociations(associations: MockExtensionAssociation[]): void {
+  _mockExtensionAssociations = associations;
+}
+
+/**
  * Set the vault path the mocked config layer will return.
  * Pass null to simulate "no vault configured" (first-run scenario).
  */
@@ -67,6 +88,7 @@ export function getMockVaultPath(): string | null {
 export function resetMockState(): void {
   _mockVaultPath = '/fake/vault.cryptiq';
   _mockVaultBytes = null;
+  _mockExtensionAssociations = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +184,30 @@ export async function invoke(command: string, args?: InvokeArgs): Promise<unknow
   // ── plugin:opener|open_url ───────────────────────────────────────────────
   // openUrl.ts — no-op (tests don't test external URL launching)
   if (command === 'plugin:opener|open_url') {
+    return undefined;
+  }
+
+  // ── extension_peers_list ──────────────────────────────────────────────────
+  // ExtensionPeerStore.init() — returns the seeded association list.
+  if (command === 'extension_peers_list') {
+    return _mockExtensionAssociations;
+  }
+
+  // ── rename_extension_association ─────────────────────────────────────────
+  // ExtensionPeerStore.renameLabel() — updates the seeded label in place.
+  if (command === 'rename_extension_association') {
+    const { clientId, label } = (args ?? {}) as { clientId: string; label: string };
+    _mockExtensionAssociations = _mockExtensionAssociations.map((a) =>
+      a.clientId === clientId ? { ...a, label } : a,
+    );
+    return undefined;
+  }
+
+  // ── revoke_extension_association_cmd ─────────────────────────────────────
+  // ExtensionPeerStore.revoke() — removes the seeded association.
+  if (command === 'revoke_extension_association_cmd') {
+    const { clientId } = (args ?? {}) as { clientId: string };
+    _mockExtensionAssociations = _mockExtensionAssociations.filter((a) => a.clientId !== clientId);
     return undefined;
   }
 

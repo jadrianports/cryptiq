@@ -40,6 +40,8 @@
   import { loadConfig } from './lib/config/config-adapter';
   import { pairingStore } from './lib/sync/PairingStore.svelte';
   import { syncStore } from './lib/sync/SyncStore.svelte';
+  import { extensionPeerStore } from './lib/bridge/ExtensionPeerStore.svelte';
+  import ExtensionApprovalModal from './lib/bridge/ExtensionApprovalModal.svelte';
   import { pushToast } from './lib/state/ui.svelte';
   import FirstRunWizard from './lib/screens/FirstRunWizard.svelte';
   import UnlockScreen from './lib/screens/UnlockScreen.svelte';
@@ -213,6 +215,10 @@
       // D-03: reset the pairing store on lock — clears peers list so secret-adjacent
       // peer data (device IDs, public keys) does not outlive the unlocked session.
       pairingStore.reset();
+      // T-15-10: reset the extension-association store on lock — clears the
+      // association list so secret-adjacent data (client public keys, pairing-token
+      // hashes) does not outlive the unlocked session (mirrors pairingStore.reset()).
+      extensionPeerStore.reset();
     };
   });
 
@@ -270,6 +276,12 @@
     invisible until this was added (surfaced by 06-06 export 'Backup saved.' test).
   -->
   <Toast />
+  <!--
+    ExtensionApprovalModal is mounted APP-GLOBALLY (like Toast) so a
+    bridge://associate-request approval prompt surfaces regardless of the current
+    view — mirrors Toast's overlay-every-view placement (BRIDGE-05 / D-01).
+  -->
+  <ExtensionApprovalModal />
   <!--
     P4-06 view-state switch. Each branch renders a real screen component.
     main / generator / settings remain placeholder until plans 04-04 through 04-07.

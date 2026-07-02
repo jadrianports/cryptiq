@@ -40,6 +40,8 @@
   import AboutView from './AboutView.svelte';
   import PairingScreen from '../sync/PairingScreen.svelte';
   import SyncSettingsSection from '../sync/SyncSettingsSection.svelte';
+  import ExtensionSettingsSection from '../bridge/ExtensionSettingsSection.svelte';
+  import { extensionPeerStore } from '../bridge/ExtensionPeerStore.svelte';
 
   /**
    * Props contract for Phase 12 (Plan 12-01 Task 3).
@@ -53,6 +55,12 @@
     vaultPath: string;
   };
   let { configDir, vaultPath }: Props = $props();
+
+  // ── Browser Extensions: init the association store on settings mount (BRIDGE-09) ──
+  // Fail-open (extensionPeerStore.init never throws into the UI — empty list on error).
+  $effect(() => {
+    if (configDir) void extensionPeerStore.init(configDir);
+  });
 
   // ── Favicon toggle local state (UI-10) ────────────────────────────────────
   // OFF by default. NOT persisted — the toggle is a preview of the control
@@ -541,6 +549,16 @@
             onPair={() => { showPairing = true; }}
             onSyncNow={handleSyncNowFromSettings}
           />
+        </div>
+      </section>
+
+      <!-- ── Section: Browser Extensions (Plan 15-05 / D-03/D-04/BRIDGE-09) ── -->
+      <section aria-labelledby="browser-extensions-heading">
+        <h2 id="browser-extensions-heading" class="mb-2 px-1 text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">
+          Browser Extensions
+        </h2>
+        <div class="overflow-hidden rounded-cryptiq-lg border border-cryptiq-border bg-cryptiq-surface shadow-cryptiq-panel">
+          <ExtensionSettingsSection {configDir} />
         </div>
       </section>
 
