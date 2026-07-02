@@ -1,11 +1,14 @@
 # Phase 14 — Native-Messaging Bridge Skeleton: Manual UAT
 
-**Status:** PARTIAL. SC-2 (sidecar app-not-running) and SC-3 (Chrome+Edge registration
-round-trip) were verified automatically on 2026-07-02 — they need no browser (see their RESULT
-boxes). SC-1 (echo via the extension popup) and SC-4 (MV3 service-worker restart) still require
-a human on a single Windows machine with Chrome/Edge, since native messaging through the browser
-cannot be driven headlessly (D-20, 14-VALIDATION.md). Reading the REAL extension ID from
-`chrome://extensions` is also still pending. This document is the executable checklist.
+**Status:** ALL PASS (automated). SC-2 + SC-3 were verified 2026-07-02 (no browser needed).
+SC-1 + SC-4 were verified 2026-07-03 by driving **real Chromium 1223 with the unpacked extension
+loaded** via standalone Playwright — Chrome physically spawned the sidecar via `connectNative`,
+the full round trip echoed, the MV3 service-worker restart reconnected, and the loaded extension
+ID was confirmed to equal the pinned value `pmnfhbonekjokipcfeklbajepnjppnca`. See each RESULT box
+for evidence. NOTE: SC-1/SC-4 were driven in Playwright's bundled Chromium (a temporary Chromium
+native-messaging registry key was added and removed); re-running once in your day-to-day Chrome/Edge
+install is still worthwhile as a final sanity check, but the code paths are proven. Full installer
+(DIST-02) remains deferred — see Deferred section.
 
 **Requires (single Windows machine):**
 - Cryptiq repo built locally (`apps/native-host` and `apps/desktop`)
@@ -100,10 +103,18 @@ cannot be driven headlessly (D-20, 14-VALIDATION.md). Reading the REAL extension
 - No error banner, no indefinite spinner.
 
 ### RESULT
-- [ ] PASS
+- [x] PASS
 - [ ] FAIL — describe:
 
-**Status: PENDING human execution.**
+**Status: PASS — verified in a real browser on 2026-07-03 (automated via standalone Playwright + Chromium 1223).**
+Loaded the unpacked dev extension in real Chromium; the loaded extension ID was
+`pmnfhbonekjokipcfeklbajepnjppnca` — **matching the pinned/algorithmic value** (extension-ID
+caveat resolved). The service worker called `chrome.runtime.connectNative('com.cryptiq.bridge')`,
+Chrome spawned `cryptiq-nmhost.exe`, which relayed through `\\.\pipe\cryptiq-bridge` to the running
+app and echoed back: `{protocolVersion:1,type:"echo",id:"sc1",payload:{hello:"cryptiq",tag:"sc1"}}`
+(and via the popup's `cryptiq-send-echo` path: `{ok:true, payload:{ping:"hello"}}`). Full
+extension→sidecar→pipe→app→back round trip confirmed. (A native-messaging key for Chromium's
+registry hive was added for the test and removed afterward.)
 
 ---
 
@@ -242,10 +253,17 @@ re-run), extension loaded.
   a lucky one-off.
 
 ### RESULT
-- [ ] PASS
+- [x] PASS
 - [ ] FAIL — describe:
 
-**Status: PENDING human execution.**
+**Status: PASS — verified in a real browser on 2026-07-03 (automated via standalone Playwright + Chromium 1223).**
+With the extension connected and echoing, the MV3 service worker was force-terminated via CDP
+(`Target.closeTarget` on the `service_worker` target). Re-sending `cryptiq-send-echo` from the
+still-open popup page woke a fresh SW that reconnected and echoed successfully
+(`postRestartEcho: {ok:true, payload:{ping:"hello"}}`). The new worker's console — captured only
+AFTER the kill — contained exactly `[cryptiq-ext] connecting to native host com.cryptiq.bridge`,
+confirming the lazy `getPort()` reconnect path ran on the restart (FIX 5 observability). No hang,
+no unhandled rejection.
 
 ---
 
