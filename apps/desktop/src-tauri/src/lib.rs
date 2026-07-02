@@ -70,6 +70,8 @@ pub fn run() {
         .manage(commands::sync::SyncBusyGuard::new())
         // Phase 11 Plan 03 — A-side merged-blob oneshot (sync_now parks; JS resolves via sync_provide_merged_blob).
         .manage(commands::sync::SyncProvideBlobPending::new())
+        // Phase 14 Plan 02 — always-on extension-bridge listener state (BRIDGE-02; kill-switch stub for Phase 20 UX-05)
+        .manage(commands::extension_bridge::ExtensionBridgeState::new())
         // Native half of LOCK-01: start the system-sleep watcher once the app is built.
         // Gated to (windows, macOS) per D-15; emits "cryptiq-sleep-lock" on system sleep.
         .setup(|app| {
@@ -77,6 +79,12 @@ pub fn run() {
             {
                 start_sleep_watcher(app.handle().clone());
             }
+            // Phase 14 Plan 02 — always-on local named-pipe listener (BRIDGE-02), production.
+            // Explicitly NOT #[cfg(debug_assertions)]-gated (unlike the dev MCP bridge above) and
+            // NOT gated by vault-unlock state — the echo endpoint carries zero vault data (D-04).
+            tauri::async_runtime::spawn(commands::extension_bridge::start_extension_bridge_listener(
+                app.handle().clone(),
+            ));
             // Touch `app` on platforms where the watcher is compiled out (Linux excluded from v1).
             let _ = app;
             Ok(())
