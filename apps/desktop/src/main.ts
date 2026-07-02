@@ -9,5 +9,11 @@ if (import.meta.env.DEV) {
   import('./lib/dev/boot-self-test').then(({ runBootSelfTest }) => runBootSelfTest());
 }
 
+// D-13: dev-only match/fill RPC harness, gated identically to boot-self-test
+// above so Vite strips it from production builds.
+if (import.meta.env.DEV) {
+  import('./lib/dev/rpcHarness').then(({ runRpcHarness }) => runRpcHarness());
+}
+
 const app = mount(App, { target: document.getElementById('app')! });
 export default app;

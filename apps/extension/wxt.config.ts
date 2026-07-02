@@ -19,11 +19,19 @@ import { defineConfig } from 'wxt';
 // chrome.storage is undefined in a real browser and ensureAssociation() throws
 // on first use — a gap the WxtVitest fake-browser masks (it injects
 // chrome.storage regardless of the manifest); found via the live Phase-15 UAT.
+//
+// Plan 16-04 [Rule 2 — missing critical functionality]: `activeTab` added so
+// Popup.svelte can read the current tab's URL to build the `match-origin`
+// RPC's `origin` param. `activeTab` is the narrowly-scoped permission
+// 16-CONTEXT.md already anticipates for XSEC-04 (Phase 17) — it grants
+// temporary access to the tab that triggered the popup's own open (a user
+// gesture), never a standing `host_permissions`/`tabs` grant. No
+// content_scripts entry added; field-detection injection stays Phase 17.
 export default defineConfig({
   modules: ['@wxt-dev/module-svelte'],
   manifest: {
     name: 'Cryptiq',
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19vhX8XkzAUXKFy9ULbh3THq+EUESqEnurUFmD/qlyZNerlM0gxQeuXk61QW/MG9aTBTXnlUQ86+KPbBlORunAs6ST0Nn+AU1sX/UnfCZBlrPQVMY1Y57MRaRviLLwpwpa5W0LKafR0iZHkK4o/WwQzRexsbBlqnR4zu/1b+92d6vYnfEiXIqxYLuB3TF5fy4iGBbuE8CtG7gUD209c+jvJUwcJCBOtGNXAZ65Q8iv25gXBB2BE7Q68BQN7IBsVzt0shzid+PcjNx0zIpMzkyEjwCB29UrucOdJqGazhAfZaFp2AvKpIYHmb+FP1jJ/1duIPifxXyrAhfnQZj2gbdwIDAQAB',
-    permissions: ['nativeMessaging', 'storage'],
+    permissions: ['nativeMessaging', 'storage', 'activeTab'],
   },
 });

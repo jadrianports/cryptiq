@@ -237,6 +237,15 @@ export default defineBackground(() => {
   // Bridge for the popup (D-18/D-20): the popup's dev-only echo button
   // triggers sendEcho() via a runtime message rather than importing this
   // module directly (service worker and popup are separate JS contexts).
+  //
+  // Plan 16-04: the popup's D-10 status surface and its best-effort
+  // "Unlock Cryptiq" button both need to speak an authenticated `rpc`
+  // (match-origin / fill-entry / focus-app) but a popup script cannot reach
+  // this module's module-level `port`/`getPort()` directly (separate JS
+  // context) — 'cryptiq-rpc' relays an arbitrary `{ method, params }` inner
+  // payload through the SAME sendAuthenticatedRpc() used by sendEcho's
+  // sibling paths, which always calls getPort() fresh (lazy reconnect,
+  // Pitfall 4 / D-16) rather than letting the popup cache its own port.
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'cryptiq-send-echo') {
       sendEcho().then(sendResponse);
@@ -246,6 +255,12 @@ export default defineBackground(() => {
     if (message?.type === 'cryptiq-get-bridge-state') {
       sendResponse(lastKnownBridgeState);
       return false; // synchronous response, no need to keep the channel open
+    }
+
+    if (message?.type === 'cryptiq-rpc') {
+      const innerPayload = (message.payload ?? {}) as Record<string, unknown>;
+      sendAuthenticatedRpc(innerPayload).then(sendResponse);
+      return true; // keep the message channel open for the async response
     }
 
     return false;

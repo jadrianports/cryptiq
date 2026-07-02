@@ -1,104 +1,175 @@
 <script lang="ts">
   // apps/extension/entrypoints/popup/Popup.svelte
   //
-  // Minimal popup (D-17: background SW + popup only, zero content script).
-  // Real popup UX (search/copy/lock state) lands in Phase 18 — this phase
-  // only needs a shell to host the DEV-only echo trigger (D-18/D-20) PLUS
-  // the production (NOT dev-gated) association states from Plan 06:
-  // waiting-for-approval, directional version-mismatch (D-05, fail closed,
-  // no partial-function fallback), and not-associated.
+  // D-10 (XSEC-06): the real (non-dev) popup status surface. On every open
+  // (MV3 popups are always a fresh script instantiation — RESEARCH.md
+  // Pattern 3, no persistent-state assumption) this renders EXACTLY ONE of
+  // five states:
+  //   - not-paired            -> "Open Cryptiq to approve"
+  //   - disconnected/app-closed -> "Cryptiq isn't running"
+  //   - locked                -> "Cryptiq is locked — unlock it to fill"
+  //   - connected-matches     -> match COUNT only (never titles/usernames
+  //                              rendered here — that's the Phase 17/18
+  //                              picker; this phase's popup is status-only)
+  //   - connected-no-matches  -> "No saved logins for this site"
   //
-  // D-18: the dev echo section is loaded via a DYNAMIC import gated on
-  // import.meta.env.DEV, mirroring apps/desktop/src/main.ts's boot-self-test
-  // gating exactly, so Vite/WXT's build-time DEV replacement + dead-code
-  // elimination strips the entire DevEcho.svelte chunk (including the
-  // "send echo" button string) from production builds.
+  // HARD CONSTRAINT (XSEC-06): every state renders counts/status text ONLY —
+  // never a password, never any secret, in any state.
+  //
+  // The popup never holds a popup-local `chrome.runtime.Port` (Pitfall 4 /
+  // MV3 SW teardown) — every RPC is relayed through background.ts's
+  // 'cryptiq-rpc' message handler, which calls sendAuthenticatedRpc() and
+  // therefore always fetches the native port FRESH via background's lazy
+  // getPort() accessor.
   import type { Component } from 'svelte';
+  import { loadAssociation } from '../../src/lib/associationStore';
+  import type { BridgeErrorCode } from '../../src/lib/bridgeRpc';
 
   let DevEchoComponent: Component | null = $state(null);
 
   if (import.meta.env.DEV) {
+    // D-18: dev-only echo trigger, dynamically imported so Vite/WXT's
+    // import.meta.env.DEV replacement strips this chunk from production.
     import('./DevEcho.svelte').then((mod) => {
       DevEchoComponent = mod.default;
     });
   }
 
-  // Same `let X = $state(...)` + conditional-render technique as the DEV
-  // echo gate above, but these states are PRODUCTION — the directional
-  // mismatch message and the approval-pending state must show for real
-  // users, not just in dev builds.
-  type BridgeUiState =
-    | { state: 'unknown' }
-    | { state: 'not-associated' }
-    | { state: 'waiting-for-approval' }
-    | { state: 'associated' }
-    | { state: 'version-mismatch'; code: 'app-outdated' | 'extension-outdated'; message: string };
-
-  let bridgeState: BridgeUiState = $state({ state: 'unknown' });
-
-  interface IncomingBridgeStateMessage {
-    type: 'cryptiq-bridge-state';
-    state: 'waiting-for-approval' | 'associated' | 'error' | 'unknown';
-    code?: string;
-    message?: string;
+  /** Metadata-only match shape (mirrors @cryptiq/core's EntryMatchMetadata
+   * wire shape — deliberately re-declared locally rather than adding a
+   * workspace dependency from apps/extension on @cryptiq/core; this type
+   * carries NO password field by construction, matching BRIDGE-08). */
+  interface EntryMatchMetadata {
+    id: string;
+    title: string;
+    username: string;
+    domainHint: string;
   }
 
-  // The app is the source of truth for WHICH side is behind (D-05) — the
-  // popup renders the forwarded message string verbatim, never a
-  // hardcoded per-direction copy of its own.
-  function applyBridgeStateMessage(message: IncomingBridgeStateMessage): void {
-    if (message.state === 'error' && (message.code === 'app-outdated' || message.code === 'extension-outdated')) {
-      bridgeState = { state: 'version-mismatch', code: message.code, message: message.message ?? '' };
-      return;
-    }
-    if (message.state === 'error' && message.code === 'not-associated') {
-      bridgeState = { state: 'not-associated' };
-      return;
-    }
-    if (message.state === 'waiting-for-approval' || message.state === 'associated') {
-      bridgeState = { state: message.state };
-      return;
-    }
-    // invalid-token / protocol-error / unknown — no dedicated visual state
-    // yet; fail closed by staying out of the (only) success state.
+  type PopupStatus =
+    | { kind: 'loading' }
+    | { kind: 'not-paired' }
+    | { kind: 'disconnected' }
+    | { kind: 'locked' }
+    | { kind: 'connected-matches'; count: number }
+    | { kind: 'connected-no-matches' };
+
+  let status: PopupStatus = $state({ kind: 'loading' });
+  let unlockRequested = $state(false);
+
+  interface RpcMessageOutcome {
+    ok: boolean;
+    code?: BridgeErrorCode;
+    payload?: unknown;
   }
 
-  chrome.runtime.onMessage.addListener((message: IncomingBridgeStateMessage) => {
-    if (message?.type === 'cryptiq-bridge-state') {
-      applyBridgeStateMessage(message);
+  /**
+   * Relay one inner `{ method, params }` RPC through background.ts's
+   * 'cryptiq-rpc' handler. Never throws — a missing/torn-down background
+   * context resolves as a transport failure, which callers fail closed on.
+   */
+  async function sendRpcViaBackground(innerPayload: Record<string, unknown>): Promise<RpcMessageOutcome> {
+    try {
+      const result = (await chrome.runtime.sendMessage({ type: 'cryptiq-rpc', payload: innerPayload })) as
+        | RpcMessageOutcome
+        | undefined;
+      return result ?? { ok: false, code: 'unknown' };
+    } catch {
+      return { ok: false, code: 'unknown' };
     }
-  });
+  }
 
-  // A popup can open AFTER the background SW already resolved (or is
-  // mid-resolving) the handshake, so ask for the current state rather than
-  // only listening for future broadcasts.
-  chrome.runtime
-    .sendMessage({ type: 'cryptiq-get-bridge-state' })
-    .then((response: IncomingBridgeStateMessage | undefined) => {
-      if (response) applyBridgeStateMessage(response);
-    })
-    .catch(() => {
-      // Background not ready yet — stay in 'unknown' until a broadcast
-      // arrives via the listener above.
-    });
+  /**
+   * Read the current active tab's top-level origin. Requires the
+   * `activeTab` permission (granted for the duration of this popup-open
+   * user gesture) — returns null if unavailable, which fails closed to the
+   * `disconnected` state rather than guessing.
+   */
+  async function getCurrentTabOrigin(): Promise<string | null> {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.url) return null;
+      return new URL(tab.url).origin;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * D-10 / RESEARCH.md Pattern 3: on-open status query. (1) check
+   * association, (2) fetch the current tab origin, (3) fire a lock-aware
+   * `match-origin` RPC and map the outcome to exactly one of the five
+   * states.
+   */
+  async function refreshStatus(): Promise<void> {
+    const association = await loadAssociation();
+    if (!association) {
+      status = { kind: 'not-paired' };
+      return;
+    }
+
+    const origin = await getCurrentTabOrigin();
+    if (origin === null) {
+      // No readable tab origin (e.g. a chrome:// page) — fail closed the
+      // same as any other transport-level failure rather than guessing.
+      status = { kind: 'disconnected' };
+      return;
+    }
+
+    const outcome = await sendRpcViaBackground({ method: 'match-origin', params: { origin } });
+
+    if (!outcome.ok) {
+      // Any transport-level failure (timeout, not-associated, protocol
+      // error, app-not-running) -> disconnected, fail closed (RESEARCH.md
+      // Pattern 3).
+      status = { kind: 'disconnected' };
+      return;
+    }
+
+    const payload = (outcome.payload ?? {}) as { code?: string; candidates?: EntryMatchMetadata[] };
+    if (payload.code === 'vault-locked') {
+      status = { kind: 'locked' };
+      return;
+    }
+
+    const count = payload.candidates?.length ?? 0;
+    status = count > 0 ? { kind: 'connected-matches', count } : { kind: 'connected-no-matches' };
+  }
+
+  void refreshStatus();
+
+  /**
+   * D-11: best-effort "Unlock Cryptiq" focus-raise. Fires a `focus-app` RPC
+   * and ignores the result entirely — the locked message stays shown
+   * regardless of whether the app's window was actually raised (Windows
+   * foreground-lock restrictions can silently no-op set_focus()).
+   */
+  async function handleUnlockClick(): Promise<void> {
+    unlockRequested = true;
+    await sendRpcViaBackground({ method: 'focus-app', params: {} });
+  }
 </script>
 
 <main>
   <h1 style="font-size: 14px; margin: 0 0 8px;">Cryptiq</h1>
 
-  {#if bridgeState.state === 'waiting-for-approval'}
-    <p style="font-size: 12px; margin: 0;">Open Cryptiq to approve this browser.</p>
-  {:else if bridgeState.state === 'not-associated'}
+  {#if status.kind === 'loading'}
+    <p style="font-size: 12px; color: #666; margin: 0;">Checking status…</p>
+  {:else if status.kind === 'not-paired'}
+    <p style="font-size: 12px; margin: 0;">Open Cryptiq to approve</p>
+  {:else if status.kind === 'disconnected'}
+    <p style="font-size: 12px; margin: 0;">Cryptiq isn't running</p>
+  {:else if status.kind === 'locked'}
+    <p style="font-size: 12px; margin: 0 0 8px;">Cryptiq is locked — unlock it to fill</p>
+    <button onclick={handleUnlockClick} disabled={unlockRequested}>
+      {unlockRequested ? 'Unlock requested' : 'Unlock Cryptiq'}
+    </button>
+  {:else if status.kind === 'connected-matches'}
     <p style="font-size: 12px; margin: 0;">
-      This browser is not paired with Cryptiq yet — open the app to approve it.
+      {status.count} saved {status.count === 1 ? 'login' : 'logins'} for this site
     </p>
-  {:else if bridgeState.state === 'version-mismatch'}
-    <!-- D-05: fail closed, no partial-function fallback — the copy comes
-         verbatim from the app, which knows which side (app-outdated vs
-         extension-outdated) is actually behind. -->
-    <p style="font-size: 12px; margin: 0; color: #b00020;">{bridgeState.message}</p>
-  {:else}
-    <p style="font-size: 12px; color: #666; margin: 0;">Native-messaging bridge skeleton.</p>
+  {:else if status.kind === 'connected-no-matches'}
+    <p style="font-size: 12px; margin: 0;">No saved logins for this site</p>
   {/if}
 
   {#if import.meta.env.DEV && DevEchoComponent}
