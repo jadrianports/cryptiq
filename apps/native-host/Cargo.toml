@@ -1,0 +1,19 @@
+[package]
+name = "cryptiq-nmhost"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.77.2"
+description = "Cryptiq native-messaging bridge sidecar (spawned by Chrome, not the app)"
+
+[[bin]]
+name = "cryptiq-nmhost"
+path = "src/main.rs"
+
+# Version pins MUST match apps/desktop/src-tauri/Cargo.toml exactly (zero new dependency
+# families per CLAUDE.md deps-minimized / T-14-SC). This crate does NOT depend on `tauri` —
+# it is a disposable process Chrome spawns per connectNative(), never the GUI binary
+# (Pitfall 1: must not race tauri_plugin_single_instance).
+[dependencies]
+tokio = { version = "^1.49", features = ["net", "io-util", "rt-multi-thread", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
