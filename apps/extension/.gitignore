@@ -1,0 +1,9 @@
+.output/
+.wxt/
+node_modules/
+
+# D-15: private signing key material — NEVER commit. Only the derived
+# base64 DER public key (embedded in wxt.config.ts's manifest.key) is
+# committed.
+extension-key.pem
+extension-key.pub.b64
