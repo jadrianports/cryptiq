@@ -48,6 +48,27 @@ tokio  = { version = "^1.49", features = ["net", "io-util", "rt-multi-thread", "
 # optimizer — unlike the hand-rolled `for b in ..{ *b = 0 }` loops it replaces.
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
+# Phase 15: extension-bridge association crypto (BRIDGE-04/05/09). Pure-Rust NaCl-compatible
+# crypto_box (RustCrypto/nacl-compat, Cure53-audited, slopcheck [OK] per 15-RESEARCH.md). This is
+# NEW transport-crypto (not vault crypto) for the browser-extension pipe channel, following the
+# same "Rust-side transport crypto" precedent already set by `snow` above — CLAUDE.md's
+# "libsodium only" governs VAULT crypto; this is the orchestrator-locked choice for this boundary.
+# Pinned EXACT (not `^0.9`) — 0.10.0-pre.0 is a pre-release and must NOT be used.
+crypto_box = "=0.9.1"
+# Constant-time compare for the app-layer pairing-token check (never `==` on secrets/hashes).
+subtle = "2.6.1"
+# BLAKE2b hash of the pairing token at rest (extension-peers.json stores ONLY the hash, never the
+# raw token — CLAUDE.md "never write plaintext secrets to disk"). Already resolved transitively
+# via `snow` at 0.10.6 (verified in Cargo.lock) — declaring it directly pulls NO new download,
+# mirroring the existing windows-sys/libc "reuse the already-resolved version" pattern below.
+blake2 = "=0.10.6"
+# Wire-format base64 codec for the extension-bridge `associate`/`rpc` envelope fields
+# (clientPublicKey/hostPublicKey/pairingToken/nonce/box) — matches the browser side's natural
+# Uint8Array<->base64 convention. Already resolved transitively at 0.22.1 (verified in
+# Cargo.lock, pulled in by Tauri's own dependency tree) — declaring it directly pins the SAME
+# already-resolved version, no new download, mirroring the blake2/windows-sys reuse pattern.
+base64 = "=0.22.1"
+
 # DEV/TEST INFRA — PERMANENT, dev-only. hypothesi MCP bridge drives the running app over a
 # localhost WebSocket during UAT (e.g. the v2.0 single-device sync checks). Registered ONLY
 # under #[cfg(debug_assertions)] in lib.rs, so the WebSocket server never starts in a release

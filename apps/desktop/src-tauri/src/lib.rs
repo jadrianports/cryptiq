@@ -72,6 +72,14 @@ pub fn run() {
         .manage(commands::sync::SyncProvideBlobPending::new())
         // Phase 14 Plan 02 — always-on extension-bridge listener state (BRIDGE-02; kill-switch stub for Phase 20 UX-05)
         .manage(commands::extension_bridge::ExtensionBridgeState::new())
+        // Phase 15 Plan 03 — bounded (60s) TOFU approval wait, a SEPARATE lock from the
+        // steady-state peer-lookup cache below (Pitfall 4). Resolved by Plan 04's
+        // bridge_approve/bridge_deny commands.
+        .manage(commands::extension_bridge::PendingAssociationMap::new())
+        // Phase 15 Plan 03 — steady-state clientPublicKey -> pairing_token_hash lookup,
+        // populated at association time and consulted on every `rpc`; evicted immediately by
+        // Plan 04's revoke_extension_association_cmd (T-15-03).
+        .manage(commands::extension_bridge::ExtensionPeerCache::new())
         // Native half of LOCK-01: start the system-sleep watcher once the app is built.
         // Gated to (windows, macOS) per D-15; emits "cryptiq-sleep-lock" on system sleep.
         .setup(|app| {
@@ -134,6 +142,12 @@ pub fn run() {
             commands::sync::sync_confirm_save,       // B-side JS→Rust confirm (plan 04 calls this)
             commands::sync::sync_provide_merged_blob, // A-side oneshot resolver (plan 04 calls this)
             commands::vault::vault_sweep_tmp,         // D-09 stale .tmp sweep on vault open
+            // Phase 15 Plan 04 — association lifecycle command surface (BRIDGE-05/BRIDGE-09)
+            commands::extension_bridge::bridge_approve,
+            commands::extension_bridge::bridge_deny,
+            commands::extension_bridge::extension_peers_list,
+            commands::extension_bridge::rename_extension_association,
+            commands::extension_bridge::revoke_extension_association_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");

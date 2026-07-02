@@ -92,7 +92,14 @@ static PARAMS: LazyLock<NoiseParams> =
 ///
 /// The real FFI is `#[cfg(target_os = "windows")]`-gated.
 /// Tests use `MockCredentialStore` so they never touch the real Windows credential store.
-pub trait CredentialStore {
+///
+/// Phase 15 Plan 03 (deviation, Rule 3 — blocking-issue fix): bounded by `Send + Sync` so a
+/// `&dyn CredentialStore` can be held across an `.await` point inside `extension_bridge.rs`'s
+/// `process_associate` (the pending-approval wait is genuinely async — Pitfall 4). All existing
+/// implementors (`WindowsCredentialStore`, `NoopCredentialStore`, `MockCredentialStore`) are
+/// already trivially `Send + Sync` (no interior `Rc`/raw-pointer state), so this is a
+/// zero-behavior-change bound widening, not a new constraint any real type fails to meet.
+pub trait CredentialStore: Send + Sync {
     fn write(&self, target: &str, key_bytes: &[u8]) -> Result<(), String>;
     fn read(&self, target: &str) -> Result<Vec<u8>, String>;
     fn delete(&self, target: &str) -> Result<(), String>;
@@ -333,7 +340,7 @@ pub struct PeersDoc {
 /// — doing so would discard the target's real location and let an out-of-tree
 /// absolute path pass the check while the subsequent write still lands outside
 /// the confined directory (WR-04 / T-03-16).
-fn assert_confined(target: &Path, expected_parent: &Path) -> Result<(), String> {
+pub(crate) fn assert_confined(target: &Path, expected_parent: &Path) -> Result<(), String> {
     // Canonicalize the confinement root (must exist).
     let canonical_parent = expected_parent
         .canonicalize()
@@ -2366,7 +2373,7 @@ fn new_uuid_v4() -> String {
 }
 
 /// Encode a byte slice as a lowercase hex string.
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
@@ -2644,8 +2651,12 @@ pub async fn pairing_get_sas(
 // Tests
 // ---------------------------------------------------------------------------
 
+// Phase 15 Plan 01 Task 2: `pub` (not just `#[cfg(test)]`) so `extension_peers.rs`'s own
+// #[cfg(test)] module can reuse `MockCredentialStore` verbatim instead of duplicating it
+// (RESEARCH.md Wave 0 Gaps / 15-01-PLAN.md Task 2 read_first) — the smallest visibility
+// change needed, no logic change.
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;
