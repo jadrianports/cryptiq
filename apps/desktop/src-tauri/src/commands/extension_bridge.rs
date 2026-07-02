@@ -151,6 +151,15 @@ pub enum BridgeError {
     /// Phase 15/Pitfall 4: a first-time `associate` was Denied by the human, or the 60s
     /// approval window elapsed with no decision — no association is persisted either way.
     AssociationDenied,
+    /// Phase 16/D-09/XSEC-05: a vault-touching RPC (`match-origin`/`fill-entry`) arrived while
+    /// there is no unlocked vault in the renderer. Carries NO data — fail closed.
+    VaultLocked,
+    /// Phase 16/V4: `fill-entry` was dispatched for an `entryId` that does not exist, or that
+    /// exists but is soft-deleted (`deletedAt !== null`) — never trust an unvalidated id.
+    RpcNotFound,
+    /// Phase 16: the decrypted inner `{method, params}` named an unsupported/unknown method, or
+    /// `params` was malformed for the given method.
+    RpcInvalidRequest,
 }
 
 impl std::fmt::Display for BridgeError {
@@ -165,6 +174,9 @@ impl std::fmt::Display for BridgeError {
             BridgeError::NotAssociated => write!(f, "extension is not associated"),
             BridgeError::InvalidToken => write!(f, "crypto_box open or pairing-token check failed"),
             BridgeError::AssociationDenied => write!(f, "association was denied or timed out"),
+            BridgeError::VaultLocked => write!(f, "vault is locked"),
+            BridgeError::RpcNotFound => write!(f, "requested entry not found"),
+            BridgeError::RpcInvalidRequest => write!(f, "unsupported or malformed rpc request"),
         }
     }
 }
@@ -273,6 +285,61 @@ impl ExtensionPeerCache {
 impl Default for ExtensionPeerCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PendingRpcMap — non-human-gated pending-RPC map (Phase 16, mirrors PendingAssociationMap)
+// ---------------------------------------------------------------------------
+
+/// Bounded wait for the renderer's answer to a `match-origin`/`fill-entry` dispatch (Pattern 1,
+/// RESEARCH.md). Short and NOT human-gated — a renderer that never answers (crashed, reloaded,
+/// vault-touch code threw) must fail closed quickly, never hang the pipe (T-16-06).
+pub const RPC_DISPATCH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Tauri managed state: requestId -> oneshot sender for a single in-flight RPC dispatch.
+///
+/// SECURITY (Pitfall 1/4, T-16-07): this is a THIRD, independent `Mutex` — never merged with
+/// `PendingAssociationMap` (bounded human wait, 60s) or `ExtensionPeerCache` (steady-state
+/// lookup). A burst of `match-origin`/`fill-entry` traffic must never be able to stall a pending
+/// human association decision, or vice versa.
+pub struct PendingRpcMap(pub Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>>);
+
+impl PendingRpcMap {
+    pub fn new() -> Self {
+        PendingRpcMap(Mutex::new(HashMap::new()))
+    }
+}
+
+impl Default for PendingRpcMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Resolve a pending RPC dispatch's renderer-side result. Looks up `request_id` in `map`,
+/// removes + takes its sender, and sends the result. Returns `Err` (never panics) if the
+/// request is unknown — already timed out, already resolved, or never existed.
+fn resolve_pending_rpc(
+    map: &Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>>,
+    request_id: &str,
+    result: Result<serde_json::Value, BridgeError>,
+) -> Result<(), String> {
+    let pending = {
+        let mut guard = map.lock().unwrap();
+        guard.remove(request_id)
+    };
+    match pending {
+        Some(tx) => tx.send(result).map_err(|_| {
+            format!(
+                "resolve_pending_rpc: receiver for request '{}' already dropped",
+                request_id
+            )
+        }),
+        None => Err(format!(
+            "resolve_pending_rpc: unknown request_id '{}'",
+            request_id
+        )),
     }
 }
 
@@ -919,6 +986,92 @@ async fn handle_associate_message(app: &tauri::AppHandle, envelope: &BridgeEnvel
     }
 }
 
+/// Dispatch a decrypted, authenticated `method`/`params` pair into the renderer (where the
+/// unlocked vault lives) and await its plaintext answer, bounded by `RPC_DISPATCH_TIMEOUT`.
+///
+/// Mirrors `process_associate`'s "insert pending entry BEFORE emitting" discipline (lines
+/// 502-515) so a racing response can never be lost, and ALWAYS removes the pending entry on
+/// every exit path (success or timeout) — no leaked oneshot senders.
+///
+/// AppHandle-free core (mirrors `process_associate`'s testability discipline): `pending_map` and
+/// `emit_request` are passed in so tests can drive this with a bare `Mutex::new(HashMap::new())`
+/// and a plain closure — no live Tauri app required. `dispatch_rpc_method` below is the thin
+/// AppHandle-extracting production wrapper.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_rpc_core(
+    pending_map: &Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>>,
+    request_id: String,
+    timeout_duration: Duration,
+    method: &str,
+    params: serde_json::Value,
+    emit_request: impl FnOnce(&str, &str, &serde_json::Value),
+) -> Result<serde_json::Value, BridgeError> {
+    let (tx, rx) = oneshot::channel::<Result<serde_json::Value, BridgeError>>();
+
+    // Insert BEFORE emitting — a response that races the emit can never be lost (mirrors
+    // process_associate lines 502-515).
+    {
+        pending_map.lock().unwrap().insert(request_id.clone(), tx);
+    }
+
+    emit_request(&request_id, method, &params);
+
+    match tokio::time::timeout(timeout_duration, rx).await {
+        Ok(Ok(result)) => result,
+        _ => {
+            // Renderer never answered (view unmounted, JS exception, or genuinely slow) — fail
+            // closed. NEVER hang the pipe connection (mirrors BRIDGE_READ_TIMEOUT discipline).
+            pending_map.lock().unwrap().remove(&request_id);
+            Err(BridgeError::ProtocolError("rpc dispatch timed out".to_string()))
+        }
+    }
+}
+
+/// Production wiring for `dispatch_rpc_core`: resolves `PendingRpcMap` from the live
+/// `AppHandle` and emits `bridge://rpc-request` over the real Tauri event channel.
+async fn dispatch_rpc_method(
+    app: &tauri::AppHandle,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, BridgeError> {
+    let request_id = random_id();
+    let pending_state = app.state::<PendingRpcMap>();
+    let app_for_emit = app.clone();
+
+    dispatch_rpc_core(
+        &pending_state.0,
+        request_id,
+        RPC_DISPATCH_TIMEOUT,
+        method,
+        params,
+        move |request_id, method, params| {
+            let _ = app_for_emit.emit(
+                "bridge://rpc-request",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "method": method,
+                    "params": params,
+                }),
+            );
+        },
+    )
+    .await
+}
+
+/// Map a renderer-returned plain result value's `{code: "..."}` field (D-09: the renderer is the
+/// source of truth for lock state and returns a typed code rather than throwing) to the matching
+/// `BridgeError`, so app-level failures (vault-locked / not-found / invalid-request) produce the
+/// SAME `{type:"error", payload:{code,message}}` wire shape as auth-boundary failures — a single
+/// error_response mapping site for the whole `rpc` path, not two divergent shapes.
+fn map_renderer_result_to_typed_error(result: &serde_json::Value) -> Option<BridgeError> {
+    match result.get("code").and_then(|v| v.as_str()) {
+        Some("vault-locked") => Some(BridgeError::VaultLocked),
+        Some("not-found") => Some(BridgeError::RpcNotFound),
+        Some("invalid-request") => Some(BridgeError::RpcInvalidRequest),
+        _ => None,
+    }
+}
+
 /// Production wiring for the `rpc` msg_type: looks up the caller's cached
 /// `pairing_token_hash` by `clientPublicKey` (populated at association time — Task 1) and runs
 /// the full `crypto_box`-open + constant-time token-hash `process_rpc` pipeline. Fails closed
@@ -928,8 +1081,12 @@ async fn handle_associate_message(app: &tauri::AppHandle, envelope: &BridgeEnvel
 /// routing to the right cached peer — a public key is not secret, and the actual authentication
 /// boundary remains the `crypto_box` open + token-hash match (never the presence of this field).
 /// The pairing TOKEN itself stays inside the encrypted box, never in the outer envelope
-/// (Anti-Pattern guardrail). Real RPC dispatch is Phase 16+; here we only prove the
-/// authenticated round trip with a box-sealed `rpc-ok` acknowledgement.
+/// (Anti-Pattern guardrail).
+///
+/// Phase 16: after the auth prologue succeeds, the decrypted inner `{method, params}` is
+/// dispatched for real. `focus-app` is handled entirely Rust-side (no renderer round trip, no
+/// vault touch — XSEC-05 idle isolation is trivially preserved). `match-origin`/`fill-entry` are
+/// routed into the renderer via `dispatch_rpc_method`. Any other method is `RpcInvalidRequest`.
 async fn handle_rpc_message(app: &tauri::AppHandle, envelope: &BridgeEnvelope) -> BridgeEnvelope {
     let id = envelope.id.clone();
 
@@ -972,13 +1129,51 @@ async fn handle_rpc_message(app: &tauri::AppHandle, envelope: &BridgeEnvelope) -
     let peer_pk = BoxPublicKey::from(client_public_key);
 
     match process_rpc(&app_sk, &peer_pk, &cached.pairing_token_hash, nonce_b64, box_b64) {
-        Ok(_inner) => {
-            let (nonce, ct) = encrypt_rpc_box(&app_sk, &peer_pk, b"{\"ok\":true}");
-            BridgeEnvelope {
-                protocol_version: CURRENT_PROTOCOL_VERSION,
-                msg_type: "rpc-ok".to_string(),
-                id,
-                payload: serde_json::json!({ "nonce": nonce, "box": ct }),
+        Ok(inner) => {
+            let method = inner.get("method").and_then(|v| v.as_str());
+            let params = inner.get("params").cloned().unwrap_or(serde_json::json!({}));
+
+            let dispatch_result: Result<serde_json::Value, BridgeError> = match method {
+                Some("focus-app") => {
+                    // Rust-side only: no renderer round trip, no vault touch — XSEC-05 idle
+                    // isolation is trivially preserved for this method.
+                    focus_app_best_effort(app);
+                    Ok(serde_json::json!({ "ok": true }))
+                }
+                Some("match-origin") | Some("fill-entry") => {
+                    dispatch_rpc_method(app, method.unwrap(), params).await
+                }
+                _ => Err(BridgeError::RpcInvalidRequest),
+            };
+
+            match dispatch_result {
+                Ok(result_value) => {
+                    // D-09: the renderer answers with a typed `{code:...}` object instead of a
+                    // Rust-level error for app-level failures (vault-locked / not-found /
+                    // invalid-request) — route those through the SAME single error_response
+                    // mapping site as auth-boundary failures, rather than boxing them as if they
+                    // were a successful result.
+                    if let Some(mapped_err) = map_renderer_result_to_typed_error(&result_value) {
+                        return error_response(id, mapped_err);
+                    }
+                    let plaintext = match serde_json::to_vec(&result_value) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            return error_response(
+                                id,
+                                BridgeError::ProtocolError("rpc: failed to serialize result".to_string()),
+                            )
+                        }
+                    };
+                    let (nonce, ct) = encrypt_rpc_box(&app_sk, &peer_pk, &plaintext);
+                    BridgeEnvelope {
+                        protocol_version: CURRENT_PROTOCOL_VERSION,
+                        msg_type: "rpc-ok".to_string(),
+                        id,
+                        payload: serde_json::json!({ "nonce": nonce, "box": ct }),
+                    }
+                }
+                Err(err) => error_response(id, err),
             }
         }
         Err(err) => error_response(id, err),
@@ -1017,6 +1212,18 @@ fn error_response(id: Option<String>, err: BridgeError) -> BridgeEnvelope {
         BridgeError::AssociationDenied => (
             "association-denied".to_string(),
             "This browser extension was not approved.".to_string(),
+        ),
+        BridgeError::VaultLocked => (
+            "vault-locked".to_string(),
+            "Cryptiq is locked — unlock it to fill.".to_string(),
+        ),
+        BridgeError::RpcNotFound => (
+            "not-found".to_string(),
+            "That saved login no longer exists.".to_string(),
+        ),
+        BridgeError::RpcInvalidRequest => (
+            "invalid-request".to_string(),
+            "Unsupported request.".to_string(),
         ),
     };
     BridgeEnvelope {
@@ -1087,6 +1294,49 @@ pub async fn bridge_approve(app: tauri::AppHandle, session_id: String) -> Result
 pub async fn bridge_deny(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
     let pending_state = app.state::<PendingAssociationMap>();
     resolve_pending_decision(&pending_state.0, &session_id, false)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16: bridge_rpc_response + focus_app — RPC dispatch commands
+// ---------------------------------------------------------------------------
+
+/// Tauri command: the renderer's answer to a `bridge://rpc-request` — resolves the matching
+/// `PendingRpcMap` oneshot with the plaintext result. Thin AppHandle-extracting wrapper over
+/// `resolve_pending_rpc`, mirroring `bridge_approve`'s shape.
+///
+/// `result` is the renderer's plaintext JSON (e.g. `{candidates:[...]}`, `{secret:"..."}`, or a
+/// typed error object like `{code:"vault-locked"}`) — the renderer is the source of truth for
+/// lock state (D-09) and decides success vs. typed-error shape itself; this command simply
+/// unblocks the waiting Rust dispatch with whatever JSON it was given.
+#[tauri::command]
+pub async fn bridge_rpc_response(
+    app: tauri::AppHandle,
+    request_id: String,
+    result: serde_json::Value,
+) -> Result<(), String> {
+    let pending_state = app.state::<PendingRpcMap>();
+    resolve_pending_rpc(&pending_state.0, &request_id, Ok(result))
+}
+
+/// Best-effort Windows window focus-raise (D-11) — shared by the `focus-app` rpc method (Rust-
+/// side, no vault touch) and the `focus_app` Tauri command (invoked by the popup's "Unlock
+/// Cryptiq" button). Windows' foreground-lock restrictions mean this can silently no-op if
+/// Cryptiq is not the OS-designated "allowed to steal focus" process — the hard guarantee stays
+/// the locked message shown regardless; this is pure convenience, never a blocking dependency.
+fn focus_app_best_effort(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Tauri command: best-effort raise/focus the main window (D-11). Never touches the vault or
+/// auth state — a bonus convenience only.
+#[tauri::command]
+pub fn focus_app(app: tauri::AppHandle) -> Result<(), String> {
+    focus_app_best_effort(&app);
+    Ok(())
 }
 
 /// List every persisted browser-extension association (mirrors `peers_json_read`).
@@ -1636,6 +1886,163 @@ mod tests {
 
         assert_eq!(not_associated.payload.get("code").unwrap(), "not-associated");
         assert_eq!(invalid_token.payload.get("code").unwrap(), "invalid-token");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3 (Phase 16): dispatch_rpc_core round trip — metadata-only, single-secret,
+    // locked-gate, and fail-closed-timeout pins (BRIDGE-08 / XSEC-05)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_match_origin_response_has_no_password_field() {
+        // Mirrors the associate suite's "assert substring absent from serialized output" style
+        // (test_associate_no_secret_at_rest_raw_token_never_persisted) — here pinning that a
+        // match-origin dispatch result can NEVER carry a password/secret substring, structurally
+        // (SC-1/BRIDGE-08/T-16-01).
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-match-1".to_string(),
+            Duration::from_secs(5),
+            "match-origin",
+            serde_json::json!({ "origin": "https://accounts.google.com" }),
+            |request_id, _method, _params| {
+                // Simulate the renderer's matchByOrigin() answer arriving via
+                // bridge_rpc_response -> resolve_pending_rpc.
+                let candidates = serde_json::json!({
+                    "candidates": [
+                        { "id": "e1", "title": "Google", "username": "alice@example.com", "domainHint": "google.com" },
+                        { "id": "e2", "title": "Google Work", "username": "alice.work@example.com", "domainHint": "google.com" },
+                    ]
+                });
+                let _ = resolve_pending_rpc(&pending_map, request_id, Ok(candidates));
+            },
+        )
+        .await
+        .expect("dispatch must succeed");
+
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(
+            !serialized.to_lowercase().contains("password"),
+            "match-origin dispatch result must never contain a password field/substring"
+        );
+        assert!(
+            !serialized.to_lowercase().contains("secret"),
+            "match-origin dispatch result must never contain a secret field/substring"
+        );
+        // Sanity: the metadata itself round-tripped correctly.
+        assert_eq!(result["candidates"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_fill_entry_returns_only_requested_secret() {
+        // Pins BRIDGE-08: fill-entry returns EXACTLY the requested entry's secret — no other
+        // candidate's secret ever crosses, even though multiple candidates exist in the vault.
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let requested_secret = "only-e1-secret-value";
+        let other_candidate_secret = "e2-secret-must-never-appear";
+        let pending_map_ref = &pending_map;
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-fill-1".to_string(),
+            Duration::from_secs(5),
+            "fill-entry",
+            serde_json::json!({ "entryId": "e1" }),
+            |request_id, _method, params| {
+                // Renderer-side handler would look up ONLY the requested entryId (V4 access
+                // control: id exists AND deletedAt === null) and return exactly its secret.
+                assert_eq!(params.get("entryId").unwrap(), "e1");
+                let secret_response = serde_json::json!({ "secret": requested_secret });
+                let _ = resolve_pending_rpc(pending_map_ref, request_id, Ok(secret_response));
+            },
+        )
+        .await
+        .expect("dispatch must succeed");
+
+        assert_eq!(result.get("secret").unwrap(), requested_secret);
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(
+            !serialized.contains(other_candidate_secret),
+            "fill-entry must never leak another candidate's secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rpc_dispatch_locked_vault_returns_typed_error() {
+        // Pins XSEC-05/D-09: a locked-vault renderer response maps to the typed `vault-locked`
+        // error code via the SAME single error_response mapping site, carrying no data.
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-locked-1".to_string(),
+            Duration::from_secs(5),
+            "match-origin",
+            serde_json::json!({ "origin": "https://example.com" }),
+            |request_id, _method, _params| {
+                // Renderer's isUnlocked check fails — it answers with a typed code, not data
+                // (D-09), via the exact bridge_rpc_response/resolve_pending_rpc path.
+                let locked_response = serde_json::json!({ "code": "vault-locked" });
+                let _ = resolve_pending_rpc(&pending_map, request_id, Ok(locked_response));
+            },
+        )
+        .await
+        .expect("dispatch itself succeeds — the LOCK state is carried in the result payload");
+
+        let mapped = map_renderer_result_to_typed_error(&result);
+        assert_eq!(mapped, Some(BridgeError::VaultLocked));
+
+        let envelope = error_response(Some("req-locked-1".to_string()), mapped.unwrap());
+        assert_eq!(envelope.payload.get("code").unwrap(), "vault-locked");
+        assert!(envelope.payload.get("message").unwrap().as_str().unwrap().len() > 0);
+        // Carries no data — only `code` and `message` keys.
+        let obj = envelope.payload.as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["code", "message"]);
+    }
+
+    #[tokio::test]
+    async fn test_rpc_dispatch_timeout_fails_closed() {
+        // Pins T-16-06: a renderer that never answers fails closed via a bounded timeout — the
+        // pipe is never hung — and the pending entry is cleaned up (no leaked oneshot sender).
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let started = std::time::Instant::now();
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-timeout-1".to_string(),
+            Duration::from_millis(100), // short bound so this test runs fast
+            "match-origin",
+            serde_json::json!({ "origin": "https://example.com" }),
+            |_request_id, _method, _params| {
+                // Deliberately never resolves the oneshot — simulates a crashed/unmounted
+                // renderer listener.
+            },
+        )
+        .await;
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the timeout bound must be honored, not the full BRIDGE_READ_TIMEOUT or longer"
+        );
+        match result {
+            Err(BridgeError::ProtocolError(msg)) => {
+                assert!(msg.contains("timed out"));
+            }
+            other => panic!("expected a timed-out ProtocolError, got {:?}", other),
+        }
+        assert!(
+            pending_map.lock().unwrap().is_empty(),
+            "the pending entry must be removed after a timeout — no leaked sender"
+        );
     }
 
     // -----------------------------------------------------------------------

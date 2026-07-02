@@ -80,6 +80,10 @@ pub fn run() {
         // populated at association time and consulted on every `rpc`; evicted immediately by
         // Plan 04's revoke_extension_association_cmd (T-15-03).
         .manage(commands::extension_bridge::ExtensionPeerCache::new())
+        // Phase 16 — non-human-gated pending-RPC map (~3s timeout) mediating the
+        // match-origin/fill-entry emit+oneshot round trip into the renderer. A THIRD,
+        // independent lock from PendingAssociationMap and ExtensionPeerCache (Pitfall 1/4).
+        .manage(commands::extension_bridge::PendingRpcMap::new())
         // Native half of LOCK-01: start the system-sleep watcher once the app is built.
         // Gated to (windows, macOS) per D-15; emits "cryptiq-sleep-lock" on system sleep.
         .setup(|app| {
@@ -148,6 +152,9 @@ pub fn run() {
             commands::extension_bridge::extension_peers_list,
             commands::extension_bridge::rename_extension_association,
             commands::extension_bridge::revoke_extension_association_cmd,
+            // Phase 16 — RPC dispatch commands (BRIDGE-08/XSEC-05)
+            commands::extension_bridge::bridge_rpc_response,
+            commands::extension_bridge::focus_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");
