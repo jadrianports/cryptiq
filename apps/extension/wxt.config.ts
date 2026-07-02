@@ -10,14 +10,20 @@ import { defineConfig } from 'wxt';
 //   openssl genrsa -out extension-key.pem 2048
 //   openssl rsa -in extension-key.pem -pubout -outform DER | openssl base64 -A
 //
-// D-17: permissions = nativeMessaging ONLY. No host_permissions, no
-// content_scripts entry — Phase 14's extension surface is background SW +
-// popup only; field detection/injection is Phase 17.
+// D-17: permissions = nativeMessaging (Phase 14) + storage (Phase 15). No
+// host_permissions, no content_scripts entry — Phase 14's extension surface
+// is background SW + popup only; field detection/injection is Phase 17.
+// `storage` is REQUIRED by Phase 15 (BRIDGE-05): associationStore.ts persists
+// the permanent identity keypair + association record in chrome.storage.local
+// so a reconnect after an MV3 SW restart is silently trusted. Without it
+// chrome.storage is undefined in a real browser and ensureAssociation() throws
+// on first use — a gap the WxtVitest fake-browser masks (it injects
+// chrome.storage regardless of the manifest); found via the live Phase-15 UAT.
 export default defineConfig({
   modules: ['@wxt-dev/module-svelte'],
   manifest: {
     name: 'Cryptiq',
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19vhX8XkzAUXKFy9ULbh3THq+EUESqEnurUFmD/qlyZNerlM0gxQeuXk61QW/MG9aTBTXnlUQ86+KPbBlORunAs6ST0Nn+AU1sX/UnfCZBlrPQVMY1Y57MRaRviLLwpwpa5W0LKafR0iZHkK4o/WwQzRexsbBlqnR4zu/1b+92d6vYnfEiXIqxYLuB3TF5fy4iGBbuE8CtG7gUD209c+jvJUwcJCBOtGNXAZ65Q8iv25gXBB2BE7Q68BQN7IBsVzt0shzid+PcjNx0zIpMzkyEjwCB29UrucOdJqGazhAfZaFp2AvKpIYHmb+FP1jJ/1duIPifxXyrAhfnQZj2gbdwIDAQAB',
-    permissions: ['nativeMessaging'],
+    permissions: ['nativeMessaging', 'storage'],
   },
 });
