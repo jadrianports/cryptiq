@@ -10,6 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "stage:nmhost": "node scripts/copy-nmhost-binary.mjs",
+    "tauri:build": "pnpm stage:nmhost && tauri build",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
