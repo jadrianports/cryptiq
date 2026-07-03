@@ -171,6 +171,47 @@ describe('fill.content', () => {
     appendChildSpy.mockRestore();
   });
 
+  it('CAP-01: a form submit with a filled password field posts a cryptiq-capture message and renders no DOM', async () => {
+    const attachShadowSpy = vi.spyOn(Element.prototype, 'attachShadow');
+    const appendChildSpy = vi.spyOn(document.body, 'appendChild');
+
+    const { form, user, pass } = buildLoginForm();
+    user.value = 'alice';
+    pass.value = 'hunter2';
+
+    const sendMessageSpy = vi.spyOn(chrome.runtime, 'sendMessage').mockResolvedValue(undefined);
+
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await Promise.resolve(); // flush the fire-and-forget sendMessage microtask
+
+    expect(sendMessageSpy).toHaveBeenCalledWith({
+      type: 'cryptiq-capture',
+      username: 'alice',
+      password: 'hunter2',
+      origin: location.origin,
+    });
+    expect(attachShadowSpy).not.toHaveBeenCalled();
+    // appendChild was only called by this test's own buildLoginForm() fixture.
+    expect(appendChildSpy).toHaveBeenCalledTimes(1);
+
+    sendMessageSpy.mockRestore();
+    attachShadowSpy.mockRestore();
+    appendChildSpy.mockRestore();
+  });
+
+  it('CAP-01: a form submit with no password value posts nothing', async () => {
+    const { form } = buildLoginForm();
+
+    const sendMessageSpy = vi.spyOn(chrome.runtime, 'sendMessage').mockResolvedValue(undefined);
+
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+
+    sendMessageSpy.mockRestore();
+  });
+
   it('debounces the MutationObserver re-scan to exactly ONE call per mutation batch (FILL-02)', () => {
     vi.useFakeTimers();
 

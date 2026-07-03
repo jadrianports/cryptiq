@@ -37,7 +37,7 @@
 // Source: 17-RESEARCH.md Architecture Patterns Diagram / Code Examples,
 // 17-CONTEXT.md D-01/D-02/D-03.
 
-import type { DetectResult, FillRequest, FillResult } from '../src/lib/contentScriptMessages';
+import type { CaptureMessage, DetectResult, FillRequest, FillResult } from '../src/lib/contentScriptMessages';
 import { scanForLoginFields } from '../src/lib/fieldDetection';
 import { fillField } from '../src/lib/domFill';
 
@@ -137,10 +137,52 @@ function setupObserver(ctx: InstanceType<typeof ContentScriptContext>): void {
   ctx.addEventListener(window, 'wxt:locationchange', () => scheduleRescan());
 }
 
+/**
+ * CAP-01/CAP-03: capture-phase submit listener -- fires BEFORE the page's own
+ * handler can call stopPropagation() and BEFORE navigation teardown begins.
+ * Reuses scanForLoginFields verbatim (no duplicate field-detection logic),
+ * then posts a `cryptiq-capture` message to background.ts SYNCHRONOUSLY (not
+ * inside a `.then()`): the page may navigate away immediately after this
+ * submit event finishes dispatching, so the send must be fired-and-forgotten
+ * on the same tick.
+ *
+ * Renders NO DOM here -- no attachShadow, no appendChild/insertBefore, no
+ * visible node anywhere in this handler (D-01/XSEC-02 non-negotiable).
+ *
+ * SPA logins that swap views client-side without ever firing a native
+ * `submit` event are an ACCEPTED best-effort gap (17-RESEARCH.md Pitfall 2 /
+ * FILL-07's framing) -- deliberately NOT compensated for with a
+ * MutationObserver "page transitioned" heuristic, which would be unreliable
+ * and is out of scope for this capture signal.
+ */
+function handleSubmit(): void {
+  const { user, pass } = scanForLoginFields(document);
+  if (!pass || !pass.value) return; // nothing to capture without a password value
+
+  const message: CaptureMessage = {
+    type: 'cryptiq-capture',
+    username: user?.value ?? '',
+    password: pass.value,
+    origin: location.origin,
+  };
+  void chrome.runtime.sendMessage(message).catch(() => {
+    // Best-effort: no listener (e.g. background not yet woken, or the
+    // extension context is mid-teardown) simply means nothing is captured
+    // this time -- never throw out of a submit handler.
+  });
+}
+
+function setupSubmitCapture(ctx: InstanceType<typeof ContentScriptContext>): void {
+  // Capture phase (`capture: true`) so this fires before the page's own
+  // handler can stopPropagation() it and before navigation teardown.
+  ctx.addEventListener(document, 'submit', handleSubmit, { capture: true });
+}
+
 export default defineContentScript({
   registration: 'runtime', // NOT auto-injected; never appears in manifest content_scripts
   main(ctx) {
     setupMessageListener();
     setupObserver(ctx);
+    setupSubmitCapture(ctx);
   },
 });
