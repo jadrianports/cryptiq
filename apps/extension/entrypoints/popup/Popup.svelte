@@ -42,6 +42,13 @@
   import type { BridgeErrorCode } from '../../src/lib/bridgeRpc';
   import type { DetectResult, EntryMatchMetadata, FillResult } from '../../src/lib/contentScriptMessages';
   import { buildPickerViewModel, decideFillFlow, ensureContentScript, recheckTabUnchanged } from '../../src/lib/popupFill';
+  // Plan 19-04: capture-buffer + never-save + decision-logic imports come from
+  // the SHARED src/lib/ modules Plan 02/03 published -- NEVER from
+  // entrypoints/background.ts (cross-entrypoint imports are forbidden; popup
+  // <-> background otherwise talk only via runtime messages).
+  import { readCapture, clearCaptureForTab } from '../../src/lib/captureBuffer';
+  import { isNeverSave } from '../../src/lib/neverSaveStore';
+  import { decideCaptureFlow, type CaptureDecision } from '../../src/lib/captureFlow';
 
   let DevEchoComponent: Component | null = $state(null);
 
@@ -65,7 +72,21 @@
         tabId: number;
         origin: string;
       }
-    | { kind: 'connected-no-matches' };
+    | { kind: 'connected-no-matches' }
+    | {
+        /** CAP-01/02/03/D-06: a buffered capture exists, its origin passed the
+         * TOCTOU recheck against the live tab, and the domain is not
+         * never-saved -- decideCaptureFlow has classified it new/update/picker.
+         * `allCandidates` is the full (username-unfiltered) match-origin list,
+         * kept only for title lookups when rendering an update/picker choice
+         * (structurally password-free, EntryMatchMetadata). */
+        kind: 'capture';
+        decision: CaptureDecision;
+        allCandidates: EntryMatchMetadata[];
+        registrableDomain: string;
+        origin: string;
+        tabId: number;
+      };
 
   /** UI state for the fill dispatch itself, separate from the page-load
    * `status` above -- tracks which entry (if any) is currently being filled
@@ -75,6 +96,12 @@
   let status: PopupStatus = $state({ kind: 'loading' });
   let unlockRequested = $state(false);
   let fillState: FillUiState = $state({ kind: 'idle' });
+
+  /** D-06: which entry the user picked from a multi-match capture picker,
+   * before the update prompt renders for that specific entry. Reset whenever
+   * a fresh capture is (re)classified (a new pick is required each time). No
+   * secret ever lives here -- entryId only. */
+  let pickedEntryId: string | null = $state(null);
 
   interface RpcMessageOutcome {
     ok: boolean;
@@ -122,6 +149,78 @@
   }
 
   /**
+   * CAP-01/02/03/04, D-06 (Plan 19-04 Task 1): on every popup open, check for
+   * a buffered capture BEFORE falling into the ordinary fill-status flow
+   * below. Returns `true` (and has already set `status`) when a capture
+   * prompt should render; returns `false` when there is nothing captured, the
+   * TOCTOU recheck failed, the domain is never-saved, or the match-origin
+   * round trip itself failed -- in every `false` case the caller falls
+   * through to the EXISTING fill-status flow unchanged (which will render its
+   * own correct locked/disconnected state for the same match-origin failure,
+   * or the ordinary connected-matches/no-matches view when there is simply no
+   * capture for this tab).
+   *
+   * Order matters: (1) read the buffer, (2) TOCTOU-recheck the buffered
+   * origin against the LIVE active tab (reuses popupFill.ts's
+   * `recheckTabUnchanged` discipline -- T-19-12: a reused tab must never
+   * resurface a prior origin's capture), (3) fetch `match-origin` for the
+   * registrableDomain (needed for the never-save check, CAP-04/D-04 -- the
+   * extension holds no local eTLD+1 computation of its own), (4) never-save
+   * gate, (5) `decideCaptureFlow` classifies new/update/picker. Any refusal
+   * step also clears the buffer (Pitfall 5: a suppressed capture must never
+   * leave a stale buffer/badge behind for a later popup open to resurface).
+   */
+  async function tryRenderCapture(tab: CurrentTab): Promise<boolean> {
+    const capture = await readCapture(tab.tabId);
+    if (capture === null) return false;
+
+    const unchanged = await recheckTabUnchanged(tab.tabId, capture.origin);
+    if (!unchanged) {
+      await clearCaptureForTab(tab.tabId);
+      return false;
+    }
+
+    const outcome = await sendRpcViaBackground({ method: 'match-origin', params: { origin: tab.origin } });
+    if (!outcome.ok) {
+      // Let the caller's own match-origin call (below) render the correct
+      // locked/disconnected state for this same failure -- no need to
+      // duplicate that branching here.
+      return false;
+    }
+
+    const payload = outcome.payload;
+    const registrableDomain =
+      payload !== null &&
+      typeof payload === 'object' &&
+      typeof (payload as { registrableDomain?: unknown }).registrableDomain === 'string'
+        ? (payload as { registrableDomain: string }).registrableDomain
+        : '';
+    const allCandidates =
+      payload !== null && typeof payload === 'object' && Array.isArray((payload as { candidates?: unknown }).candidates)
+        ? (payload as { candidates: EntryMatchMetadata[] }).candidates
+        : [];
+
+    if (registrableDomain !== '' && (await isNeverSave(registrableDomain))) {
+      await clearCaptureForTab(tab.tabId);
+      return false;
+    }
+
+    const decision = decideCaptureFlow(allCandidates, capture.username);
+
+    pickedEntryId = null; // a fresh classification always requires a fresh pick
+
+    status = {
+      kind: 'capture',
+      decision,
+      allCandidates,
+      registrableDomain,
+      origin: tab.origin,
+      tabId: tab.tabId,
+    };
+    return true;
+  }
+
+  /**
    * D-10 / RESEARCH.md Pattern 3, extended by Plan 17-04: on-open status
    * query. (1) check association, (2) fetch the current tab id + origin,
    * (3) fire a lock-aware `match-origin` RPC, (4) on a non-empty candidate
@@ -144,6 +243,9 @@
       status = { kind: 'disconnected' };
       return;
     }
+
+    const captureRendered = await tryRenderCapture(tab);
+    if (captureRendered) return;
 
     const outcome = await sendRpcViaBackground({ method: 'match-origin', params: { origin: tab.origin } });
 
@@ -269,6 +371,38 @@
     </button>
   {:else if status.kind === 'connected-no-matches'}
     <p style="font-size: 12px; margin: 0;">No saved logins for this site</p>
+  {:else if status.kind === 'capture'}
+    {#if status.decision.kind === 'picker' && pickedEntryId === null}
+      <!-- D-06: reuses the connected-matches picker list idiom (below) to let
+           the user choose which existing entry this capture updates. -->
+      <p style="font-size: 12px; margin: 0 0 6px;">Which login is this for?</p>
+      <ul style="list-style: none; margin: 0; padding: 0;">
+        {#each status.decision.candidates as row (row.id)}
+          <li style="margin: 0 0 6px;">
+            <button onclick={() => (pickedEntryId = row.id)} style="width: 100%; text-align: left;">
+              {row.title}
+            </button>
+            {#if row.weak || row.reused}
+              <span style="font-size: 11px; color: #a15c00;">
+                {row.weak ? 'Weak' : ''}{row.weak && row.reused ? ' · ' : ''}{row.reused ? 'Reused' : ''}
+              </span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      {@const mode = status.decision.kind === 'new' ? 'new' : 'update'}
+      {@const entryId = status.decision.kind === 'update' ? status.decision.entryId : (pickedEntryId ?? undefined)}
+      {@const existingTitle =
+        entryId !== undefined ? (status.allCandidates.find((c) => c.id === entryId)?.title ?? status.registrableDomain) : status.registrableDomain}
+
+      <p style="font-size: 12px; margin: 0 0 4px;">
+        {mode === 'new' ? `Save password for ${existingTitle}?` : `Update password for ${existingTitle}?`}
+      </p>
+      <p style="font-size: 11px; color: #666; margin: 0 0 8px;">{status.origin}</p>
+      <!-- Generate + live meter + Save/Update/Dismiss/Never-save wired in
+           Plan 19-04 Tasks 2 and 3. -->
+    {/if}
   {:else if status.kind === 'connected-matches'}
     {@const flow = decideFillFlow({ candidates: status.candidates, fieldsDetected: status.fieldsDetected })}
     {@const rows = buildPickerViewModel(status.candidates)}
