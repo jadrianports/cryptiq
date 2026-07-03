@@ -54,6 +54,20 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
 }));
 
+// HEALTH-02: a controllable zxcvbn stand-in — real zxcvbn-ts scoring is exercised
+// by zxcvbnSetup's own callers (StrengthMeter/HealthView); here we need a
+// deterministic, spy-able scorer to assert "matched candidates only" call counts
+// without depending on the real dictionary's scoring behavior for fixture strings.
+// Convention: passwords starting with 'weak-' score 1 (weak); everything else
+// scores 4 (strong) — mirrors scorePassword's own empty-string fail-safe default.
+const scorePasswordSpy = vi.hoisted(() =>
+  vi.fn((password: string) => (password.startsWith('weak-') ? 1 : 4)),
+);
+
+vi.mock('../zxcvbnSetup', () => ({
+  scorePassword: scorePasswordSpy,
+}));
+
 let capturedListenHandler: ((event: { payload: unknown }) => Promise<void>) | null = null;
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -221,6 +235,8 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       title: 'Example',
       username: 'alice',
       domainHint: 'example.com',
+      weak: false,
+      reused: false,
     });
     for (const candidate of result.candidates) {
       expect('password' in candidate).toBe(false);
@@ -298,5 +314,102 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
     });
 
     expect(result).toEqual({ code: 'invalid-request' });
+  });
+
+  // -------------------------------------------------------------------------
+  // (e) HEALTH-02: candidate-scoped weak/reused flags on match-origin
+  // -------------------------------------------------------------------------
+
+  it('a matched candidate whose password is weak gets weak: true', () => {
+    const entry = makeEntry({ url: 'example.com', password: 'weak-pass' });
+    vaultState.entries = [entry];
+
+    const result = handleRpcRequest({
+      requestId: 'h1',
+      method: 'match-origin',
+      params: { origin: 'https://example.com' },
+    }) as { candidates: Array<Record<string, unknown>> };
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.weak).toBe(true);
+  });
+
+  it('a matched candidate whose password is shared by another active (non-matching) entry gets reused: true', () => {
+    const matched = makeEntry({ url: 'example.com', password: 'shared-secret' });
+    const otherOrigin = makeEntry({ url: 'other-site.test', password: 'shared-secret' });
+    vaultState.entries = [matched, otherOrigin];
+
+    const result = handleRpcRequest({
+      requestId: 'h2',
+      method: 'match-origin',
+      params: { origin: 'https://example.com' },
+    }) as { candidates: Array<Record<string, unknown>> };
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.reused).toBe(true);
+  });
+
+  it('a strong, unique matched candidate gets weak: false, reused: false', () => {
+    const entry = makeEntry({ url: 'example.com', password: 'strong-unique-secret' });
+    vaultState.entries = [entry];
+
+    const result = handleRpcRequest({
+      requestId: 'h3',
+      method: 'match-origin',
+      params: { origin: 'https://example.com' },
+    }) as { candidates: Array<Record<string, unknown>> };
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.weak).toBe(false);
+    expect(result.candidates[0]?.reused).toBe(false);
+  });
+
+  it('scores only the matched candidates — a large non-matching entry set is never scored', () => {
+    const matched = [
+      makeEntry({ url: 'example.com', password: 'weak-one' }),
+      makeEntry({ url: 'example.com', password: 'weak-two' }),
+    ];
+    const nonMatching = Array.from({ length: 50 }, (_, i) =>
+      makeEntry({ url: 'other-site.test', password: `weak-decoy-${String(i)}` }),
+    );
+    vaultState.entries = [...matched, ...nonMatching];
+
+    const result = handleRpcRequest({
+      requestId: 'h4',
+      method: 'match-origin',
+      params: { origin: 'https://example.com' },
+    }) as { candidates: Array<Record<string, unknown>> };
+
+    expect(result.candidates).toHaveLength(2);
+    // Scored exactly once per matched candidate — never over the 50 non-matching entries.
+    expect(scorePasswordSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('match-origin candidates never carry a password field even with health flags attached', () => {
+    const entry = makeEntry({ url: 'example.com', password: 'weak-pass' });
+    vaultState.entries = [entry];
+
+    const result = handleRpcRequest({
+      requestId: 'h5',
+      method: 'match-origin',
+      params: { origin: 'https://example.com' },
+    }) as { candidates: Array<Record<string, unknown>> };
+
+    for (const candidate of result.candidates) {
+      expect('password' in candidate).toBe(false);
+    }
+  });
+
+  it('regression: the locked path still returns { code: "vault-locked" } with no candidates', () => {
+    vaultState.isUnlocked = false;
+    vaultState.entries = [makeEntry({ url: 'example.com', password: 'weak-pass' })];
+
+    const result = handleRpcRequest({
+      requestId: 'h6',
+      method: 'match-origin',
+      params: { origin: 'https://example.com' },
+    });
+
+    expect(result).toEqual({ code: 'vault-locked' });
   });
 });
