@@ -47,9 +47,16 @@ function buildLoginForm(): { form: HTMLFormElement; user: HTMLInputElement; pass
   return { form, user, pass };
 }
 
+// fakeBrowser (== globalThis.chrome, see auto.mjs) extends chrome.runtime.onMessage
+// with a `.trigger(...)` test helper (defineEventWithTrigger) not present in
+// @types/chrome's Event<T> typing -- cast narrowly to invoke it.
+interface TriggerableOnMessage {
+  trigger: (message: unknown, sender: unknown, sendResponse: (response?: unknown) => void) => Promise<unknown[]>;
+}
+
 async function emitMessage(message: unknown): Promise<unknown> {
   const sendResponse = vi.fn();
-  await chrome.runtime.onMessage.trigger(message, {}, sendResponse);
+  await (chrome.runtime.onMessage as unknown as TriggerableOnMessage).trigger(message, {}, sendResponse);
   return sendResponse.mock.calls[0]?.[0];
 }
 
