@@ -11,7 +11,10 @@
 //   - vault locked (D-09, checked PER REQUEST — no cached "still unlocked"
 //     assumption)         -> { code: 'vault-locked' }, no data.
 //   - method 'match-origin' -> { candidates: matchByOrigin(entries, origin) }
-//     (metadata-only, structurally has no password field — SC-1 / BRIDGE-08).
+//     (metadata-only, structurally has no password field — SC-1 / BRIDGE-08),
+//     each candidate additionally carrying candidate-scoped `weak`/`reused`
+//     booleans (HEALTH-02, Phase 17 Plan 02) computed via core's `runAudit` —
+//     see the match-origin branch below for the candidate-scoping rationale.
 //   - method 'fill-entry'   -> { secret } for exactly the requested id, ONLY
 //     when it exists and is not soft-deleted (V4 access control); otherwise
 //     { code: 'not-found' }. RESEARCH.md Open Question 2: fill-entry-ok stays
@@ -37,8 +40,9 @@
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { Entry } from '@cryptiq/core';
-import { matchByOrigin } from '@cryptiq/core';
+import { matchByOrigin, runAudit } from '@cryptiq/core';
 import { vaultSession } from '../state/vault.svelte';
+import { scorePassword } from '../zxcvbnSetup';
 
 /** The decrypted inner RPC request payload emitted by the Rust bridge. */
 interface RpcRequestPayload {
@@ -79,7 +83,37 @@ export function handleRpcRequest(payload: RpcRequestPayload): unknown {
 
   if (method === 'match-origin') {
     const origin = typeof params.origin === 'string' ? params.origin : '';
-    return { candidates: matchByOrigin(entries, origin) };
+    const candidates = matchByOrigin(entries, origin);
+
+    // HEALTH-02: candidate-scoped weak/reused flags, computed fresh on every
+    // call. Deliberately does NOT use the session-scoped healthAudit.svelte.ts
+    // store (ensureAuditFresh) — that store stays null until the Health screen
+    // has been opened this session, so a match-origin call right after unlock
+    // would never show a badge (17-RESEARCH.md "Scoring the whole vault..."
+    // pitfall). Score ONLY the matched candidates' source entries — runAudit
+    // still needs the FULL active `entries` set for reuse detection (a
+    // password group-by; no scoring involved for entries outside the
+    // candidate list).
+    const weakScores = new Map<string, number>();
+    for (const candidate of candidates) {
+      const source = entries.find((e) => e.id === candidate.id);
+      if (source !== undefined) {
+        weakScores.set(source.id, scorePassword(source.password));
+      }
+    }
+    // staleThresholdDays mirrors healthAudit.svelte.ts's `?? 365` default —
+    // stale is irrelevant to HEALTH-02 but runAudit requires the option.
+    const audit = runAudit(entries, { weakScores, staleThresholdDays: 365 });
+    const weakIds = new Set(audit.weak.map((e) => e.id));
+    const reusedIds = new Set(audit.reused.map((e) => e.id));
+
+    return {
+      candidates: candidates.map((c) => ({
+        ...c,
+        weak: weakIds.has(c.id),
+        reused: reusedIds.has(c.id),
+      })),
+    };
   }
 
   if (method === 'fill-entry') {
