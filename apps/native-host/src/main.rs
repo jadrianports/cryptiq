@@ -55,13 +55,34 @@ const CURRENT_PROTOCOL_VERSION: u32 = 1;
 
 /// Build a typed error envelope. Used for every fail-closed exit path (D-05): app-not-running,
 /// disconnected, protocol-error.
-fn error_envelope(code: &str, message: &str) -> BridgeEnvelope {
+///
+/// BUG-4 fix: `id` MUST carry the triggering request's correlation id whenever one is known.
+/// Every extension-side listener (`bridgeRpc.ts` sendRpc/sendAssociate, `background.ts`
+/// sendEcho) gates on `if (msg.id !== id) return;` BEFORE processing any message — an
+/// envelope stamped `id: None` can never match a real (non-null) request id and is silently
+/// dropped, forcing the caller to fall through to its own client-side timeout instead of
+/// seeing the real, fast, typed error this sidecar already sent. The caller passes `None` only
+/// when no request has been read yet (this process's own app-not-running probe fires before
+/// any stdin message is read) or the stdin frame itself was too malformed to parse an id from.
+fn error_envelope(code: &str, message: &str, id: Option<String>) -> BridgeEnvelope {
     BridgeEnvelope {
         protocol_version: CURRENT_PROTOCOL_VERSION,
         msg_type: "error".to_string(),
-        id: None,
+        id,
         payload: serde_json::json!({ "code": code, "message": message }),
     }
+}
+
+/// Best-effort peek at a raw (not-yet-validated) envelope's `id` field, so a typed error this
+/// sidecar synthesizes AFTER successfully reading a stdin frame can still correlate with the
+/// extension's per-request listener (BUG-4 fix — see `error_envelope`). Never fails: any
+/// parse/shape mismatch simply yields `None`, which is the SAME (safe, pre-existing) behavior
+/// as before this fix — `id` is a non-secret correlation token, so a fail-open peek here has no
+/// security implication.
+fn peek_message_id(bytes: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v.get("id").and_then(|id| id.as_str().map(str::to_string)))
 }
 
 /// Read one length-prefixed frame from the named pipe using a 4-byte **big-endian** u32 prefix
@@ -120,8 +141,10 @@ async fn relay_loop(mut pipe: NamedPipeClient) -> std::io::Result<()> {
             }
             Err(_) => {
                 // D-05: malformed or oversized frame from the browser side -> typed
-                // protocol-error, then exit. No silent continue.
-                let env = error_envelope("protocol-error", "malformed or oversized frame");
+                // protocol-error, then exit. No silent continue. No `id` is knowable here —
+                // the stdin read itself failed, so there is no parseable envelope to peek one
+                // from (this is the one genuinely id-less case; see `error_envelope`'s doc).
+                let env = error_envelope("protocol-error", "malformed or oversized frame", None);
                 let bytes = serde_json::to_vec(&env)?;
                 framing::write_message(stdout().lock(), &bytes)?;
                 #[cfg(debug_assertions)]
@@ -130,9 +153,18 @@ async fn relay_loop(mut pipe: NamedPipeClient) -> std::io::Result<()> {
             }
         };
 
+        // BUG-4 fix: peek the request's `id` from the JUST-successfully-read stdin frame so
+        // any error this sidecar synthesizes for THIS message correlates with the extension's
+        // per-request listener instead of being silently dropped (see `error_envelope`'s doc).
+        let request_id = peek_message_id(&incoming);
+
         // Forward to the app over the named pipe (big-endian framing).
         if write_pipe_frame(&mut pipe, &incoming).await.is_err() {
-            let env = error_envelope("disconnected", "lost connection to Cryptiq");
+            let env = error_envelope(
+                "disconnected",
+                "lost connection to Cryptiq",
+                request_id.clone(),
+            );
             let bytes = serde_json::to_vec(&env)?;
             framing::write_message(stdout().lock(), &bytes)?;
             #[cfg(debug_assertions)]
@@ -146,7 +178,8 @@ async fn relay_loop(mut pipe: NamedPipeClient) -> std::io::Result<()> {
             Err(_) => {
                 // Covers both a genuine mid-session pipe drop AND a malformed/oversized frame
                 // from the app side — either way, D-05 requires a typed response then exit.
-                let env = error_envelope("disconnected", "lost connection to Cryptiq");
+                let env =
+                    error_envelope("disconnected", "lost connection to Cryptiq", request_id);
                 let bytes = serde_json::to_vec(&env)?;
                 framing::write_message(stdout().lock(), &bytes)?;
                 #[cfg(debug_assertions)]
@@ -192,7 +225,16 @@ async fn main() -> std::io::Result<()> {
         _ => {
             // D-09/D-19/D-05: typed app-not-running response over stdio, then exit 0 cleanly —
             // no zombie process (SC-2).
-            let env = error_envelope("app-not-running", "Cryptiq is not running");
+            //
+            // KNOWN GAP (pre-existing, tracked separately from BUG-4's fix — see
+            // 16-HUMAN-UAT.md SC-4 "PARTIAL"): this fires BEFORE any stdin message has been
+            // read (the pipe-connect attempt runs first, by design — D-09's "never wait on the
+            // browser to decide app-not-running fast"), so there is no request `id` available
+            // to peek yet. Fixing this fully would require reordering to read the first stdin
+            // frame before attempting the pipe connect — out of scope for BUG-4's evidenced
+            // mid-relay disconnected-response mechanism; left as `None` here, unchanged from
+            // pre-fix behavior for this ONE call site.
+            let env = error_envelope("app-not-running", "Cryptiq is not running", None);
             let bytes = serde_json::to_vec(&env)?;
             framing::write_message(stdout().lock(), &bytes)?;
             #[cfg(debug_assertions)]
@@ -210,4 +252,103 @@ async fn main() -> std::io::Result<()> {
     eprintln!("cryptiq-nmhost: exit");
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// Tests — BUG-4 fix: sidecar-synthesized error envelopes must correlate with the
+// triggering request's `id`, or the extension's per-request listener (which gates on
+// `if (msg.id !== id) return;`) silently drops them and the caller falls through to its
+// own client-side timeout instead of seeing the real, fast, typed error.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_peek_message_id_extracts_id_from_valid_envelope() {
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "protocolVersion": 1,
+            "type": "rpc",
+            "id": "req-abc-123",
+            "payload": { "nonce": "n", "box": "b" }
+        }))
+        .unwrap();
+
+        assert_eq!(peek_message_id(&raw), Some("req-abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_peek_message_id_returns_none_for_null_id() {
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "protocolVersion": 1,
+            "type": "echo",
+            "id": null,
+            "payload": {}
+        }))
+        .unwrap();
+
+        assert_eq!(peek_message_id(&raw), None);
+    }
+
+    #[test]
+    fn test_peek_message_id_fails_open_on_malformed_bytes() {
+        // Not valid JSON at all — must yield None, never panic (fail-open, no security
+        // implication: `id` is a non-secret correlation token).
+        assert_eq!(peek_message_id(b"not json at all"), None);
+    }
+
+    #[test]
+    fn test_peek_message_id_fails_open_on_missing_id_field() {
+        let raw = serde_json::to_vec(&serde_json::json!({ "type": "echo", "payload": {} })).unwrap();
+        assert_eq!(peek_message_id(&raw), None);
+    }
+
+    #[test]
+    fn test_error_envelope_carries_the_supplied_id() {
+        // BUG-4 pin: a disconnected/protocol-error response for a KNOWN request must carry
+        // THAT request's id — never silently forced to None — so the extension's
+        // `if (msg.id !== id) return;` listener guard actually matches it.
+        let env = error_envelope(
+            "disconnected",
+            "lost connection to Cryptiq",
+            Some("req-xyz-789".to_string()),
+        );
+        assert_eq!(env.id, Some("req-xyz-789".to_string()));
+        assert_eq!(env.msg_type, "error");
+        assert_eq!(env.payload["code"], "disconnected");
+    }
+
+    #[test]
+    fn test_error_envelope_still_supports_none_for_genuinely_unknown_id() {
+        // The one remaining legitimate None case: no request has been read yet (or the frame
+        // was too malformed to parse), so there is genuinely nothing to correlate.
+        let env = error_envelope("app-not-running", "Cryptiq is not running", None);
+        assert_eq!(env.id, None);
+    }
+
+    #[test]
+    fn test_disconnected_error_after_a_read_request_correlates_with_its_id() {
+        // End-to-end-in-miniature: simulates the exact BUG-4 mechanism — a stdin frame is
+        // successfully read (so its id IS knowable), then the pipe write/read fails
+        // (reused/stale connection). The resulting `disconnected` envelope must carry the
+        // SAME id as the incoming request, not None.
+        let incoming = serde_json::to_vec(&serde_json::json!({
+            "protocolVersion": 1,
+            "type": "rpc",
+            "id": "req-locked-retry-1",
+            "payload": { "clientPublicKey": "x", "nonce": "n", "box": "b" }
+        }))
+        .unwrap();
+
+        let request_id = peek_message_id(&incoming);
+        let env = error_envelope("disconnected", "lost connection to Cryptiq", request_id);
+
+        assert_eq!(
+            env.id,
+            Some("req-locked-retry-1".to_string()),
+            "BUG-4: a disconnected response for a KNOWN request must correlate with its id, \
+             or the extension silently drops it and falls through to a 5s client-side timeout \
+             instead of seeing this fast, typed error"
+        );
+    }
 }
