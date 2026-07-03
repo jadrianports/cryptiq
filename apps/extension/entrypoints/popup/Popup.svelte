@@ -48,7 +48,7 @@
   // <-> background otherwise talk only via runtime messages).
   import { readCapture, clearCaptureForTab } from '../../src/lib/captureBuffer';
   import { isNeverSave, markNeverSave } from '../../src/lib/neverSaveStore';
-  import { buildSaveParams, decideCaptureFlow, type CaptureDecision } from '../../src/lib/captureFlow';
+  import { buildSaveParams, decideCaptureFlow, shouldNudgeGenerate, type CaptureDecision } from '../../src/lib/captureFlow';
 
   let DevEchoComponent: Component | null = $state(null);
 
@@ -123,6 +123,46 @@
   type CaptureSaveState = { kind: 'idle' } | { kind: 'pending' } | { kind: 'error'; message: string };
   let captureSaveState: CaptureSaveState = $state({ kind: 'idle' });
 
+  // --- Plan 19-04 Task 3: live debounced strength meter + weak nudge -------
+  //
+  // Only the NUMERIC score enters reactive display state (HEALTH-01/03) --
+  // the password itself is read fresh off the DOM input at score time and
+  // immediately discarded, mirroring OBSERVER_DEBOUNCE_MS's precedent
+  // (fill.content.ts:44) for the debounce window. Never caches a native port
+  // to speed this up (Anti-Pattern -- resurrects BUG-5); only the CALLER is
+  // debounced.
+  const SCORE_DEBOUNCE_MS = 300;
+  let strengthScore = $state(0);
+  let scoreDebounceHandle: ReturnType<typeof setTimeout> | undefined;
+
+  function handlePasswordInput(): void {
+    if (scoreDebounceHandle !== undefined) clearTimeout(scoreDebounceHandle);
+    scoreDebounceHandle = setTimeout(() => {
+      scoreDebounceHandle = undefined;
+      void scoreCurrentPassword();
+    }, SCORE_DEBOUNCE_MS);
+  }
+
+  async function scoreCurrentPassword(el?: HTMLInputElement | null): Promise<void> {
+    const password = (el ?? capturePasswordEl)?.value ?? '';
+    const outcome = await sendRpcViaBackground({ method: 'score-password', params: { password } });
+    const score =
+      outcome.ok && typeof outcome.payload === 'object' && outcome.payload !== null
+        ? (outcome.payload as { score?: unknown }).score
+        : undefined;
+    strengthScore = typeof score === 'number' ? score : 0;
+  }
+
+  /** Score → color mapping mirroring StrengthMeter.svelte's semantic bands,
+   * expressed as literal hex (this file has no Tailwind design system to draw
+   * tokens from -- apps/extension carries zero UI dependencies, see this
+   * file's own pre-existing `#a15c00`/`#b00020` inline colors). */
+  function scoreColor(score: number): string {
+    if (score >= 3) return '#1a7f37'; // fair/excellent
+    if (score === 2) return '#a15c00'; // weak (existing file color)
+    return '#b00020'; // very weak (existing file color)
+  }
+
   /** Svelte action: sets the input's DOM value ONCE at mount, reading
    * `initialCapturedPassword` from closure (deliberately NOT as a templated
    * `use:seedPasswordValue={...}` parameter -- referencing the secret inside
@@ -131,6 +171,11 @@
    * runs exactly once and the secret is never tracked as reactive state. */
   function seedPasswordValue(node: HTMLInputElement): void {
     node.value = initialCapturedPassword;
+    // HEALTH-01/03: score the seeded (captured) password immediately so the
+    // meter isn't blank until the user's first keystroke. `node` is passed
+    // explicitly (not via `capturePasswordEl`) since `bind:this` may not have
+    // settled yet relative to this action at mount.
+    if (initialCapturedPassword.length > 0) void scoreCurrentPassword(node);
   }
 
   interface RpcMessageOutcome {
@@ -242,6 +287,7 @@
     captureUsername = capture.username;
     initialCapturedPassword = capture.password; // consumed once by seedPasswordValue at mount
     captureSaveState = { kind: 'idle' };
+    strengthScore = 0; // re-scored once the seeded input mounts (below) or the user types
 
     status = {
       kind: 'capture',
@@ -399,6 +445,11 @@
     await clearCaptureForTab(tabId);
     pickedEntryId = null;
     captureSaveState = { kind: 'idle' };
+    strengthScore = 0;
+    if (scoreDebounceHandle !== undefined) {
+      clearTimeout(scoreDebounceHandle);
+      scoreDebounceHandle = undefined;
+    }
     await refreshStatus();
   }
 
@@ -443,6 +494,7 @@
     if (typeof generated !== 'string') return;
 
     if (capturePasswordEl) capturePasswordEl.value = generated;
+    void scoreCurrentPassword(); // HEALTH-01/03: re-score immediately, don't wait for the debounce
 
     // Best-effort mirror onto the real page field — XSEC-03 TOCTOU recheck
     // first (same discipline as handleFillClick); a mismatch skips ONLY the
@@ -574,12 +626,32 @@
         type="password"
         use:seedPasswordValue
         bind:this={capturePasswordEl}
-        style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+        oninput={handlePasswordInput}
+        style="width: 100%; box-sizing: border-box; margin: 0 0 4px; font-size: 12px;"
       />
 
-      <button onclick={handleGenerateClick} disabled={generating} style="font-size: 11px; margin: 0 0 8px;">
-        {generating ? 'Generating…' : 'Generate strong password'}
-      </button>
+      <!-- HEALTH-01/03: live debounced strength meter -- only the numeric
+           score is reactive display state, never the password itself. -->
+      <div style="display: flex; gap: 2px; margin: 0 0 6px;" aria-hidden="true">
+        {#each [0, 1, 2, 3] as i (i)}
+          <div
+            style="height: 4px; flex: 1; border-radius: 2px; background: {strengthScore >= i + 1 ? scoreColor(strengthScore) : '#ddd'};"
+          ></div>
+        {/each}
+      </div>
+
+      {#if shouldNudgeGenerate(strengthScore)}
+        <p style="font-size: 11px; color: #a15c00; margin: 0 0 8px;">
+          Weak password —
+          <button onclick={handleGenerateClick} disabled={generating} style="font-size: 11px;">
+            {generating ? 'Generating…' : 'Generate a strong one instead'}
+          </button>
+        </p>
+      {:else}
+        <button onclick={handleGenerateClick} disabled={generating} style="font-size: 11px; margin: 0 0 8px;">
+          {generating ? 'Generating…' : 'Generate strong password'}
+        </button>
+      {/if}
 
       <div style="display: flex; gap: 6px;">
         <button
