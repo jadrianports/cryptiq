@@ -75,7 +75,7 @@ describe('bridgeRpc', () => {
     expect(result).toEqual({ ok: true, hostPublicKey: 'host-pubkey-b64', pairingToken: 'token-b64' });
   });
 
-  it('sendRpc seals { pairingToken, ...inner } and the outer envelope has ONLY { nonce, box } — token never in the outer envelope', async () => {
+  it('sendRpc seals { pairingToken, ...inner }; outer envelope carries { clientPublicKey, nonce, box } — token never in the outer envelope', async () => {
     const hostKeypair = nacl.box.keyPair();
     await saveAssociation({
       hostPublicKey: bytesToBase64(hostKeypair.publicKey),
@@ -92,12 +92,22 @@ describe('bridgeRpc', () => {
 
     const envelope = sent[0];
     expect(envelope.type).toBe('rpc');
-    const payload = envelope.payload as { nonce: string; box: string; pairingToken?: unknown };
+    const payload = envelope.payload as {
+      clientPublicKey: string;
+      nonce: string;
+      box: string;
+      pairingToken?: unknown;
+    };
     expect(typeof payload.nonce).toBe('string');
     expect(typeof payload.box).toBe('string');
-    // The outer envelope payload has ONLY nonce+box — no pairingToken key.
+    // clientPublicKey rides the OUTER envelope (public, non-secret peer identifier the
+    // app uses to look up the cached shared key + token hash and open the box) — it
+    // equals this extension's identity public key, matching the associate envelope.
+    expect(payload.clientPublicKey).toBe(bytesToBase64(identity.publicKey));
+    // The outer envelope has clientPublicKey+nonce+box — and crucially NO pairingToken
+    // (the token rides INSIDE the sealed box only — T-15-04).
     expect(payload.pairingToken).toBeUndefined();
-    expect(Object.keys(payload).sort()).toEqual(['box', 'nonce']);
+    expect(Object.keys(payload).sort()).toEqual(['box', 'clientPublicKey', 'nonce']);
 
     // Decrypt with the host's secret key to prove the token rides INSIDE
     // the box.

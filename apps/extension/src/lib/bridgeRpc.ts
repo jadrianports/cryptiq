@@ -184,7 +184,12 @@ export function sendRpc(port: chrome.runtime.Port, innerPayload: Record<string, 
         protocolVersion: CURRENT_PROTOCOL_VERSION,
         type: 'rpc',
         id,
-        payload: { nonce: sealed.nonce, box: sealed.box },
+        // clientPublicKey identifies WHICH cached peer is talking so the app can
+        // look up the shared key + pairing-token hash and open the box. Each RPC
+        // rides its own fresh pipe connection (the sidecar reconnects per message),
+        // so the app is stateless per-connection and needs the key every time —
+        // exactly as the `associate` envelope sends it (background.ts ensureAssociation).
+        payload: { clientPublicKey: bytesToBase64(identity.publicKey), nonce: sealed.nonce, box: sealed.box },
       });
     })();
   });
