@@ -40,7 +40,13 @@
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { Entry } from '@cryptiq/core';
-import { matchByOrigin, runAudit } from '@cryptiq/core';
+import {
+  matchByOrigin,
+  runAudit,
+  getVaultSettings,
+  generateFromOptions,
+  EntryNotFoundError,
+} from '@cryptiq/core';
 import { vaultSession } from '../state/vault.svelte';
 import { scorePassword } from '../zxcvbnSetup';
 
@@ -69,8 +75,13 @@ function getEntries(vault: { entries: object } | null): Entry[] {
  * JSON result to box+reply with. Exported (in addition to
  * `registerRpcDispatch`) so rpcDispatch.test.ts can drive it directly without
  * mocking the Tauri event system for every case.
+ *
+ * Async (Phase 19 Plan 01): the write (`save-or-update-entry`) and generation
+ * (`generate-password`) branches await core verbs (`addEntry`/`save`/
+ * `generateFromOptions`) — every caller (registerRpcDispatch, tests) awaits
+ * this function's result.
  */
-export function handleRpcRequest(payload: RpcRequestPayload): unknown {
+export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unknown> {
   const { method, params } = payload;
 
   // D-09: the renderer is the source of truth for lock state — checked PER
@@ -127,6 +138,76 @@ export function handleRpcRequest(payload: RpcRequestPayload): unknown {
     return { code: 'not-found' };
   }
 
+  // save-or-update-entry: the sole secret-carrying WRITE path (Phase-16 CONTEXT.md), gated
+  // behind explicit user confirmation in the popup. T-19-01: every field is typeof-guarded
+  // before touching core. T-19-02: mutation happens ONLY via vaultSession.addEntry/updateEntry
+  // (never a raw entries splice) — updateEntry's own no-tombstone guard is the single Access
+  // Control gate (crud.ts:177). T-19-03: the response never echoes a secret back.
+  if (method === 'save-or-update-entry') {
+    const { mode, entryId, title, username, password, url } = params as {
+      mode?: unknown;
+      entryId?: unknown;
+      title?: unknown;
+      username?: unknown;
+      password?: unknown;
+      url?: unknown;
+    };
+
+    if (typeof password !== 'string') {
+      return { code: 'invalid-request' };
+    }
+
+    if (mode === 'new') {
+      if (typeof title !== 'string') {
+        return { code: 'invalid-request' };
+      }
+      const entry = await vaultSession.addEntry({
+        title,
+        username: typeof username === 'string' ? username : '',
+        password,
+        url: typeof url === 'string' ? url : '',
+      });
+      await vaultSession.save();
+      return { ok: true, entryId: entry.id };
+    }
+
+    if (mode === 'update' && typeof entryId === 'string') {
+      try {
+        const update: { password: string; username?: string } = { password };
+        if (typeof username === 'string') {
+          update.username = username;
+        }
+        // updateEntry pushes the prior password to passwordHistory internally
+        // whenever the password differs (CAP-03) — no duplicate logic here.
+        const entry = vaultSession.updateEntry(entryId, update);
+        await vaultSession.save();
+        return { ok: true, entryId: entry.id };
+      } catch (err) {
+        if (err instanceof EntryNotFoundError) {
+          return { code: 'not-found' };
+        }
+        throw err;
+      }
+    }
+
+    return { code: 'invalid-request' };
+  }
+
+  // generate-password (GEN-01): no params override (Open Question 3 resolved — always the
+  // vault's saved generator preset). Core CSPRNG only (T-19-04) — never browser RNG.
+  if (method === 'generate-password') {
+    const settings = getVaultSettings(vaultSession.vault!); // lock gate above guarantees unlocked
+    const password = await generateFromOptions(settings.generator);
+    return { password };
+  }
+
+  // score-password (HEALTH-03): app-side zxcvbn scoring seam — the extension holds no zxcvbn
+  // (D-07); the candidate password already crosses on save, so this adds no new secret-crossing.
+  if (method === 'score-password') {
+    const password = typeof params.password === 'string' ? params.password : '';
+    return { score: scorePassword(password) };
+  }
+
   return { code: 'invalid-request' };
 }
 
@@ -140,7 +221,7 @@ export function handleRpcRequest(payload: RpcRequestPayload): unknown {
  */
 export function registerRpcDispatch(): Promise<() => void> {
   return listen<RpcRequestPayload>('bridge://rpc-request', async (event) => {
-    const result = handleRpcRequest(event.payload);
+    const result = await handleRpcRequest(event.payload);
     await invoke('bridge_rpc_response', { requestId: event.payload.requestId, result });
   });
 }
