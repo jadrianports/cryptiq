@@ -45,6 +45,25 @@ export interface FillRequest {
 export type FillResult = { ok: true } | { ok: false; reason: 'origin-mismatch' | 'no-field-found' };
 
 /**
+ * Plan 19-02: the content-script -> background capture signal (CAP-01/CAP-04).
+ * Fired on a detected form submit — NOT a fillable metadata type, and must
+ * NEVER be conflated with `EntryMatchMetadata` below (which must stay
+ * password-free). `password` here is a transient in-flight value: background.ts
+ * buffers it via `captureBuffer.writeCapture` into `chrome.storage.session`
+ * (memory-only, never disk) and never logs it. Exported standalone (NOT added
+ * to `ContentScriptMessageType`, which is specifically the ping/detect/fill
+ * request family) so background.ts (Plan 03) can type-discriminate on
+ * `'cryptiq-capture'` alongside that separate union, mirroring how
+ * `FillRequest`/`DetectResult` are their own exports.
+ */
+export interface CaptureMessage {
+  type: 'cryptiq-capture';
+  username: string;
+  password: string;
+  origin: string;
+}
+
+/**
  * Metadata-only match shape, extended with the two optional HEALTH-02 health
  * flags (17-RESEARCH.md Open Question #1 — two separate booleans, resolved).
  * Deliberately mirrors `@cryptiq/core`'s `EntryMatchMetadata`
