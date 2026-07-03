@@ -16,8 +16,8 @@
 // token INSIDE the box). The identity keypair + association are loaded
 // from chrome.storage.local on EVERY call (Pitfall 2) — never regenerated
 // — so a reconnect after an MV3 SW restart is silently trusted (SC-1),
-// exactly like the lazy getPort() pattern below already does for the pipe
-// connection itself.
+// exactly like the fresh-per-request native port opened below
+// (openNativePort/withNativePort) does for the pipe connection itself.
 
 import { sendAssociate, sendRpc, bytesToBase64, type BridgeErrorResult } from '../src/lib/bridgeRpc';
 import { getOrCreateIdentityKeypair, loadAssociation, saveAssociation } from '../src/lib/associationStore';
@@ -33,48 +33,62 @@ export default defineBackground(() => {
     payload: unknown;
   }
 
-  // Module-level port handle. Null means "not currently connected" — getPort()
-  // lazily (re)opens it on demand rather than eagerly at worker startup
-  // (D-16: lazy reconnect-on-demand, satisfies BRIDGE-07's SW-restart
-  // recovery requirement).
+  // BUG-5 fix: the native port is SINGLE-USE per request. The app
+  // (handle_bridge_connection) serves exactly ONE request per pipe connection
+  // and then closes it, and the sidecar exits after one relay — so a REUSED
+  // port's second request rides an already-dead connection and fails fast with
+  // a typed `disconnected` (every 2nd+ send, incl. the `sendRpc` that follows
+  // `ensureAssociation`'s `sendAssociate` inside a single sendAuthenticatedRpc).
+  // A fresh `connectNative` port per request matches that one-request-per-
+  // connection contract and bridgeRpc.ts's "stateless per-connection" design
+  // (clientPublicKey + token ride every message), so there is no cross-request
+  // port state to preserve. This also realizes what this file's own comments
+  // always CLAIMED ("the sidecar reconnects per message") but the old cached
+  // `getPort()` never actually did.
   //
-  // SC-4 observability fix: an in-memory "was previously disconnected" flag
-  // cannot distinguish a real reconnect from the FIRST connect after an MV3
-  // service-worker restart — the restart itself wipes all module state,
-  // including the flag. So the "reconnected" signal could never fire on the
-  // exact path SC-4 exercises. Instead, `getPort()` unconditionally logs a
-  // connecting line every time it opens a fresh port — this fires both on
-  // first-ever connect AND on every reconnect after SW restart/idle-teardown,
-  // which is what a tester (or `chrome://extensions` service-worker console)
-  // needs to see to confirm the lazy-reconnect path actually ran.
-  let port: chrome.runtime.Port | null = null;
-
-  function getPort(): chrome.runtime.Port {
-    if (port) return port;
-
-    // Always visible — not gated on any in-memory "previously connected"
-    // state, which a SW restart would reset before this line could ever
-    // observe it (see comment above).
+  // `openNativePort()` logs a connecting line on EVERY open — this is the SC-4
+  // observability signal (fires on first-ever connect AND every reconnect after
+  // an MV3 SW restart/idle-teardown), visible in the service-worker console.
+  function openNativePort(): chrome.runtime.Port {
     console.info('[cryptiq-ext] connecting to native host com.cryptiq.bridge');
-    port = chrome.runtime.connectNative('com.cryptiq.bridge'); // D-07: exact host_name, treat as permanent.
+    const p = chrome.runtime.connectNative('com.cryptiq.bridge'); // D-07: exact host_name.
 
-    port.onDisconnect.addListener(() => {
-      // D-16: null out the module-level handle so the NEXT getPort() call
-      // reopens a fresh port rather than reusing a dead one. We distinguish
-      // "host not found" (extension not registered / app never installed
-      // the native-host manifest) from a normal disconnect via
-      // chrome.runtime.lastError, but in both cases the recovery action is
-      // identical: lazily reconnect on the next send.
+    p.onDisconnect.addListener(() => {
+      // Distinguish "host not found" (extension not registered / app never
+      // installed the native-host manifest) from a normal post-request
+      // disconnect via chrome.runtime.lastError — surfaced for the SW console
+      // only; the request's own settle path (typed error or timeout) is what
+      // resolves the caller.
       const lastError = chrome.runtime.lastError;
       if (lastError) {
         console.warn(`[cryptiq-ext] native port disconnected: ${lastError.message}`);
       } else {
         console.info('[cryptiq-ext] native port disconnected');
       }
-      port = null;
     });
 
-    return port;
+    return p;
+  }
+
+  /**
+   * Run exactly ONE request over a FRESH native-messaging port, then always
+   * disconnect it (BUG-5 fix — see the note above). `connectNative` spawns a
+   * fresh sidecar per call; the sidecar already exits after one relay, so the
+   * explicit `disconnect()` in the `finally` reaps it deterministically on the
+   * happy path and is a harmless no-op when the sidecar already exited after
+   * emitting a typed error.
+   */
+  async function withNativePort<T>(run: (port: chrome.runtime.Port) => Promise<T>): Promise<T> {
+    const p = openNativePort();
+    try {
+      return await run(p);
+    } finally {
+      try {
+        p.disconnect();
+      } catch {
+        // Already disconnected (sidecar exited after its one relay / typed error).
+      }
+    }
   }
 
   interface EchoResult {
@@ -85,9 +99,8 @@ export default defineBackground(() => {
   }
 
   function sendEcho(): Promise<EchoResult> {
-    return new Promise((resolve) => {
+    return withNativePort((p) => new Promise<EchoResult>((resolve) => {
       let settled = false;
-      const p = getPort();
       const id = crypto.randomUUID();
 
       // Pitfall 4 / BRIDGE-07: every send has an explicit client-side
@@ -136,7 +149,7 @@ export default defineBackground(() => {
         id,
         payload: { ping: 'hello' },
       });
-    });
+    }));
   }
 
   // --- Plan 06: authenticated association wiring (BRIDGE-04/06/10) -------
@@ -181,10 +194,12 @@ export default defineBackground(() => {
     broadcastBridgeState({ type: 'cryptiq-bridge-state', state: 'waiting-for-approval' });
 
     const label = detectBrowserLabel();
-    const result = await sendAssociate(getPort(), {
-      clientPublicKey: bytesToBase64(identity.publicKey),
-      label,
-    });
+    const result = await withNativePort((p) =>
+      sendAssociate(p, {
+        clientPublicKey: bytesToBase64(identity.publicKey),
+        label,
+      }),
+    );
 
     if (!result.ok) {
       broadcastBridgeState({ type: 'cryptiq-bridge-state', state: 'error', code: result.code, message: result.message });
@@ -212,12 +227,12 @@ export default defineBackground(() => {
     const ensured = await ensureAssociation();
     if (!ensured.ok) return ensured;
 
-    let result = await sendRpc(getPort(), innerPayload);
+    let result = await withNativePort((p) => sendRpc(p, innerPayload));
 
     if (!result.ok && result.code === 'not-associated') {
       const reassociated = await ensureAssociation(true);
       if (!reassociated.ok) return reassociated;
-      result = await sendRpc(getPort(), innerPayload);
+      result = await withNativePort((p) => sendRpc(p, innerPayload));
     }
 
     if (!result.ok) {
@@ -241,11 +256,11 @@ export default defineBackground(() => {
   // Plan 16-04: the popup's D-10 status surface and its best-effort
   // "Unlock Cryptiq" button both need to speak an authenticated `rpc`
   // (match-origin / fill-entry / focus-app) but a popup script cannot reach
-  // this module's module-level `port`/`getPort()` directly (separate JS
-  // context) — 'cryptiq-rpc' relays an arbitrary `{ method, params }` inner
-  // payload through the SAME sendAuthenticatedRpc() used by sendEcho's
-  // sibling paths, which always calls getPort() fresh (lazy reconnect,
-  // Pitfall 4 / D-16) rather than letting the popup cache its own port.
+  // this module's native port directly (separate JS context) — 'cryptiq-rpc'
+  // relays an arbitrary `{ method, params }` inner payload through the SAME
+  // sendAuthenticatedRpc() used by sendEcho's sibling paths, which opens a
+  // FRESH single-use port per request (withNativePort — BUG-5 fix, Pitfall 4 /
+  // D-16) rather than letting the popup cache its own port.
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'cryptiq-send-echo') {
       sendEcho().then(sendResponse);
