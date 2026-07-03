@@ -1085,8 +1085,10 @@ fn map_renderer_result_to_typed_error(result: &serde_json::Value) -> Option<Brid
 ///
 /// Phase 16: after the auth prologue succeeds, the decrypted inner `{method, params}` is
 /// dispatched for real. `focus-app` is handled entirely Rust-side (no renderer round trip, no
-/// vault touch — XSEC-05 idle isolation is trivially preserved). `match-origin`/`fill-entry` are
-/// routed into the renderer via `dispatch_rpc_method`. Any other method is `RpcInvalidRequest`.
+/// vault touch — XSEC-05 idle isolation is trivially preserved). `match-origin`/`fill-entry`
+/// (Phase 16) and `save-or-update-entry`/`generate-password`/`score-password` (Phase 19) are all
+/// routed into the renderer via `dispatch_rpc_method` — the arm is a generic whitelist, no
+/// per-method Rust logic. Any other method is `RpcInvalidRequest`.
 async fn handle_rpc_message(app: &tauri::AppHandle, envelope: &BridgeEnvelope) -> BridgeEnvelope {
     let id = envelope.id.clone();
 
@@ -1140,7 +1142,11 @@ async fn handle_rpc_message(app: &tauri::AppHandle, envelope: &BridgeEnvelope) -
                     focus_app_best_effort(app);
                     Ok(serde_json::json!({ "ok": true }))
                 }
-                Some("match-origin") | Some("fill-entry") => {
+                Some("match-origin")
+                | Some("fill-entry")
+                | Some("save-or-update-entry")
+                | Some("generate-password")
+                | Some("score-password") => {
                     dispatch_rpc_method(app, method.unwrap(), params).await
                 }
                 _ => Err(BridgeError::RpcInvalidRequest),
@@ -1970,6 +1976,85 @@ mod tests {
             !serialized.contains(other_candidate_secret),
             "fill-entry must never leak another candidate's secret"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 19 Plan 01: save-or-update-entry / generate-password / score-password
+    // routing parity — the widened match arm is a generic whitelist (no new
+    // Rust-side logic), so these tests pin ROUTING only: the method name reaches
+    // the renderer via dispatch_rpc_method and the resolved JSON round-trips.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_save_or_update_entry_routes_through_dispatch_rpc_method() {
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-save-1".to_string(),
+            Duration::from_secs(5),
+            "save-or-update-entry",
+            serde_json::json!({ "mode": "new", "title": "Example", "password": "x" }),
+            |request_id, _method, params| {
+                assert_eq!(params.get("mode").unwrap(), "new");
+                let _ = resolve_pending_rpc(
+                    &pending_map,
+                    request_id,
+                    Ok(serde_json::json!({ "ok": true, "entryId": "e1" })),
+                );
+            },
+        )
+        .await
+        .expect("dispatch must succeed");
+
+        assert_eq!(result.get("ok").unwrap(), true);
+        assert_eq!(result.get("entryId").unwrap(), "e1");
+    }
+
+    #[tokio::test]
+    async fn test_generate_password_routes_through_dispatch_rpc_method() {
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-gen-1".to_string(),
+            Duration::from_secs(5),
+            "generate-password",
+            serde_json::json!({}),
+            |request_id, _method, _params| {
+                let _ =
+                    resolve_pending_rpc(&pending_map, request_id, Ok(serde_json::json!({ "password": "a-generated-password" })));
+            },
+        )
+        .await
+        .expect("dispatch must succeed");
+
+        let password = result.get("password").unwrap().as_str().unwrap();
+        assert!(!password.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_score_password_routes_through_dispatch_rpc_method() {
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-score-1".to_string(),
+            Duration::from_secs(5),
+            "score-password",
+            serde_json::json!({ "password": "hunter2" }),
+            |request_id, _method, params| {
+                assert_eq!(params.get("password").unwrap(), "hunter2");
+                let _ = resolve_pending_rpc(&pending_map, request_id, Ok(serde_json::json!({ "score": 2 })));
+            },
+        )
+        .await
+        .expect("dispatch must succeed");
+
+        assert_eq!(result.get("score").unwrap(), 2);
     }
 
     #[tokio::test]
