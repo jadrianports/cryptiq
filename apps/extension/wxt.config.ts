@@ -27,11 +27,23 @@ import { defineConfig } from 'wxt';
 // temporary access to the tab that triggered the popup's own open (a user
 // gesture), never a standing `host_permissions`/`tabs` grant. No
 // content_scripts entry added; field-detection injection stays Phase 17.
+//
+// Plan 17-03 (XSEC-04): `scripting` added -- required for the popup's
+// on-demand `chrome.scripting.executeScript({ target: { tabId } })`
+// injection of `fill.content.ts` (a `registration:'runtime'` content
+// script, so it is NEVER declared below and never auto-runs on page load).
+// `scripting` + `activeTab` together is Chrome's documented minimum for
+// "inject on click" extensions (17-RESEARCH.md Permission Model,
+// Context7-verified). Deliberately did NOT add: `host_permissions` (no
+// standing per-origin grant -- injection rides the activeTab gesture only),
+// a `content_scripts` entry (the content script is runtime-registered, not
+// declarative), or `tabs` (unneeded -- `activeTab` already covers the
+// popup's current-tab read).
 export default defineConfig({
   modules: ['@wxt-dev/module-svelte'],
   manifest: {
     name: 'Cryptiq',
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19vhX8XkzAUXKFy9ULbh3THq+EUESqEnurUFmD/qlyZNerlM0gxQeuXk61QW/MG9aTBTXnlUQ86+KPbBlORunAs6ST0Nn+AU1sX/UnfCZBlrPQVMY1Y57MRaRviLLwpwpa5W0LKafR0iZHkK4o/WwQzRexsbBlqnR4zu/1b+92d6vYnfEiXIqxYLuB3TF5fy4iGBbuE8CtG7gUD209c+jvJUwcJCBOtGNXAZ65Q8iv25gXBB2BE7Q68BQN7IBsVzt0shzid+PcjNx0zIpMzkyEjwCB29UrucOdJqGazhAfZaFp2AvKpIYHmb+FP1jJ/1duIPifxXyrAhfnQZj2gbdwIDAQAB',
-    permissions: ['nativeMessaging', 'storage', 'activeTab'],
+    permissions: ['nativeMessaging', 'storage', 'activeTab', 'scripting'],
   },
 });
