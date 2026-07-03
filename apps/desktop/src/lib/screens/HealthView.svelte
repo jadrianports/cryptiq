@@ -32,48 +32,27 @@
   synchronously (captured in $effect.pre before paint), so the skeleton frame shows
   instead of stale data, and the async chunks fill in without blocking the main thread.
 
-  zxcvbn-ts setup: reuses the same lazy-singleton pattern as StrengthMeter.svelte
-  (module-level ensureZxcvbnConfigured, called once). Does NOT duplicate option init.
+  zxcvbn-ts setup: delegates to apps/desktop/src/lib/zxcvbnSetup.ts's shared
+  lazy-singleton (Phase 17 Plan 02 extraction) — same module StrengthMeter.svelte
+  and rpcDispatch.ts use. Does NOT duplicate option init locally.
 -->
-<script lang="ts" module>
-  // zxcvbn-ts lazy singleton — mirrors StrengthMeter.svelte to ensure options are
-  // set exactly once across the module boundary (language packs are heavy).
-  import { zxcvbn, zxcvbnOptions } from '@zxcvbn-ts/core';
-  import * as zxcvbnCommon from '@zxcvbn-ts/language-common';
-  import * as zxcvbnEn from '@zxcvbn-ts/language-en';
-
-  let _zxcvbnConfigured = false;
-
-  function ensureZxcvbnConfigured(): void {
-    if (_zxcvbnConfigured) return;
-    zxcvbnOptions.setOptions({
-      translations: zxcvbnEn.translations,
-      graphs: zxcvbnCommon.adjacencyGraphs,
-      dictionary: {
-        ...zxcvbnCommon.dictionary,
-        ...zxcvbnEn.dictionary,
-      },
-    });
-    _zxcvbnConfigured = true;
-  }
-</script>
-
 <script lang="ts">
   import type { Entry } from '@cryptiq/core';
   import { vaultSession } from '../state/vault.svelte';
   import { ui } from '../state/ui.svelte';
   import { go } from '../state/view.svelte';
   import { healthAudit, ensureAuditFresh } from '../state/healthAudit.svelte';
+  import { scorePassword } from '../zxcvbnSetup';
   import VisualIdentity from '../components/VisualIdentity.svelte';
   import Sidebar from '../components/Sidebar.svelte';
 
   // ── Score injector (T-06-12 / T-06-13) ──────────────────────────────────────
   // The scorer is defined here (desktop layer owns zxcvbn); injected into the store
   // so the store module does NOT import zxcvbn directly → stays unit-testable.
-  // ensureZxcvbnConfigured() is idempotent — safe to call on every score request.
+  // Delegates to the shared zxcvbnSetup.ts singleton (Phase 17 Plan 02 extraction) —
+  // no more local zxcvbn-ts configuration in this file.
   function scoreEntry(e: Entry): number {
-    ensureZxcvbnConfigured();
-    return zxcvbn(e.password).score;
+    return scorePassword(e.password);
   }
 
   // ── $effect.pre: trigger audit before paint ──────────────────────────────────

@@ -15,24 +15,14 @@
   are registered exactly once regardless of how many StrengthMeter instances render.
 -->
 <script lang="ts" module>
-  import { zxcvbn, zxcvbnOptions } from '@zxcvbn-ts/core';
-  import * as zxcvbnCommon from '@zxcvbn-ts/language-common';
-  import * as zxcvbnEn from '@zxcvbn-ts/language-en';
-
-  let _configured = false;
-
-  function ensureConfigured(): void {
-    if (_configured) return;
-    zxcvbnOptions.setOptions({
-      translations: zxcvbnEn.translations,
-      graphs: zxcvbnCommon.adjacencyGraphs,
-      dictionary: {
-        ...zxcvbnCommon.dictionary,
-        ...zxcvbnEn.dictionary,
-      },
-    });
-    _configured = true;
-  }
+  // zxcvbn-ts configuration is now shared via zxcvbnSetup.ts (Phase 17 Plan 02 /
+  // HEALTH-02 extraction) — `ensureZxcvbnConfigured()` is idempotent, so calling
+  // it here still configures the language packs exactly once across the module
+  // boundary. `zxcvbn` itself is still imported directly here (not via
+  // `scorePassword`) because this component needs the full result object
+  // (score + feedback text), not just the score number.
+  import { zxcvbn } from '@zxcvbn-ts/core';
+  import { ensureZxcvbnConfigured } from '../zxcvbnSetup';
 </script>
 
 <script lang="ts">
@@ -42,7 +32,7 @@
   };
   let { password }: Props = $props();
 
-  ensureConfigured();
+  ensureZxcvbnConfigured();
 
   const result = $derived(password.length > 0 ? zxcvbn(password) : null);
   const score = $derived(result?.score ?? 0);
