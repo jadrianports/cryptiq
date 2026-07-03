@@ -1,4 +1,10 @@
-// apps/extension/entrypoints/fill.content.test.ts
+// apps/extension/src/lib/fill.content.test.ts
+//
+// Co-located in src/lib/ (not entrypoints/) so `wxt build` does not treat this
+// `*.content.test.ts` file as a second "fill" content-script entrypoint —
+// WXT derives an entrypoint name from any file placed directly in entrypoints/
+// (see WXT docs: "avoid placing files related to an entrypoint directly in the
+// entrypoints/ directory"). Every other apps/extension test already lives here.
 //
 // Task 2 (TDD RED -> GREEN): cryptiq-ping/detect/fill message handling,
 // XSEC-03 exact-origin refusal (no DOM write on mismatch), XSEC-02 (no
@@ -22,17 +28,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import type { FillResult } from '../src/lib/contentScriptMessages';
+import type { FillResult } from './contentScriptMessages';
 
 const scanForLoginFieldsSpy = vi.hoisted(() => vi.fn());
 
-vi.mock('../src/lib/fieldDetection', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/lib/fieldDetection')>();
+vi.mock('./fieldDetection', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./fieldDetection')>();
   scanForLoginFieldsSpy.mockImplementation(actual.scanForLoginFields);
   return { scanForLoginFields: scanForLoginFieldsSpy };
 });
 
-import fillContentScript from './fill.content';
+import fillContentScript from '../../entrypoints/fill.content';
 
 function buildLoginForm(): { form: HTMLFormElement; user: HTMLInputElement; pass: HTMLInputElement } {
   const form = document.createElement('form');
