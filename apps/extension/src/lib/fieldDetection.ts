@@ -228,9 +228,29 @@ export function scanForLoginFields(root: ParentNode): FieldDetectionResult {
   const inputs = collectInputs(root);
 
   const byAutocomplete = findByAutocomplete(inputs);
-  if (byAutocomplete.user || byAutocomplete.pass) {
+
+  // Both halves via autocomplete tokens — highest-confidence tier, done.
+  if (byAutocomplete.user && byAutocomplete.pass) {
     return byAutocomplete;
   }
 
-  return findHeuristic(inputs);
+  // No autocomplete signal anywhere — full conservative heuristic (steps 2-5).
+  if (!byAutocomplete.user && !byAutocomplete.pass) {
+    return findHeuristic(inputs);
+  }
+
+  // BUG-17-01: mixed-signal form — autocomplete resolved exactly ONE half
+  // (e.g. nexusmods.com puts autocomplete="email" on the username but nothing
+  // on the <input type=password>). Do NOT short-circuit to the half-pair;
+  // complete the missing half via the same conservative heuristic
+  // (input[type=password] ground truth for a missing pass, nearest-scored
+  // paired username for a missing user), preferring the high-confidence
+  // autocomplete field for the half it already resolved. `??` keeps the
+  // autocomplete match authoritative; the heuristic only supplies the gap, so
+  // a genuine heuristic miss still leaves that half undefined (FILL-06 fallback).
+  const heuristic = findHeuristic(inputs);
+  return {
+    user: byAutocomplete.user ?? heuristic.user,
+    pass: byAutocomplete.pass ?? heuristic.pass,
+  };
 }
