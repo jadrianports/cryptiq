@@ -119,20 +119,30 @@
     const outcome = await sendRpcViaBackground({ method: 'match-origin', params: { origin } });
 
     if (!outcome.ok) {
-      // Any transport-level failure (timeout, not-associated, protocol
-      // error, app-not-running) -> disconnected, fail closed (RESEARCH.md
-      // Pattern 3).
+      // vault-locked is a distinct, honest render (XSEC-06) — branch it off
+      // BEFORE the generic disconnected fallback below. Every OTHER failure
+      // (timeout, not-associated, protocol-error, app-not-running) stays
+      // disconnected, fail closed (RESEARCH.md Pattern 3).
+      if (outcome.code === 'vault-locked') {
+        status = { kind: 'locked' };
+        return;
+      }
       status = { kind: 'disconnected' };
       return;
     }
 
-    const payload = (outcome.payload ?? {}) as { code?: string; candidates?: EntryMatchMetadata[] };
-    if (payload.code === 'vault-locked') {
-      status = { kind: 'locked' };
-      return;
-    }
-
-    const count = payload.candidates?.length ?? 0;
+    // Success payload is now a decrypted, authenticated JSON value (BUG-2 fix) —
+    // the app never sends vault-locked on the success path, it is always a
+    // plaintext error envelope handled above. The bytes are authenticated, but
+    // `JSON.parse` can still yield any shape (null / array / number / object), so
+    // treat a real match list as ONLY an object carrying an array `candidates`;
+    // anything else renders connected-no-matches rather than mis-driving a count.
+    const payload = outcome.payload;
+    const candidates =
+      payload !== null && typeof payload === 'object' && Array.isArray((payload as { candidates?: unknown }).candidates)
+        ? ((payload as { candidates: EntryMatchMetadata[] }).candidates)
+        : [];
+    const count = candidates.length;
     status = count > 0 ? { kind: 'connected-matches', count } : { kind: 'connected-no-matches' };
   }
 

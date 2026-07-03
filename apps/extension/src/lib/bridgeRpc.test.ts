@@ -11,6 +11,23 @@ import { base64ToBytes, bytesToBase64 } from './associationCrypto';
 import { getOrCreateIdentityKeypair, saveAssociation } from './associationStore';
 import { sendAssociate, sendRpc } from './bridgeRpc';
 
+/**
+ * Seal a plaintext object app-secret -> extension-public, mirroring the real
+ * app's response direction (the reverse of sealForHost, which is
+ * extension-secret -> host-public). Used to construct genuine `rpc-ok`
+ * `{ nonce, box }` payloads in tests.
+ */
+function sealAppResponse(
+  plaintextObj: unknown,
+  extensionPublicKey: Uint8Array,
+  hostSecretKey: Uint8Array,
+): { nonce: string; box: string } {
+  const nonce = nacl.randomBytes(nacl.box.nonceLength);
+  const plaintextBytes = new TextEncoder().encode(JSON.stringify(plaintextObj));
+  const box = nacl.box(plaintextBytes, nonce, extensionPublicKey, hostSecretKey);
+  return { nonce: bytesToBase64(nonce), box: bytesToBase64(box) };
+}
+
 interface FakePort {
   port: chrome.runtime.Port;
   sent: Array<{ id: string; type: string; payload: Record<string, unknown> }>;
@@ -120,7 +137,8 @@ describe('bridgeRpc', () => {
     expect(plaintext.rpcType).toBe('match-origin');
     expect(plaintext.origin).toBe('https://example.com');
 
-    emit({ protocolVersion: 1, type: 'rpc-ok', id: envelope.id, payload: { ok: true } });
+    const sealedResponse = sealAppResponse({ ok: true }, identity.publicKey, hostKeypair.secretKey);
+    emit({ protocolVersion: 1, type: 'rpc-ok', id: envelope.id, payload: sealedResponse });
     const result = await promise;
     expect(result).toEqual({ ok: true, payload: { ok: true } });
   });
@@ -132,17 +150,18 @@ describe('bridgeRpc', () => {
       pairingToken: 'token-b64',
       label: 'Chrome',
     });
+    const identity = await getOrCreateIdentityKeypair();
 
     const { port, sent, emit } = createFakePort();
 
     const first = sendRpc(port, { rpcType: 'match-origin' });
     await vi.waitFor(() => expect(sent).toHaveLength(1));
-    emit({ type: 'rpc-ok', id: sent[0].id, payload: {} });
+    emit({ type: 'rpc-ok', id: sent[0].id, payload: sealAppResponse({}, identity.publicKey, hostKeypair.secretKey) });
     await first;
 
     const second = sendRpc(port, { rpcType: 'match-origin' });
     await vi.waitFor(() => expect(sent).toHaveLength(2));
-    emit({ type: 'rpc-ok', id: sent[1].id, payload: {} });
+    emit({ type: 'rpc-ok', id: sent[1].id, payload: sealAppResponse({}, identity.publicKey, hostKeypair.secretKey) });
     await second;
 
     const nonceOne = (sent[0].payload as { nonce: string }).nonce;
@@ -192,5 +211,126 @@ describe('bridgeRpc', () => {
     const { port } = createFakePort();
     const result = await sendRpc(port, { rpcType: 'match-origin' });
     expect(result).toEqual({ ok: false, code: 'not-associated' });
+  });
+
+  // --- 16-06-PLAN.md Task 1: decrypt the rpc-ok success box, fail closed. ---
+
+  it('sendRpc decrypts an authentic rpc-ok box to ok:true with the parsed payload (BUG-2)', async () => {
+    const hostKeypair = nacl.box.keyPair();
+    await saveAssociation({
+      hostPublicKey: bytesToBase64(hostKeypair.publicKey),
+      pairingToken: 'token-b64',
+      label: 'Chrome',
+    });
+    const identity = await getOrCreateIdentityKeypair();
+
+    const { port, sent, emit } = createFakePort();
+    const promise = sendRpc(port, { rpcType: 'match-origin' });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    const candidatesPayload = { candidates: [{ id: 'e1', title: 'Example', username: 'me', domainHint: 'example.com' }] };
+    const sealedResponse = sealAppResponse(candidatesPayload, identity.publicKey, hostKeypair.secretKey);
+    emit({ protocolVersion: 1, type: 'rpc-ok', id: sent[0].id, payload: sealedResponse });
+
+    const result = await promise;
+    expect(result).toEqual({ ok: true, payload: candidatesPayload });
+  });
+
+  it('sendRpc fails closed with protocol-error when the rpc-ok box fails authentication (tampered/wrong key)', async () => {
+    const hostKeypair = nacl.box.keyPair();
+    await saveAssociation({
+      hostPublicKey: bytesToBase64(hostKeypair.publicKey),
+      pairingToken: 'token-b64',
+      label: 'Chrome',
+    });
+    const identity = await getOrCreateIdentityKeypair();
+
+    const { port, sent, emit } = createFakePort();
+    const promise = sendRpc(port, { rpcType: 'match-origin' });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    // Seal toward a mismatched keypair so openFromHost (nacl.box.open) fails
+    // authentication and returns null.
+    const wrongKeypair = nacl.box.keyPair();
+    const sealedResponse = sealAppResponse({ candidates: [] }, identity.publicKey, wrongKeypair.secretKey);
+    emit({ protocolVersion: 1, type: 'rpc-ok', id: sent[0].id, payload: sealedResponse });
+
+    const result = await promise;
+    expect(result).toEqual({ ok: false, code: 'protocol-error' });
+  });
+
+  it('sendRpc fails closed with protocol-error when the opened box is not valid JSON', async () => {
+    const hostKeypair = nacl.box.keyPair();
+    await saveAssociation({
+      hostPublicKey: bytesToBase64(hostKeypair.publicKey),
+      pairingToken: 'token-b64',
+      label: 'Chrome',
+    });
+    const identity = await getOrCreateIdentityKeypair();
+
+    const { port, sent, emit } = createFakePort();
+    const promise = sendRpc(port, { rpcType: 'match-origin' });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    // Seal correctly (authenticates fine) but the plaintext is not JSON.
+    const nonce = nacl.randomBytes(nacl.box.nonceLength);
+    const plaintextBytes = new TextEncoder().encode('not-json{{{');
+    const box = nacl.box(plaintextBytes, nonce, identity.publicKey, hostKeypair.secretKey);
+    emit({
+      protocolVersion: 1,
+      type: 'rpc-ok',
+      id: sent[0].id,
+      payload: { nonce: bytesToBase64(nonce), box: bytesToBase64(box) },
+    });
+
+    const result = await promise;
+    expect(result).toEqual({ ok: false, code: 'protocol-error' });
+  });
+
+  it('sendRpc maps a vault-locked error envelope to ok:false code:vault-locked WITHOUT running the decrypt path (BUG-3 contract)', async () => {
+    const hostKeypair = nacl.box.keyPair();
+    await saveAssociation({
+      hostPublicKey: bytesToBase64(hostKeypair.publicKey),
+      pairingToken: 'token-b64',
+      label: 'Chrome',
+    });
+
+    const { port, sent, emit } = createFakePort();
+    const promise = sendRpc(port, { rpcType: 'match-origin' });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    // A plaintext error envelope — no nonce/box at all, proving the
+    // decrypt path is never touched for this case.
+    emit({
+      protocolVersion: 1,
+      type: 'error',
+      id: sent[0].id,
+      payload: { code: 'vault-locked', message: 'Unlock Cryptiq to continue.' },
+    });
+
+    const result = await promise;
+    expect(result).toEqual({ ok: false, code: 'vault-locked', message: 'Unlock Cryptiq to continue.' });
+  });
+
+  it('sendRpc fails closed with protocol-error when the rpc-ok nonce/box are not valid base64 (atob throw path)', async () => {
+    const hostKeypair = nacl.box.keyPair();
+    await saveAssociation({
+      hostPublicKey: bytesToBase64(hostKeypair.publicKey),
+      pairingToken: 'token-b64',
+      label: 'Chrome',
+    });
+
+    const { port, sent, emit } = createFakePort();
+    const promise = sendRpc(port, { rpcType: 'match-origin' });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    // Non-base64 characters make base64ToBytes -> atob() throw a DOMException
+    // synchronously inside the listener (NOT a JSON.parse failure). The
+    // decode+open+parse try/catch must catch it and fail closed rather than
+    // let it escape uncaught.
+    emit({ protocolVersion: 1, type: 'rpc-ok', id: sent[0].id, payload: { nonce: '!!!not-base64!!!', box: '@@@' } });
+
+    const result = await promise;
+    expect(result).toEqual({ ok: false, code: 'protocol-error' });
   });
 });
