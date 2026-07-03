@@ -7,10 +7,13 @@
 // (FILL-04/05/06). Mirrors bridgeRpc.test.ts's `fakeBrowser.reset()` in
 // beforeEach; chrome.tabs.sendMessage/chrome.scripting.executeScript are not
 // implemented by @webext-core/fake-browser (they throw "not implemented"), so
-// each is stubbed per-test via vi.spyOn -- chrome.tabs.query IS a real fake
-// implementation (in-memory tab list), stubbed here anyway for determinism.
+// each is stubbed per-test via a direct `Object.assign` override (avoids
+// @types/chrome's overloaded-signature inference defeating vi.spyOn's
+// generic mockResolvedValue/mockRejectedValue typing) -- chrome.tabs.query IS
+// a real fake implementation (in-memory tab list), stubbed here anyway for
+// determinism, via the same override helper for consistency.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import type { EntryMatchMetadata } from './contentScriptMessages';
 import { buildPickerViewModel, decideFillFlow, ensureContentScript, recheckTabUnchanged } from './popupFill';
@@ -25,6 +28,20 @@ function makeCandidate(overrides: Partial<EntryMatchMetadata> = {}): EntryMatchM
   };
 }
 
+/** Directly overrides a chrome.* namespace method with a fresh vi.fn(),
+ * sidestepping @types/chrome's overloaded-signature inference (which defeats
+ * vi.spyOn(...).mockResolvedValue's generic typing for sendMessage/
+ * executeScript/query). Returns the mock for call-args assertions. */
+function stubChromeMethod<T extends (...args: never[]) => unknown>(
+  namespace: Record<string, unknown>,
+  method: string,
+  impl: T,
+): Mock<T> {
+  const fn = vi.fn(impl);
+  Object.assign(namespace, { [method]: fn });
+  return fn;
+}
+
 describe('popupFill', () => {
   beforeEach(() => {
     fakeBrowser.reset();
@@ -32,8 +49,12 @@ describe('popupFill', () => {
 
   describe('ensureContentScript', () => {
     it('does NOT call executeScript when the ping succeeds (idempotent, already injected)', async () => {
-      const pingSpy = vi.spyOn(chrome.tabs, 'sendMessage').mockResolvedValue({ ok: true });
-      const injectSpy = vi.spyOn(chrome.scripting, 'executeScript');
+      const pingSpy = stubChromeMethod(
+        chrome.tabs,
+        'sendMessage',
+        async (_tabId: number, _message: unknown) => ({ ok: true }),
+      );
+      const injectSpy = stubChromeMethod(chrome.scripting, 'executeScript', async (_opts: unknown) => []);
 
       const result = await ensureContentScript(42);
 
@@ -43,8 +64,10 @@ describe('popupFill', () => {
     });
 
     it('injects via executeScript only after a caught ping rejection, targeting the tab with NO allFrames key (XSEC-01)', async () => {
-      vi.spyOn(chrome.tabs, 'sendMessage').mockRejectedValue(new Error('Could not establish connection.'));
-      const injectSpy = vi.spyOn(chrome.scripting, 'executeScript').mockResolvedValue([]);
+      stubChromeMethod(chrome.tabs, 'sendMessage', async (_tabId: number, _message: unknown) => {
+        throw new Error('Could not establish connection.');
+      });
+      const injectSpy = stubChromeMethod(chrome.scripting, 'executeScript', async (_opts: unknown) => []);
 
       const result = await ensureContentScript(7);
 
@@ -58,8 +81,12 @@ describe('popupFill', () => {
     });
 
     it('fails closed to false when executeScript throws (e.g. a chrome:// page)', async () => {
-      vi.spyOn(chrome.tabs, 'sendMessage').mockRejectedValue(new Error('Could not establish connection.'));
-      vi.spyOn(chrome.scripting, 'executeScript').mockRejectedValue(new Error('Cannot access a chrome:// URL'));
+      stubChromeMethod(chrome.tabs, 'sendMessage', async (_tabId: number, _message: unknown) => {
+        throw new Error('Could not establish connection.');
+      });
+      stubChromeMethod(chrome.scripting, 'executeScript', async (_opts: unknown) => {
+        throw new Error('Cannot access a chrome:// URL');
+      });
 
       const result = await ensureContentScript(99);
 
@@ -69,8 +96,8 @@ describe('popupFill', () => {
 
   describe('recheckTabUnchanged (XSEC-03 TOCTOU)', () => {
     it('returns true when the active tab id and origin are unchanged', async () => {
-      vi.spyOn(chrome.tabs, 'query').mockResolvedValue([
-        { id: 5, url: 'https://example.com/login' } as chrome.tabs.Tab,
+      stubChromeMethod(chrome.tabs, 'query', async (_queryInfo: unknown) => [
+        { id: 5, url: 'https://example.com/login' },
       ]);
 
       const result = await recheckTabUnchanged(5, 'https://example.com');
@@ -79,8 +106,8 @@ describe('popupFill', () => {
     });
 
     it('returns false when the active tab id has changed', async () => {
-      vi.spyOn(chrome.tabs, 'query').mockResolvedValue([
-        { id: 6, url: 'https://example.com/login' } as chrome.tabs.Tab,
+      stubChromeMethod(chrome.tabs, 'query', async (_queryInfo: unknown) => [
+        { id: 6, url: 'https://example.com/login' },
       ]);
 
       const result = await recheckTabUnchanged(5, 'https://example.com');
@@ -89,8 +116,8 @@ describe('popupFill', () => {
     });
 
     it('returns false when the origin has changed (tab navigated away)', async () => {
-      vi.spyOn(chrome.tabs, 'query').mockResolvedValue([
-        { id: 5, url: 'https://evil.example.net/phish' } as chrome.tabs.Tab,
+      stubChromeMethod(chrome.tabs, 'query', async (_queryInfo: unknown) => [
+        { id: 5, url: 'https://evil.example.net/phish' },
       ]);
 
       const result = await recheckTabUnchanged(5, 'https://example.com');
@@ -99,7 +126,9 @@ describe('popupFill', () => {
     });
 
     it('fails closed to false when the tab query throws', async () => {
-      vi.spyOn(chrome.tabs, 'query').mockRejectedValue(new Error('boom'));
+      stubChromeMethod(chrome.tabs, 'query', async () => {
+        throw new Error('boom');
+      });
 
       const result = await recheckTabUnchanged(5, 'https://example.com');
 

@@ -1,29 +1,47 @@
 <script lang="ts">
   // apps/extension/entrypoints/popup/Popup.svelte
   //
-  // D-10 (XSEC-06): the real (non-dev) popup status surface. On every open
-  // (MV3 popups are always a fresh script instantiation — RESEARCH.md
-  // Pattern 3, no persistent-state assumption) this renders EXACTLY ONE of
-  // five states:
+  // D-10 (XSEC-06) base surface, extended by Plan 17-04 (D-01: the popup is
+  // the ONLY clickable fill-trigger surface in this phase) into the
+  // fill-trigger UI: on every open (MV3 popups are always a fresh script
+  // instantiation -- no persistent-state assumption) this renders EXACTLY
+  // ONE of six states:
   //   - not-paired            -> "Open Cryptiq to approve"
   //   - disconnected/app-closed -> "Cryptiq isn't running"
   //   - locked                -> "Cryptiq is locked — unlock it to fill"
-  //   - connected-matches     -> match COUNT only (never titles/usernames
-  //                              rendered here — that's the Phase 17/18
-  //                              picker; this phase's popup is status-only)
+  //   - connected-matches     -> single Fill button (FILL-04), a picker
+  //                              (FILL-05, current-tab matches only per
+  //                              Phase 16 matchByOrigin), a "Fill anyway"
+  //                              affordance when no field was auto-detected
+  //                              (FILL-06), and passive weak/reused badges
+  //                              (HEALTH-02, D-04)
   //   - connected-no-matches  -> "No saved logins for this site"
   //
-  // HARD CONSTRAINT (XSEC-06): every state renders counts/status text ONLY —
-  // never a password, never any secret, in any state.
+  // HARD CONSTRAINT (XSEC-06): every state renders counts/status/metadata
+  // text ONLY -- NEVER a password/secret value, in any state or markup
+  // branch. The one secret this file ever touches (`fill-entry`'s returned
+  // `secret`) lives only as a plain local variable inside handleFillClick's
+  // async call stack -- never assigned to a `$state` variable (which would
+  // proxy it, risking DevTools exposure per CLAUDE.md's $state.raw
+  // discipline) and never bound into any template expression.
   //
   // The popup never holds a popup-local `chrome.runtime.Port` (Pitfall 4 /
-  // MV3 SW teardown) — every RPC is relayed through background.ts's
-  // 'cryptiq-rpc' message handler, which calls sendAuthenticatedRpc() and
-  // therefore always fetches the native port FRESH via background's lazy
-  // getPort() accessor.
+  // MV3 SW teardown) -- every RPC (match-origin/fill-entry/focus-app) is
+  // relayed through background.ts's 'cryptiq-rpc' message handler. The fill
+  // secret itself, once returned by that RPC, is sent DIRECTLY from this
+  // popup to the content script via chrome.tabs.sendMessage -- it NEVER
+  // re-enters background.ts/the native port a second time (17-RESEARCH.md
+  // "Common Pitfalls": "Sending the secret through background.ts a second
+  // time").
+  //
+  // Before sending the secret, recheckTabUnchanged (popupFill.ts) re-verifies
+  // the active tab's id + origin are unchanged since the match list was
+  // fetched (XSEC-03 TOCTOU) -- fill is ABORTED on any mismatch.
   import type { Component } from 'svelte';
   import { loadAssociation } from '../../src/lib/associationStore';
   import type { BridgeErrorCode } from '../../src/lib/bridgeRpc';
+  import type { DetectResult, EntryMatchMetadata, FillResult } from '../../src/lib/contentScriptMessages';
+  import { buildPickerViewModel, decideFillFlow, ensureContentScript, recheckTabUnchanged } from '../../src/lib/popupFill';
 
   let DevEchoComponent: Component | null = $state(null);
 
@@ -35,27 +53,28 @@
     });
   }
 
-  /** Metadata-only match shape (mirrors @cryptiq/core's EntryMatchMetadata
-   * wire shape — deliberately re-declared locally rather than adding a
-   * workspace dependency from apps/extension on @cryptiq/core; this type
-   * carries NO password field by construction, matching BRIDGE-08). */
-  interface EntryMatchMetadata {
-    id: string;
-    title: string;
-    username: string;
-    domainHint: string;
-  }
-
   type PopupStatus =
     | { kind: 'loading' }
     | { kind: 'not-paired' }
     | { kind: 'disconnected' }
     | { kind: 'locked' }
-    | { kind: 'connected-matches'; count: number }
+    | {
+        kind: 'connected-matches';
+        candidates: EntryMatchMetadata[];
+        fieldsDetected: boolean;
+        tabId: number;
+        origin: string;
+      }
     | { kind: 'connected-no-matches' };
+
+  /** UI state for the fill dispatch itself, separate from the page-load
+   * `status` above -- tracks which entry (if any) is currently being filled
+   * and surfaces a refusal/failure message. Never carries the secret. */
+  type FillUiState = { kind: 'idle' } | { kind: 'pending'; entryId: string } | { kind: 'error'; message: string };
 
   let status: PopupStatus = $state({ kind: 'loading' });
   let unlockRequested = $state(false);
+  let fillState: FillUiState = $state({ kind: 'idle' });
 
   interface RpcMessageOutcome {
     ok: boolean;
@@ -79,27 +98,37 @@
     }
   }
 
+  interface CurrentTab {
+    tabId: number;
+    origin: string;
+  }
+
   /**
-   * Read the current active tab's top-level origin. Requires the
-   * `activeTab` permission (granted for the duration of this popup-open
-   * user gesture) — returns null if unavailable, which fails closed to the
-   * `disconnected` state rather than guessing.
+   * Read the current active tab's id + top-level origin in one query.
+   * Extends D-10's original origin-only read (Task 2 additionally needs the
+   * tab id for ensureContentScript/chrome.tabs.sendMessage targeting and the
+   * TOCTOU recheck). Requires `activeTab` (granted for the duration of this
+   * popup-open user gesture) — returns null if unavailable, which fails
+   * closed to the `disconnected` state rather than guessing.
    */
-  async function getCurrentTabOrigin(): Promise<string | null> {
+  async function getCurrentTab(): Promise<CurrentTab | null> {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.url) return null;
-      return new URL(tab.url).origin;
+      if (!tab?.id || !tab.url) return null;
+      return { tabId: tab.id, origin: new URL(tab.url).origin };
     } catch {
       return null;
     }
   }
 
   /**
-   * D-10 / RESEARCH.md Pattern 3: on-open status query. (1) check
-   * association, (2) fetch the current tab origin, (3) fire a lock-aware
-   * `match-origin` RPC and map the outcome to exactly one of the five
-   * states.
+   * D-10 / RESEARCH.md Pattern 3, extended by Plan 17-04: on-open status
+   * query. (1) check association, (2) fetch the current tab id + origin,
+   * (3) fire a lock-aware `match-origin` RPC, (4) on a non-empty candidate
+   * list, ensure the content script is present and ask it whether it
+   * detected a fillable field (FILL-06's escape-hatch signal) — a failed
+   * injection/detect fails closed to `fieldsDetected: false` rather than
+   * guessing a field exists (D-02).
    */
   async function refreshStatus(): Promise<void> {
     const association = await loadAssociation();
@@ -108,15 +137,15 @@
       return;
     }
 
-    const origin = await getCurrentTabOrigin();
-    if (origin === null) {
-      // No readable tab origin (e.g. a chrome:// page) — fail closed the
-      // same as any other transport-level failure rather than guessing.
+    const tab = await getCurrentTab();
+    if (tab === null) {
+      // No readable tab (e.g. a chrome:// page) — fail closed the same as
+      // any other transport-level failure rather than guessing.
       status = { kind: 'disconnected' };
       return;
     }
 
-    const outcome = await sendRpcViaBackground({ method: 'match-origin', params: { origin } });
+    const outcome = await sendRpcViaBackground({ method: 'match-origin', params: { origin: tab.origin } });
 
     if (!outcome.ok) {
       // vault-locked is a distinct, honest render (XSEC-06) — branch it off
@@ -131,19 +160,36 @@
       return;
     }
 
-    // Success payload is now a decrypted, authenticated JSON value (BUG-2 fix) —
-    // the app never sends vault-locked on the success path, it is always a
-    // plaintext error envelope handled above. The bytes are authenticated, but
-    // `JSON.parse` can still yield any shape (null / array / number / object), so
-    // treat a real match list as ONLY an object carrying an array `candidates`;
-    // anything else renders connected-no-matches rather than mis-driving a count.
+    // Success payload is now a decrypted, authenticated JSON value (BUG-2
+    // fix) — the bytes are authenticated, but JSON.parse can still yield any
+    // shape, so treat a real match list as ONLY an object carrying an array
+    // `candidates`; anything else renders connected-no-matches rather than
+    // mis-driving the picker.
     const payload = outcome.payload;
     const candidates =
       payload !== null && typeof payload === 'object' && Array.isArray((payload as { candidates?: unknown }).candidates)
         ? ((payload as { candidates: EntryMatchMetadata[] }).candidates)
         : [];
-    const count = candidates.length;
-    status = count > 0 ? { kind: 'connected-matches', count } : { kind: 'connected-no-matches' };
+
+    if (candidates.length === 0) {
+      status = { kind: 'connected-no-matches' };
+      return;
+    }
+
+    let fieldsDetected = false;
+    const injected = await ensureContentScript(tab.tabId);
+    if (injected) {
+      try {
+        const detectResult = (await chrome.tabs.sendMessage(tab.tabId, { type: 'cryptiq-detect' })) as
+          | DetectResult
+          | undefined;
+        fieldsDetected = detectResult?.ok === true && detectResult.fieldsDetected === true;
+      } catch {
+        fieldsDetected = false; // fail closed — never guess a field exists
+      }
+    }
+
+    status = { kind: 'connected-matches', candidates, fieldsDetected, tabId: tab.tabId, origin: tab.origin };
   }
 
   void refreshStatus();
@@ -157,6 +203,53 @@
   async function handleUnlockClick(): Promise<void> {
     unlockRequested = true;
     await sendRpcViaBackground({ method: 'focus-app', params: {} });
+  }
+
+  /**
+   * FILL-04/05/06 fill dispatch: (1) fetch the secret via the existing
+   * `fill-entry` RPC (same authenticated round trip `match-origin` already
+   * uses); (2) recheckTabUnchanged — ABORT on any tab id/origin mismatch
+   * (XSEC-03 TOCTOU); (3) send the secret DIRECTLY to the content script via
+   * chrome.tabs.sendMessage — never re-entering background.ts/the native
+   * port. `entryId`/`username` are the only identifiers threaded through;
+   * the secret itself is a plain local (`secret`), never retained past this
+   * call and never assigned to a `$state` variable (XSEC-06).
+   */
+  async function handleFillClick(entryId: string, username: string): Promise<void> {
+    if (status.kind !== 'connected-matches') return;
+    const { tabId, origin } = status;
+
+    fillState = { kind: 'pending', entryId };
+
+    const outcome = await sendRpcViaBackground({ method: 'fill-entry', params: { entryId } });
+    const secret =
+      outcome.ok && typeof outcome.payload === 'object' && outcome.payload !== null
+        ? (outcome.payload as { secret?: unknown }).secret
+        : undefined;
+    if (typeof secret !== 'string') {
+      fillState = { kind: 'error', message: 'Could not retrieve the password.' };
+      return;
+    }
+
+    const unchanged = await recheckTabUnchanged(tabId, origin);
+    if (!unchanged) {
+      // The tab navigated between the match list being fetched and this
+      // click — refuse rather than fill a possibly-different page (XSEC-03).
+      fillState = { kind: 'error', message: 'The page changed — reopen the popup to fill.' };
+      return;
+    }
+
+    try {
+      const result = (await chrome.tabs.sendMessage(tabId, {
+        type: 'cryptiq-fill',
+        secret,
+        username,
+        expectedOrigin: origin,
+      })) as FillResult | undefined;
+      fillState = result?.ok ? { kind: 'idle' } : { kind: 'error', message: 'Could not fill this page.' };
+    } catch {
+      fillState = { kind: 'error', message: 'Could not fill this page.' };
+    }
   }
 </script>
 
@@ -174,12 +267,54 @@
     <button onclick={handleUnlockClick} disabled={unlockRequested}>
       {unlockRequested ? 'Unlock requested' : 'Unlock Cryptiq'}
     </button>
-  {:else if status.kind === 'connected-matches'}
-    <p style="font-size: 12px; margin: 0;">
-      {status.count} saved {status.count === 1 ? 'login' : 'logins'} for this site
-    </p>
   {:else if status.kind === 'connected-no-matches'}
     <p style="font-size: 12px; margin: 0;">No saved logins for this site</p>
+  {:else if status.kind === 'connected-matches'}
+    {@const flow = decideFillFlow({ candidates: status.candidates, fieldsDetected: status.fieldsDetected })}
+    {@const rows = buildPickerViewModel(status.candidates)}
+
+    {#if !status.fieldsDetected}
+      <p style="font-size: 11px; color: #666; margin: 0 0 6px;">No login field detected on this page.</p>
+    {/if}
+
+    {#if flow.kind === 'single'}
+      {@const row = rows[0]}
+      <button onclick={() => handleFillClick(row.id, row.username)} disabled={fillState.kind === 'pending'}>
+        {fillState.kind === 'pending' ? 'Filling…' : flow.fillAnyway ? 'Fill anyway' : 'Fill'}
+      </button>
+      {#if row.weak || row.reused}
+        <p style="font-size: 11px; color: #a15c00; margin: 4px 0 0;">
+          {row.weak ? 'Weak password' : ''}{row.weak && row.reused ? ' · ' : ''}{row.reused ? 'Reused password' : ''}
+        </p>
+      {/if}
+    {:else if flow.kind === 'picker'}
+      <ul style="list-style: none; margin: 0; padding: 0;">
+        {#each rows as row (row.id)}
+          <li style="margin: 0 0 6px;">
+            <button
+              onclick={() => handleFillClick(row.id, row.username)}
+              disabled={fillState.kind === 'pending'}
+              style="width: 100%; text-align: left;"
+            >
+              {fillState.kind === 'pending' && fillState.entryId === row.id
+                ? 'Filling…'
+                : flow.fillAnyway
+                  ? `Fill anyway — ${row.title}`
+                  : row.title}
+            </button>
+            {#if row.weak || row.reused}
+              <span style="font-size: 11px; color: #a15c00;">
+                {row.weak ? 'Weak' : ''}{row.weak && row.reused ? ' · ' : ''}{row.reused ? 'Reused' : ''}
+              </span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if fillState.kind === 'error'}
+      <p style="font-size: 11px; color: #b00020; margin: 6px 0 0;">{fillState.message}</p>
+    {/if}
   {/if}
 
   {#if import.meta.env.DEV && DevEchoComponent}
