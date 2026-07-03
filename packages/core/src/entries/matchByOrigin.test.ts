@@ -2,6 +2,11 @@
 //
 // matchByOrigin behavioral/ordering/no-password tests (FILL-03, BRIDGE-08,
 // 16-CONTEXT.md D-01/D-02/D-03/D-05/D-06/D-08).
+//
+// Phase 19 Plan 01: matchByOrigin's return shape changed from a bare
+// EntryMatchMetadata[] to { registrableDomain, candidates } (Pattern 2) — every
+// assertion below reads `.candidates`, and dedicated cases pin
+// registrableDomain's unconditional presence (CAP-01/CAP-04).
 
 import { describe, it, expect } from 'vitest';
 import type { Entry } from './types';
@@ -35,27 +40,27 @@ function makeEntry(overrides: Partial<Entry> = {}): Entry {
 describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRIDGE-08)', () => {
   it('matches a subdomain page origin against an entry stored with the bare base domain (D-01)', () => {
     const entries = [makeEntry({ url: 'example.com' })];
-    const results = matchByOrigin(entries, 'https://accounts.example.com/login');
-    expect(results).toHaveLength(1);
-    expect(results[0]!.id).toBe(entries[0]!.id);
+    const result = matchByOrigin(entries, 'https://accounts.example.com/login');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]!.id).toBe(entries[0]!.id);
   });
 
   it('matches a www-prefixed entry url against a bare page origin (D-01)', () => {
     const entries = [makeEntry({ url: 'www.example.com' })];
-    const results = matchByOrigin(entries, 'https://example.com');
-    expect(results).toHaveLength(1);
+    const result = matchByOrigin(entries, 'https://example.com');
+    expect(result.candidates).toHaveLength(1);
   });
 
-  it('returns an empty set for a non-registrable page origin (D-03 fail closed)', () => {
+  it('returns an empty candidate set for a non-registrable page origin (D-03 fail closed)', () => {
     const entries = [makeEntry({ url: 'example.com' })];
-    expect(matchByOrigin(entries, 'http://192.168.1.1')).toEqual([]);
-    expect(matchByOrigin(entries, 'http://localhost:5173')).toEqual([]);
-    expect(matchByOrigin(entries, '')).toEqual([]);
+    expect(matchByOrigin(entries, 'http://192.168.1.1').candidates).toEqual([]);
+    expect(matchByOrigin(entries, 'http://localhost:5173').candidates).toEqual([]);
+    expect(matchByOrigin(entries, '').candidates).toEqual([]);
   });
 
   it('excludes soft-deleted entries from match candidates', () => {
     const entries = [makeEntry({ url: 'example.com', deletedAt: '2026-02-01T00:00:00.000Z' })];
-    expect(matchByOrigin(entries, 'https://example.com')).toEqual([]);
+    expect(matchByOrigin(entries, 'https://example.com').candidates).toEqual([]);
   });
 
   it('skips an entry whose url is empty or unparseable (D-02)', () => {
@@ -64,9 +69,9 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
       makeEntry({ url: 'not a url at all' }),
       makeEntry({ url: 'example.com' }), // the only real match
     ];
-    const results = matchByOrigin(entries, 'https://example.com');
-    expect(results).toHaveLength(1);
-    expect(results[0]!.id).toBe(entries[2]!.id);
+    const result = matchByOrigin(entries, 'https://example.com');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]!.id).toBe(entries[2]!.id);
   });
 
   it('orders favorites first, then modifiedAt descending within each group (D-08)', () => {
@@ -89,16 +94,20 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
       title: 'favorite-old',
     });
 
-    const results = matchByOrigin([older, newer, favoriteOld], 'https://example.com');
+    const result = matchByOrigin([older, newer, favoriteOld], 'https://example.com');
 
-    expect(results.map((r) => r.title)).toEqual(['favorite-old', 'newer-non-favorite', 'older-non-favorite']);
+    expect(result.candidates.map((r) => r.title)).toEqual([
+      'favorite-old',
+      'newer-non-favorite',
+      'older-non-favorite',
+    ]);
   });
 
   it('returns metadata with id/title/username/domainHint and structurally no password field (SC-1/BRIDGE-08)', () => {
     const entries = [makeEntry({ url: 'example.com', title: 'Example', username: 'alice' })];
-    const results = matchByOrigin(entries, 'https://example.com');
-    expect(results).toHaveLength(1);
-    const match = results[0]!;
+    const result = matchByOrigin(entries, 'https://example.com');
+    expect(result.candidates).toHaveLength(1);
+    const match = result.candidates[0]!;
     expect(match).toEqual({
       id: entries[0]!.id,
       title: 'Example',
@@ -107,5 +116,35 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
     });
     expect(Object.keys(match)).not.toContain('password');
     expect('password' in match).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 19 Plan 01 (Pattern 2): registrableDomain, unconditional presence
+  // ---------------------------------------------------------------------------
+
+  it('returns the registrableDomain for a matching origin', () => {
+    const entries = [makeEntry({ url: 'example.com' })];
+    const result = matchByOrigin(entries, 'https://accounts.example.com/login');
+    expect(result.registrableDomain).toBe('example.com');
+  });
+
+  it('returns the registrableDomain even when there are zero candidates for a registrable origin (CAP-01/CAP-04)', () => {
+    const entries: Entry[] = [];
+    const result = matchByOrigin(entries, 'https://brand-new-site.com');
+    expect(result.registrableDomain).toBe('brand-new-site.com');
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('returns registrableDomain: null and candidates: [] for a non-registrable origin', () => {
+    const entries = [makeEntry({ url: 'example.com' })];
+    expect(matchByOrigin(entries, 'http://192.168.1.1')).toEqual({
+      registrableDomain: null,
+      candidates: [],
+    });
+    expect(matchByOrigin(entries, 'http://localhost:5173')).toEqual({
+      registrableDomain: null,
+      candidates: [],
+    });
+    expect(matchByOrigin(entries, '')).toEqual({ registrableDomain: null, candidates: [] });
   });
 });

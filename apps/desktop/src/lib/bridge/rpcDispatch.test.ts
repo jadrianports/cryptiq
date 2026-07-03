@@ -227,8 +227,9 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       requestId: 'r4',
       method: 'match-origin',
       params: { origin: 'https://accounts.example.com/login' },
-    }) as { candidates: Array<Record<string, unknown>> };
+    }) as { registrableDomain: string | null; candidates: Array<Record<string, unknown>> };
 
+    expect(result.registrableDomain).toBe('example.com');
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toEqual({
       id: entry.id,
@@ -252,7 +253,19 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       params: { origin: 'https://other-site.test' },
     });
 
-    expect(result).toEqual({ candidates: [] });
+    expect(result).toEqual({ registrableDomain: 'other-site.test', candidates: [] });
+  });
+
+  it('match-origin returns a non-null registrableDomain even with zero candidates for a brand-new registrable origin (CAP-01/CAP-04)', () => {
+    vaultState.entries = [];
+
+    const result = handleRpcRequest({
+      requestId: 'r5b',
+      method: 'match-origin',
+      params: { origin: 'https://brand-new-site.com' },
+    });
+
+    expect(result).toEqual({ registrableDomain: 'brand-new-site.com', candidates: [] });
   });
 
   // -------------------------------------------------------------------------

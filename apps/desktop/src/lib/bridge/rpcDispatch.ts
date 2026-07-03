@@ -83,7 +83,7 @@ export function handleRpcRequest(payload: RpcRequestPayload): unknown {
 
   if (method === 'match-origin') {
     const origin = typeof params.origin === 'string' ? params.origin : '';
-    const candidates = matchByOrigin(entries, origin);
+    const { registrableDomain, candidates } = matchByOrigin(entries, origin);
 
     // HEALTH-02: candidate-scoped weak/reused flags, computed fresh on every
     // call. Deliberately does NOT use the session-scoped healthAudit.svelte.ts
@@ -108,6 +108,7 @@ export function handleRpcRequest(payload: RpcRequestPayload): unknown {
     const reusedIds = new Set(audit.reused.map((e) => e.id));
 
     return {
+      registrableDomain,
       candidates: candidates.map((c) => ({
         ...c,
         weak: weakIds.has(c.id),

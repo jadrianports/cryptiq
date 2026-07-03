@@ -54,18 +54,39 @@ export interface EntryMatchMetadata {
 export type MatchByOriginOptions = object;
 
 /**
+ * Wire shape for `matchByOrigin` (Phase 19 Plan 01 / CAP-01/CAP-04).
+ *
+ * `registrableDomain` is computed UNCONDITIONALLY — even when `candidates` is
+ * empty (a brand-new site with zero saved entries, or a non-registrable
+ * origin) — so callers needing only the page's own eTLD+1 (CAP-01's new-site
+ * title default, CAP-04's never-save keying) never need a second PSL lookup.
+ * `null` for a non-registrable origin (IP/localhost/file/empty), matching
+ * D-03's fail-closed candidate behavior.
+ */
+export interface MatchByOriginResult {
+  registrableDomain: string | null;
+  candidates: EntryMatchMetadata[];
+}
+
+/**
  * Match vault entries against a page origin by eTLD+1 base domain, returning
- * metadata-only results ordered favorites-first then `modifiedAt` descending.
+ * metadata-only results ordered favorites-first then `modifiedAt` descending,
+ * alongside the page's own registrable domain (unconditional — Phase 19
+ * Pattern 2).
  */
 export function matchByOrigin(
   entries: Entry[],
   pageOrigin: string,
   _opts?: MatchByOriginOptions,
-): EntryMatchMetadata[] {
+): MatchByOriginResult {
   const targetHost = registrableHost(pageOrigin);
-  if (targetHost === null) return []; // D-03: no registrable domain -> empty set, fail closed
+  if (targetHost === null) {
+    // D-03: no registrable domain -> empty candidate set, fail closed. The
+    // domain itself is still surfaced (null) so callers don't need a second check.
+    return { registrableDomain: null, candidates: [] };
+  }
 
-  return entries
+  const candidates = entries
     .filter((e) => e.deletedAt === null) // tombstones never surface as matches
     .filter((e) => registrableHost(e.url) === targetHost) // D-02: skip unparseable/empty urls
     .sort((a, b) => {
@@ -78,4 +99,6 @@ export function matchByOrigin(
       username: e.username,
       domainHint: targetHost,
     }));
+
+  return { registrableDomain: targetHost, candidates };
 }
