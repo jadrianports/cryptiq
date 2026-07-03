@@ -51,6 +51,39 @@ describe('fieldDetection — scanForLoginFields (FILL-01/02/07, D-02/D-03)', () 
     expect(result.pass?.id).toBe('p');
   });
 
+  it('BUG-17-01: completes the pair when ONLY the username has an autocomplete token and the password field has none (real nexusmods.com shape)', () => {
+    // Nexus Mods: autocomplete="email" on the username, but the password
+    // <input> carries NO autocomplete attribute. The autocomplete-first pass
+    // must not short-circuit to username-only — it must fall through to the
+    // input[type=password] ground-truth heuristic to complete the pair.
+    const container = makeFormFixture(`
+      <form>
+        <input type="text" autocomplete="email" name="user[login]" id="login" />
+        <input type="password" name="user[password]" id="password" />
+        <button type="submit">Log in</button>
+      </form>
+    `);
+
+    const result = scanForLoginFields(container);
+
+    expect(result.user?.id).toBe('login');
+    expect(result.pass?.id).toBe('password');
+  });
+
+  it('BUG-17-01 (symmetric): completes the pair when ONLY the password has an autocomplete token and the username field has none', () => {
+    const container = makeFormFixture(`
+      <form>
+        <input type="text" name="username" id="u" />
+        <input type="password" autocomplete="current-password" id="p" />
+      </form>
+    `);
+
+    const result = scanForLoginFields(container);
+
+    expect(result.pass?.id).toBe('p');
+    expect(result.user?.id).toBe('u');
+  });
+
   it('detects input[type=password] with NO autocomplete and pairs the nearest preceding strong-pattern username field', () => {
     const container = makeFormFixture(`
       <form>
