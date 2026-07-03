@@ -14,7 +14,7 @@ If everything else breaks, the encrypted vault file with correct crypto is what 
 
 - **Stack (locked):** Tauri v2, Svelte 5 (runes) + TS + Vite, Tailwind v4, pure-TS `core`
   with `libsodium-wrappers-sumo` (WASM) for all crypto, `zxcvbn-ts`, `papaparse`, bundled EFF wordlist.
-- **Tooling:** pnpm workspaces, Vitest (`core`), Playwright (components), tauri-driver + WebdriverIO (E2E), ESLint + Prettier.
+- **Tooling:** pnpm workspaces, Vitest (`core`; desktop components run in **Vitest browser mode**, not Playwright), tauri-driver + WebdriverIO (native E2E — deferred), ESLint + Prettier.
 - **Dev env:** Windows-first. macOS/Linux build via CI only (no macOS dev machine). Linux structurally excluded from v1 desktop plugins.
 - **Cost:** $0. OS code-signing skipped for v1 (installs show "unidentified developer").
 - **Crypto rules (non-negotiable):** libsodium only; no hand-rolled crypto; CSPRNG only
@@ -59,7 +59,7 @@ for new code · `Math.random()` near secrets · `nodeLinker: hoisted` · global 
 - No `console.*` in `packages/core` (tests exempt). No `Math.random` anywhere — use `sodium.randombytes_buf`.
 - `_`-prefixed names = intentionally unused (honored by tsconfig + ESLint).
 - Lockfiles committed: `pnpm-lock.yaml` + `Cargo.lock`. `package-lock.json`/`yarn.lock` gitignored.
-- **Agents never run git.** Surface commit-worthy moments with a suggested command; the user runs it.
+- **Git (user-delegated 2026-07-03):** the agent commits its own work per-plan on `main` without waiting. NEVER `git push` (local-only repo) and NEVER destructive git (`reset --hard`, force-push, `branch -D`, `clean -f`).
 
 **Crypto / vault (Phase 2 — LOCKED, do not modify the wire format or params)**
 - Single libsodium entry: every crypto module gets the handle via `crypto/sodium.ts` `getSodium()`. Raw `libsodium-wrappers-sumo` imports banned outside `sodium.ts`.
@@ -78,6 +78,11 @@ for new code · `Math.random()` near secrets · `nodeLinker: hoisted` · global 
 - Lock decision logic (`storage/lockLogic.ts`) is pure — PID-liveness injected as a boolean; no IO/PID syscalls in core.
 - Rust `vault_write_atomic`: temp-in-dir → `sync_all` → COPY primary→`.bak.1` (rotate 1–5) → atomic rename → dir fsync. COPY (not move) keeps primary present through a crash. All path commands enforce `resolve_confined_path`.
 - TS `TauriVaultStorageAdapter`: promise-chain save-mutex + FNV-1a content-hash dedup (unchanged hash ⇒ no backup).
+
+**Sync / pairing (Phases 8–13 — LOCKED wire protocol)**
+- Pure merge lives in `packages/core/src/sync/` (`mergeInnerDocs`, IO-free): record-level LWW on `modifiedAt`, delete-wins (losing password → tombstone `passwordHistory`), create-vs-create keeps both, deterministic `deviceId` tiebreak, 30s clock-skew guard. Built + exhaustively tested before any network code.
+- Transport is Rust-shell only: `snow` Noise (`XXpsk3` pairing / `IKpsk2` transport) over `tokio` TCP; `vaultPairId` binding gate runs before any vault bytes; 4-byte u32 large-blob framing. Rust shuttles ciphertext only — merge runs in JS/WASM. Pinned by the `#[tokio::test]` suite.
+- Pairing record = `peers.json` sidecar (outside the vault format, in `$APPCONFIG/cryptiq/`); device Curve25519 key in Windows Credential Manager (survives master-password change). Post-sync summary is counts-only (metadata-leak safe). Single-instance plugin means two-device UAT needs a 2nd Windows PC / bridged VM — the dev-only MCP bridge (`pnpm dev:bridge`) covers single-device only.
 
 **Frontend / security**
 - In-memory vault state uses `$state.raw` (NOT deep `$state` — proxy could leak secrets via DevTools). Vault key is a non-reactive `#vaultKey`.
@@ -106,19 +111,22 @@ cryptiq/
 │   ├── errors.ts                         # typed errors (single source)
 │   ├── crypto/                           # sodium (only import site), kdf, aead, wrap, recovery, padding
 │   ├── vault/                            # format, serialize, vault (verb API), migrations/
+│   ├── sync/                             # mergeInnerDocs (pure LWW engine) + syncAuth (same-master check)
 │   ├── entries/                          # types, uuid, crud
 │   ├── generator/                        # types, random, passphrase, entropy, eff-long.json
 │   ├── storage/                          # VaultStorageAdapter (interface), lockLogic (pure)
-│   └── config/                           # CryptiqConfig parse/serialize
+│   └── config/                           # CryptiqConfig parse/serialize (incl. listenerEnabled)
 └── apps/desktop/
     ├── vite.config.ts / vitest.config.ts
     ├── src/lib/state/vault.svelte.ts     # VaultSession singleton ($state.raw + non-reactive #vaultKey)
+    ├── src/lib/sync/                      # SyncStore/PairingStore ($state.raw) + syncOrchestration + syncBridge
     ├── src/lib/adapters/                 # TauriVaultStorageAdapter + contentHash
     └── src-tauri/                        # Rust shell
         ├── src/lib.rs                    # plugin order: single-instance → fs → persisted-scope
         ├── src/commands/vault.rs         # atomic write, backup rotation, advisory lock, confined-path guard
-        ├── tauri.conf.json               # strict prod CSP + dev CSP
-        └── capabilities/{default,bootstrap}.json  # literal fs scopes; platforms [windows, macOS]
+        ├── src/commands/{pairing,sync}.rs # Noise pairing (CredManager, SAS) + sync transport (IK, binding gate)
+        ├── tauri.conf.json               # strict prod CSP + dev CSP (+ tauri.mcp-bridge.conf.json = dev-only UAT bridge)
+        └── capabilities/{default,bootstrap}.json  # literal fs scopes (incl. peers.json) + TCP; platforms [windows, macOS]
 ```
 
 **Tier responsibilities**
@@ -129,7 +137,8 @@ cryptiq/
 **Locked decision boundaries** (change only via explicit cross-phase decision)
 - Vault wire format (`VaultDocumentV1`: `format` discriminator + `version` gate + per-wrap `kdf` + open `wrappedKeys` + `data` sealed under `VAULT_AD`) — **do not change after Phase 2**.
 - Crypto params (combined XChaCha20-Poly1305 IETF, Argon2id 256 MiB/3 ops floor no ceiling, BLAKE2b recovery key, tiered padding + uint32-LE prefix, base64 ORIGINAL) — **do not modify after Phase 2**; pinned by KAT-1..4.
-- Capability JSON shape (literal paths, explicit `platforms`, two-file split), production CSP block, pnpm minimumReleaseAge, single-instance plugin order, `$state.raw` for vault state, Linux structurally excluded, typed-error fail-closed contract.
+- Sync wire protocol (`snow` `Noise_XXpsk3` pairing + `Noise_IKpsk2` transport, 4-byte u32 large-blob framing, `vaultPairId` binding gate before any vault bytes, cold-decrypt-verify before swap, secureWipe) — **locked at v2.0**; pinned by the Rust `#[tokio::test]` suite.
+- Capability JSON shape (literal paths incl. `peers.json` + explicit TCP permission, explicit `platforms`, two-file split), production CSP block, pnpm minimumReleaseAge, single-instance plugin order, `$state.raw` for vault state, Linux structurally excluded, typed-error fail-closed contract.
 
 <!-- GSD:architecture-end -->
 
