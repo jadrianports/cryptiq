@@ -47,8 +47,8 @@
   // entrypoints/background.ts (cross-entrypoint imports are forbidden; popup
   // <-> background otherwise talk only via runtime messages).
   import { readCapture, clearCaptureForTab } from '../../src/lib/captureBuffer';
-  import { isNeverSave } from '../../src/lib/neverSaveStore';
-  import { decideCaptureFlow, type CaptureDecision } from '../../src/lib/captureFlow';
+  import { isNeverSave, markNeverSave } from '../../src/lib/neverSaveStore';
+  import { buildSaveParams, decideCaptureFlow, type CaptureDecision } from '../../src/lib/captureFlow';
 
   let DevEchoComponent: Component | null = $state(null);
 
@@ -102,6 +102,36 @@
    * a fresh capture is (re)classified (a new pick is required each time). No
    * secret ever lives here -- entryId only. */
   let pickedEntryId: string | null = $state(null);
+
+  // --- Plan 19-04 Task 2: capture save-prompt form state -------------------
+  //
+  // `captureTitle`/`captureUsername` are non-secret and reactive ($state) --
+  // ordinary editable text the user may adjust before saving. The PASSWORD
+  // never follows this pattern (T-19-13): `capturePasswordEl` is only an
+  // element reference (itself not a secret), and the actual password value
+  // lives ONLY in that uncontrolled <input>'s own DOM `.value` -- read
+  // on-demand (Save click, debounced scoring) and written on-demand
+  // (Generate), NEVER copied into a Svelte-reactive variable. `initialCapturedPassword`
+  // is a plain (non-`$state`) local that seeds the input's value exactly once
+  // at mount via the `seedPasswordValue` action below -- it is the one place
+  // the buffered secret briefly rests outside the DOM element itself.
+  let captureTitle = $state('');
+  let captureUsername = $state('');
+  let capturePasswordEl: HTMLInputElement | null = $state(null);
+  let initialCapturedPassword = '';
+  let generating = $state(false);
+  type CaptureSaveState = { kind: 'idle' } | { kind: 'pending' } | { kind: 'error'; message: string };
+  let captureSaveState: CaptureSaveState = $state({ kind: 'idle' });
+
+  /** Svelte action: sets the input's DOM value ONCE at mount, reading
+   * `initialCapturedPassword` from closure (deliberately NOT as a templated
+   * `use:seedPasswordValue={...}` parameter -- referencing the secret inside
+   * `{...}` markup makes the Svelte compiler flag it as "should be `$state`",
+   * which is exactly what T-19-13 forbids). No `update()` callback, so this
+   * runs exactly once and the secret is never tracked as reactive state. */
+  function seedPasswordValue(node: HTMLInputElement): void {
+    node.value = initialCapturedPassword;
+  }
 
   interface RpcMessageOutcome {
     ok: boolean;
@@ -208,6 +238,10 @@
     const decision = decideCaptureFlow(allCandidates, capture.username);
 
     pickedEntryId = null; // a fresh classification always requires a fresh pick
+    captureTitle = registrableDomain !== '' ? registrableDomain : tab.origin; // CAP-02
+    captureUsername = capture.username;
+    initialCapturedPassword = capture.password; // consumed once by seedPasswordValue at mount
+    captureSaveState = { kind: 'idle' };
 
     status = {
       kind: 'capture',
@@ -353,6 +387,121 @@
       fillState = { kind: 'error', message: 'Could not fill this page.' };
     }
   }
+
+  /**
+   * Pitfall 5 (SC-3 no-ghost-prompt): the SINGLE dismissal seam every capture
+   * exit path (Save success, Update success, plain Dismiss, Never-save) routes
+   * through. Always clears the shared buffer+badge together, resets all
+   * capture-local UI state, then re-runs `refreshStatus` so the popup falls
+   * back to the ordinary fill flow now that the buffer is gone.
+   */
+  async function dismissCapture(tabId: number): Promise<void> {
+    await clearCaptureForTab(tabId);
+    pickedEntryId = null;
+    captureSaveState = { kind: 'idle' };
+    await refreshStatus();
+  }
+
+  async function handleCaptureDismissClick(): Promise<void> {
+    if (status.kind !== 'capture') return;
+    await dismissCapture(status.tabId);
+  }
+
+  /** CAP-04/D-04: mark the registrable domain never-save, THEN run the same
+   * shared dismissal seam (Never-save always clears too — a suppressed
+   * domain must never leave a stale buffer/badge behind). */
+  async function handleNeverSaveClick(): Promise<void> {
+    if (status.kind !== 'capture') return;
+    if (status.registrableDomain !== '') {
+      await markNeverSave(status.registrableDomain);
+    }
+    await dismissCapture(status.tabId);
+  }
+
+  /**
+   * GEN-01/02, D-02/D-03: request a fresh CSPRNG password from the app's
+   * saved generator preset (no override params), write it directly into the
+   * popup's own password input (plain DOM write, never `$state` — T-19-13),
+   * and best-effort mirror it onto the actual page field via the existing
+   * `cryptiq-fill` content-script message so the user sees it applied on the
+   * real signup form. Generation is a suggestion (D-03) — never auto-applied
+   * without this explicit click, and the user may still edit/replace it
+   * before saving.
+   */
+  async function handleGenerateClick(): Promise<void> {
+    if (status.kind !== 'capture') return;
+    const { tabId, origin } = status;
+
+    generating = true;
+    const outcome = await sendRpcViaBackground({ method: 'generate-password', params: {} });
+    generating = false;
+
+    const generated =
+      outcome.ok && typeof outcome.payload === 'object' && outcome.payload !== null
+        ? (outcome.payload as { password?: unknown }).password
+        : undefined;
+    if (typeof generated !== 'string') return;
+
+    if (capturePasswordEl) capturePasswordEl.value = generated;
+
+    // Best-effort mirror onto the real page field — XSEC-03 TOCTOU recheck
+    // first (same discipline as handleFillClick); a mismatch skips ONLY the
+    // page-fill, the popup's own field is still updated.
+    const unchanged = await recheckTabUnchanged(tabId, origin);
+    if (unchanged) {
+      try {
+        await chrome.tabs.sendMessage(tabId, {
+          type: 'cryptiq-fill',
+          secret: generated,
+          username: captureUsername,
+          expectedOrigin: origin,
+        });
+      } catch {
+        // Best-effort only — the popup's own input is still filled.
+      }
+    }
+  }
+
+  /**
+   * Explicit Save/Update confirm (CAP-01/03, GEN-02): reads the CURRENT
+   * password straight off the DOM input (never a `$state` copy), threads it
+   * through `buildSaveParams` (Plan 02's GEN-02 seam — proves a generated
+   * value is carried unchanged), and calls `save-or-update-entry`. On
+   * success, routes through the shared `dismissCapture` seam; on failure,
+   * surfaces a typed, non-secret error message.
+   */
+  async function handleCaptureSaveClick(mode: 'new' | 'update', entryId: string | undefined): Promise<void> {
+    if (status.kind !== 'capture') return;
+
+    const password = capturePasswordEl?.value ?? '';
+    if (password.length === 0) {
+      captureSaveState = { kind: 'error', message: 'Enter or generate a password first.' };
+      return;
+    }
+
+    captureSaveState = { kind: 'pending' };
+
+    const params = buildSaveParams({
+      mode,
+      ...(entryId !== undefined ? { entryId } : {}),
+      title: captureTitle,
+      username: captureUsername,
+      password,
+      url: status.origin,
+    });
+
+    const outcome = await sendRpcViaBackground({ method: 'save-or-update-entry', params });
+
+    if (outcome.ok) {
+      await dismissCapture(status.tabId);
+      return;
+    }
+
+    captureSaveState = {
+      kind: 'error',
+      message: outcome.code === 'vault-locked' ? 'Cryptiq is locked — unlock it to save.' : 'Could not save this entry.',
+    };
+  }
 </script>
 
 <main>
@@ -400,8 +549,52 @@
         {mode === 'new' ? `Save password for ${existingTitle}?` : `Update password for ${existingTitle}?`}
       </p>
       <p style="font-size: 11px; color: #666; margin: 0 0 8px;">{status.origin}</p>
-      <!-- Generate + live meter + Save/Update/Dismiss/Never-save wired in
-           Plan 19-04 Tasks 2 and 3. -->
+
+      {#if mode === 'new'}
+        <label for="capture-title" style="display: block; font-size: 11px; color: #666; margin: 0 0 2px;">Title</label>
+        <input
+          id="capture-title"
+          type="text"
+          bind:value={captureTitle}
+          style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+        />
+      {/if}
+
+      <label for="capture-username" style="display: block; font-size: 11px; color: #666; margin: 0 0 2px;">Username</label>
+      <input
+        id="capture-username"
+        type="text"
+        bind:value={captureUsername}
+        style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+      />
+
+      <label for="capture-password" style="display: block; font-size: 11px; color: #666; margin: 0 0 2px;">Password</label>
+      <input
+        id="capture-password"
+        type="password"
+        use:seedPasswordValue
+        bind:this={capturePasswordEl}
+        style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+      />
+
+      <button onclick={handleGenerateClick} disabled={generating} style="font-size: 11px; margin: 0 0 8px;">
+        {generating ? 'Generating…' : 'Generate strong password'}
+      </button>
+
+      <div style="display: flex; gap: 6px;">
+        <button
+          onclick={() => handleCaptureSaveClick(mode, entryId)}
+          disabled={captureSaveState.kind === 'pending'}
+        >
+          {captureSaveState.kind === 'pending' ? 'Saving…' : mode === 'new' ? 'Save' : 'Update'}
+        </button>
+        <button onclick={handleCaptureDismissClick} disabled={captureSaveState.kind === 'pending'}>Dismiss</button>
+        <button onclick={handleNeverSaveClick} disabled={captureSaveState.kind === 'pending'}>Never save this site</button>
+      </div>
+
+      {#if captureSaveState.kind === 'error'}
+        <p style="font-size: 11px; color: #b00020; margin: 6px 0 0;">{captureSaveState.message}</p>
+      {/if}
     {/if}
   {:else if status.kind === 'connected-matches'}
     {@const flow = decideFillFlow({ candidates: status.candidates, fieldsDetected: status.fieldsDetected })}
