@@ -21,6 +21,7 @@
 
 import { sendAssociate, sendRpc, bytesToBase64, type BridgeErrorResult } from '../src/lib/bridgeRpc';
 import { getOrCreateIdentityKeypair, loadAssociation, saveAssociation } from '../src/lib/associationStore';
+import { writeCapture, clearCaptureForTab } from '../src/lib/captureBuffer';
 
 export default defineBackground(() => {
   const ECHO_TIMEOUT_MS = 5000; // Pitfall 4: never a silent hang.
@@ -278,6 +279,42 @@ export default defineBackground(() => {
       return true; // keep the message channel open for the async response
     }
 
+    // Plan 19-03 (CAP-01/CAP-03): fill.content.ts's capture-phase submit
+    // listener posts this SYNCHRONOUSLY, fire-and-forget. This branch does
+    // NOT call sendAuthenticatedRpc — per D-01/anti-clickjacking posture,
+    // nothing crosses the authenticated bridge until the user opens the
+    // popup and explicitly clicks Save/Update (Plan 04). It only buffers the
+    // pair (memory-only, chrome.storage.session via the shared captureBuffer
+    // module) and lights the toolbar badge.
+    if (message?.type === 'cryptiq-capture') {
+      const tabId = _sender.tab?.id;
+      if (tabId === undefined) {
+        // No addressable tab (e.g. message from a non-tab context) — drop
+        // the capture; there is no badge/buffer key to write it under.
+        sendResponse({ ok: false });
+        return false;
+      }
+      writeCapture(tabId, {
+        username: typeof message.username === 'string' ? message.username : '',
+        password: typeof message.password === 'string' ? message.password : '',
+        origin: typeof message.origin === 'string' ? message.origin : '',
+        ts: Date.now(),
+      })
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true; // writeCapture is async — keep the channel open
+    }
+
     return false;
+  });
+
+  // Drop any buffered capture + un-badge the moment its tab closes, so a
+  // captured credential never outlives the tab it was captured on (routed
+  // through the SAME shared clear-together seam Plan 04's dismissal paths
+  // use — never a partial/local clear). Needs no extra manifest permission:
+  // chrome.tabs.onRemoved fires without the `tabs` permission (it carries
+  // only tabId + removeInfo, no url/title).
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    void clearCaptureForTab(tabId);
   });
 });
