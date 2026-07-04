@@ -22,6 +22,9 @@
 import { sendAssociate, sendRpc, bytesToBase64, type BridgeErrorResult } from '../src/lib/bridgeRpc';
 import { getOrCreateIdentityKeypair, loadAssociation, saveAssociation } from '../src/lib/associationStore';
 import { writeCapture, clearCaptureForTab } from '../src/lib/captureBuffer';
+import { ensureContentScript } from '../src/lib/popupFill';
+import { pickTopCandidate, shouldRefuseFrame } from '../src/lib/contextMenu';
+import type { EntryMatchMetadata } from '../src/lib/contentScriptMessages';
 
 export default defineBackground(() => {
   const ECHO_TIMEOUT_MS = 5000; // Pitfall 4: never a silent hang.
@@ -316,5 +319,110 @@ export default defineBackground(() => {
   // only tabId + removeInfo, no url/title).
   chrome.tabs.onRemoved.addListener((tabId) => {
     void clearCaptureForTab(tabId);
+  });
+
+  // --- Plan 18-02: context-menu fill/generate (UX-03) ---------------------
+  //
+  // Registration ONLY inside onInstalled (Pitfall 1) -- fires once per
+  // install/update, never re-created on every SW wake, so a duplicate-id
+  // create() error never fires on SW restart (T-18-10).
+  chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+      id: 'cryptiq-fill-focused',
+      title: 'Fill from Cryptiq',
+      contexts: ['editable'],
+    });
+    chrome.contextMenus.create({
+      id: 'cryptiq-generate-focused',
+      title: 'Generate password',
+      contexts: ['editable'],
+    });
+  });
+
+  /**
+   * Right-click "Fill from Cryptiq": top-frame-only (T-18-07), reuses the
+   * SAME ensureContentScript/sendAuthenticatedRpc paths the popup's own fill
+   * flow uses -- never a second native-port path, never `executeScript({func})`
+   * (T-18-08). Best-effort top candidate (Open Question 1 rec (a)) since a
+   * context-menu click has no picker surface of its own. Silently no-ops on
+   * locked/disconnected/empty-match/no-candidate -- the popup remains the
+   * surface that shows status (RESEARCH Pattern 4).
+   */
+  async function handleContextFill(tab: chrome.tabs.Tab | undefined, frameId: number | undefined): Promise<void> {
+    if (shouldRefuseFrame(frameId)) return;
+    if (!tab || tab.id === undefined || !tab.url) return;
+    const tabId = tab.id;
+
+    let origin: string;
+    try {
+      origin = new URL(tab.url).origin;
+    } catch {
+      return; // e.g. a chrome:// page -- fail closed, never guess
+    }
+
+    const injected = await ensureContentScript(tabId);
+    if (!injected) return;
+
+    const matchOutcome = await sendAuthenticatedRpc({ method: 'match-origin', params: { origin } });
+    if (!matchOutcome.ok) return;
+    const candidates =
+      typeof matchOutcome.payload === 'object' &&
+      matchOutcome.payload !== null &&
+      Array.isArray((matchOutcome.payload as { candidates?: unknown }).candidates)
+        ? (matchOutcome.payload as { candidates: EntryMatchMetadata[] }).candidates
+        : [];
+
+    const top = pickTopCandidate(candidates);
+    if (!top) return;
+
+    const fillOutcome = await sendAuthenticatedRpc({ method: 'fill-entry', params: { entryId: top.id } });
+    const secret =
+      fillOutcome.ok && typeof fillOutcome.payload === 'object' && fillOutcome.payload !== null
+        ? (fillOutcome.payload as { secret?: unknown }).secret
+        : undefined;
+    if (typeof secret !== 'string') return;
+
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'cryptiq-fill-focused', secret, username: top.username });
+    } catch {
+      // Best-effort only -- e.g. the tab navigated away between the RPC and
+      // this send; nothing further to do.
+    }
+  }
+
+  /**
+   * Right-click "Generate password": top-frame-only (T-18-07), no override
+   * params (GEN-01/02, D-02/D-03 -- always the vault's saved generator
+   * preset). Writes the generated secret into the focused field via the SAME
+   * `cryptiq-fill-focused` content-script message the fill path uses.
+   */
+  async function handleContextGenerate(tab: chrome.tabs.Tab | undefined, frameId: number | undefined): Promise<void> {
+    if (shouldRefuseFrame(frameId)) return;
+    if (!tab || tab.id === undefined) return;
+    const tabId = tab.id;
+
+    const injected = await ensureContentScript(tabId);
+    if (!injected) return;
+
+    const outcome = await sendAuthenticatedRpc({ method: 'generate-password', params: {} });
+    const generated =
+      outcome.ok && typeof outcome.payload === 'object' && outcome.payload !== null
+        ? (outcome.payload as { password?: unknown }).password
+        : undefined;
+    if (typeof generated !== 'string') return;
+
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'cryptiq-fill-focused', secret: generated });
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === 'cryptiq-fill-focused') {
+      void handleContextFill(tab, info.frameId);
+    } else if (info.menuItemId === 'cryptiq-generate-focused') {
+      void handleContextGenerate(tab, info.frameId);
+    }
   });
 });
