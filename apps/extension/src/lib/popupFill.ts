@@ -101,6 +101,38 @@ export function buildPickerViewModel(candidates: EntryMatchMetadata[]): PickerRo
   }));
 }
 
+/** One `search-entries` result row exactly as the RPC returns it (Plan 18-01)
+ * -- structurally carries no password field (BRIDGE-08 wire minimization). */
+export interface SearchEntryResult {
+  id: string;
+  title: string;
+  username: string;
+  currentTab: boolean;
+}
+
+/** One search-result display row -- 1:1 with `SearchEntryResult` today, kept
+ * as its own type (mirroring `PickerRow`'s separation from
+ * `EntryMatchMetadata`) so the render layer depends on a view-model type, not
+ * the wire type, even though the shapes currently match exactly. */
+export interface SearchRow {
+  id: string;
+  title: string;
+  username: string;
+  currentTab: boolean;
+}
+
+/**
+ * UX-01: order-preserving map from `search-entries` results to display rows.
+ * Mirrors `buildPickerViewModel`'s shape-only, no-reorder/no-filter
+ * discipline -- the RPC already ordered current-tab-first (18-01's stable
+ * sort), so this function does no reordering or filtering of its own, only
+ * shaping. An empty `results` array maps to an empty `rows` array (drives the
+ * "No matches"/"No saved logins yet." empty states in Popup.svelte).
+ */
+export function buildSearchViewModel(results: SearchEntryResult[]): SearchRow[] {
+  return results.map((r) => ({ id: r.id, title: r.title, username: r.username, currentTab: r.currentTab }));
+}
+
 export interface FillFlowInput {
   candidates: EntryMatchMetadata[];
   fieldsDetected: boolean;

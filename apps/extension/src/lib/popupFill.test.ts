@@ -16,7 +16,24 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import type { EntryMatchMetadata } from './contentScriptMessages';
-import { buildPickerViewModel, decideFillFlow, ensureContentScript, recheckTabUnchanged } from './popupFill';
+import {
+  buildPickerViewModel,
+  buildSearchViewModel,
+  decideFillFlow,
+  ensureContentScript,
+  recheckTabUnchanged,
+  type SearchEntryResult,
+} from './popupFill';
+
+function makeSearchResult(overrides: Partial<SearchEntryResult> = {}): SearchEntryResult {
+  return {
+    id: 'entry-1',
+    title: 'Example',
+    username: 'me@example.com',
+    currentTab: false,
+    ...overrides,
+  };
+}
 
 function makeCandidate(overrides: Partial<EntryMatchMetadata> = {}): EntryMatchMetadata {
   return {
@@ -158,6 +175,35 @@ describe('popupFill', () => {
         expect(Object.prototype.hasOwnProperty.call(row, 'password')).toBe(false);
         expect(Object.prototype.hasOwnProperty.call(row, 'secret')).toBe(false);
       }
+    });
+  });
+
+  describe('buildSearchViewModel (UX-01)', () => {
+    it('preserves order and maps { id, title, username, currentTab } 1:1 (no re-sort, no filter)', () => {
+      const results = [
+        makeSearchResult({ id: 'a', title: 'First', currentTab: true }),
+        makeSearchResult({ id: 'b', title: 'Second', currentTab: false }),
+        makeSearchResult({ id: 'c', title: 'Third', currentTab: false }),
+      ];
+
+      const rows = buildSearchViewModel(results);
+
+      expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c']);
+      expect(rows[0]).toEqual({ id: 'a', title: 'First', username: 'me@example.com', currentTab: true });
+      expect(rows[1]).toEqual({ id: 'b', title: 'Second', username: 'me@example.com', currentTab: false });
+      expect(rows[2]).toEqual({ id: 'c', title: 'Third', username: 'me@example.com', currentTab: false });
+    });
+
+    it('never carries a password field on any row', () => {
+      const rows = buildSearchViewModel([makeSearchResult()]);
+      for (const row of rows) {
+        expect(Object.prototype.hasOwnProperty.call(row, 'password')).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(row, 'secret')).toBe(false);
+      }
+    });
+
+    it('maps an empty results array to an empty rows array', () => {
+      expect(buildSearchViewModel([])).toEqual([]);
     });
   });
 
