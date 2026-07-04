@@ -41,7 +41,15 @@
   import { loadAssociation } from '../../src/lib/associationStore';
   import type { BridgeErrorCode } from '../../src/lib/bridgeRpc';
   import type { DetectResult, EntryMatchMetadata, FillResult } from '../../src/lib/contentScriptMessages';
-  import { buildPickerViewModel, decideFillFlow, ensureContentScript, recheckTabUnchanged } from '../../src/lib/popupFill';
+  import {
+    buildPickerViewModel,
+    buildSearchViewModel,
+    decideFillFlow,
+    ensureContentScript,
+    recheckTabUnchanged,
+    type SearchEntryResult,
+    type SearchRow,
+  } from '../../src/lib/popupFill';
   // Plan 19-04: capture-buffer + never-save + decision-logic imports come from
   // the SHARED src/lib/ modules Plan 02/03 published -- NEVER from
   // entrypoints/background.ts (cross-entrypoint imports are forbidden; popup
@@ -96,6 +104,40 @@
   let status: PopupStatus = $state({ kind: 'loading' });
   let unlockRequested = $state(false);
   let fillState: FillUiState = $state({ kind: 'idle' });
+
+  /** Plan 18-03 (UX-01/02): the live current tab id + origin, refreshed by
+   * `refreshStatus` on every popup open -- kept OUTSIDE `status` (unlike the
+   * original `connected-matches`-only `tabId`/`origin` fields) so search-
+   * result rows can Fill (via the SAME `handleFillClick`/`recheckTabUnchanged`
+   * TOCTOU flow, XSEC-03) even while `status.kind === 'connected-no-matches'`
+   * -- a full-vault search can surface an entry for a site other than the one
+   * `match-origin` matched, and Fill must still work in that case. Plain
+   * (non-`$state`) local -- never rendered, only read inside async handlers. */
+  let currentTabInfo: CurrentTab | null = null;
+
+  // --- Plan 18-03: search box + result rows (UX-01) + copy (UX-02) --------
+  //
+  // `searchRows` is the ONLY vault-derived state here and is structurally
+  // metadata-only (`SearchRow` has no password field, T-18-12) via
+  // `buildSearchViewModel`. `copyFeedback` is an entryId+field acknowledgment
+  // string only ("<entryId>:<field>") -- `copy-field`'s RPC response never
+  // carries the copied value (T-18-13), so this file structurally cannot
+  // render or log it.
+  type SearchUiState = { kind: 'idle' } | { kind: 'pending' } | { kind: 'error'; message: string };
+  type CopyUiState =
+    | { kind: 'idle' }
+    | { kind: 'pending'; entryId: string; field: 'username' | 'password' }
+    | { kind: 'error'; message: string };
+
+  let searchQuery = $state('');
+  let searchRows: SearchRow[] = $state([]);
+  let searchState: SearchUiState = $state({ kind: 'idle' });
+  let copyState: CopyUiState = $state({ kind: 'idle' });
+  /** entryId+field acknowledgment string ("<id>:<field>"), or null. Cleared a
+   * couple seconds after a successful copy (UI-SPEC "Copy success feedback"
+   * -- transient, non-modal, never a toast). */
+  let copyFeedback: string | null = $state(null);
+  let copyFeedbackTimeout: ReturnType<typeof setTimeout> | undefined;
 
   /** D-06: which entry the user picked from a multi-match capture picker,
    * before the update prompt renders for that specific entry. Reset whenever
@@ -324,6 +366,8 @@
       return;
     }
 
+    currentTabInfo = tab; // Plan 18-03: available to search-triggered Fill regardless of match state
+
     const captureRendered = await tryRenderCapture(tab);
     if (captureRendered) return;
 
@@ -355,6 +399,7 @@
 
     if (candidates.length === 0) {
       status = { kind: 'connected-no-matches' };
+      void handleSearchInput(); // Plan 18-03: seed the search list even with zero current-tab matches
       return;
     }
 
@@ -372,6 +417,7 @@
     }
 
     status = { kind: 'connected-matches', candidates, fieldsDetected, tabId: tab.tabId, origin: tab.origin };
+    void handleSearchInput(); // Plan 18-03: seed the search list alongside the current-tab picker
   }
 
   void refreshStatus();
@@ -396,10 +442,16 @@
    * port. `entryId`/`username` are the only identifiers threaded through;
    * the secret itself is a plain local (`secret`), never retained past this
    * call and never assigned to a `$state` variable (XSEC-06).
+   *
+   * Reads tab id/origin from `currentTabInfo` (Plan 18-03) rather than
+   * `status`, so search-result rows can Fill even from `connected-no-matches`
+   * (a full-vault search can surface an entry for a site `match-origin`
+   * didn't match for the current tab) — the picker's own Fill call site is
+   * unchanged (still calls this exact function).
    */
   async function handleFillClick(entryId: string, username: string): Promise<void> {
-    if (status.kind !== 'connected-matches') return;
-    const { tabId, origin } = status;
+    if (currentTabInfo === null) return;
+    const { tabId, origin } = currentTabInfo;
 
     fillState = { kind: 'pending', entryId };
 
@@ -432,6 +484,68 @@
     } catch {
       fillState = { kind: 'error', message: 'Could not fill this page.' };
     }
+  }
+
+  /**
+   * UX-01: full-vault metadata-only search. Reads the live current tab's
+   * origin fresh (via `getCurrentTab`, same pattern as `refreshStatus`) so a
+   * search fired seconds after popup-open still pins the CURRENT tab, not a
+   * stale one. Maps the RPC's `{ results }` payload through
+   * `buildSearchViewModel` (Svelte-free, no-reorder/no-filter, structurally
+   * no password field — T-18-12) into `searchRows`. Called once automatically
+   * on every successful `connected-*` status resolution (seeds the list
+   * before the user types anything) and again on every `oninput`.
+   */
+  async function handleSearchInput(): Promise<void> {
+    searchState = { kind: 'pending' };
+
+    const tab = await getCurrentTab();
+    const outcome = await sendRpcViaBackground({
+      method: 'search-entries',
+      params: { query: searchQuery, currentOrigin: tab?.origin ?? '' },
+    });
+
+    if (!outcome.ok) {
+      searchState = { kind: 'error', message: 'Could not search the vault.' };
+      return;
+    }
+
+    const payload = outcome.payload;
+    const results =
+      payload !== null && typeof payload === 'object' && Array.isArray((payload as { results?: unknown }).results)
+        ? (payload as { results: SearchEntryResult[] }).results
+        : [];
+
+    searchRows = buildSearchViewModel(results);
+    searchState = { kind: 'idle' };
+  }
+
+  /**
+   * UX-02: app-side copy via `copy-field` — NEVER reads/renders/logs the
+   * copied value (XSEC-06); `outcome.ok` is the only signal this function
+   * ever touches. `copyFeedback` is cleared automatically after ~2s
+   * (transient, non-modal acknowledgment per UI-SPEC — no toast mechanism
+   * exists in this codebase and this phase does not introduce one).
+   */
+  async function handleCopyClick(entryId: string, field: 'username' | 'password'): Promise<void> {
+    copyState = { kind: 'pending', entryId, field };
+
+    const outcome = await sendRpcViaBackground({ method: 'copy-field', params: { entryId, field } });
+
+    if (!outcome.ok) {
+      copyState = { kind: 'error', message: 'Could not copy this field.' };
+      copyFeedback = null;
+      return;
+    }
+
+    copyState = { kind: 'idle' };
+    const feedbackKey = `${entryId}:${field}`;
+    copyFeedback = feedbackKey;
+    if (copyFeedbackTimeout !== undefined) clearTimeout(copyFeedbackTimeout);
+    copyFeedbackTimeout = setTimeout(() => {
+      copyFeedbackTimeout = undefined;
+      if (copyFeedback === feedbackKey) copyFeedback = null;
+    }, 2000);
   }
 
   /**
@@ -713,6 +827,75 @@
 
     {#if fillState.kind === 'error'}
       <p style="font-size: 11px; color: #b00020; margin: 6px 0 0;">{fillState.message}</p>
+    {/if}
+  {/if}
+
+  {#if status.kind === 'connected-matches' || status.kind === 'connected-no-matches'}
+    <!-- Plan 18-03 (UX-01/02): full-vault search + Fill/Copy rows, rendered
+         alongside (below) the existing current-tab status/picker above —
+         does not replace or gate that surface. Hidden during loading/
+         not-paired/disconnected/locked/capture (no readable vault or a
+         full-takeover form already occupying the popup). -->
+    <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;" />
+    <input
+      type="text"
+      placeholder="Search vault…"
+      bind:value={searchQuery}
+      oninput={handleSearchInput}
+      style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+    />
+
+    {#if searchState.kind === 'error'}
+      <p style="font-size: 11px; color: #b00020; margin: 0 0 6px;">{searchState.message}</p>
+    {:else if searchRows.length === 0}
+      <p style="font-size: 12px; color: #666; margin: 0;">
+        {searchQuery === '' ? 'No saved logins yet.' : 'No matches for that search.'}
+      </p>
+    {:else}
+      <ul style="list-style: none; margin: 0; padding: 0;">
+        {#each searchRows as row (row.id)}
+          <li style="margin: 0 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 4px;">
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;">
+              {row.title}{row.currentTab ? ' 📌' : ''}
+            </span>
+            <span style="display: flex; gap: 4px; flex-shrink: 0;">
+              <button
+                onclick={() => handleFillClick(row.id, row.username)}
+                disabled={fillState.kind === 'pending'}
+                style="font-size: 11px;"
+              >
+                {fillState.kind === 'pending' && fillState.entryId === row.id ? 'Filling…' : 'Fill'}
+              </button>
+              <button
+                onclick={() => handleCopyClick(row.id, 'username')}
+                disabled={copyState.kind === 'pending'}
+                style="font-size: 11px;"
+              >
+                {copyState.kind === 'pending' && copyState.entryId === row.id && copyState.field === 'username'
+                  ? 'Copying…'
+                  : copyFeedback === `${row.id}:username`
+                    ? 'Copied'
+                    : 'Copy user'}
+              </button>
+              <button
+                onclick={() => handleCopyClick(row.id, 'password')}
+                disabled={copyState.kind === 'pending'}
+                style="font-size: 11px;"
+              >
+                {copyState.kind === 'pending' && copyState.entryId === row.id && copyState.field === 'password'
+                  ? 'Copying…'
+                  : copyFeedback === `${row.id}:password`
+                    ? 'Copied'
+                    : 'Copy pass'}
+              </button>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if copyState.kind === 'error'}
+      <p style="font-size: 11px; color: #b00020; margin: 6px 0 0;">{copyState.message}</p>
     {/if}
   {/if}
 
