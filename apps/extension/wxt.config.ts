@@ -39,11 +39,33 @@ import { defineConfig } from 'wxt';
 // a `content_scripts` entry (the content script is runtime-registered, not
 // declarative), or `tabs` (unneeded -- `activeTab` already covers the
 // popup's current-tab read).
+//
+// Plan 18-02 (UX-03): `contextMenus` added -- required for
+// `chrome.contextMenus.create`/`onClicked` (right-click "Fill from Cryptiq" /
+// "Generate password" on editable fields). No new standing grant: the menu
+// only appears on a user's own right-click gesture, and the click handler
+// still rides the SAME activeTab-gated `ensureContentScript` +
+// `sendAuthenticatedRpc` path the popup already uses -- never a fresh
+// host_permissions/tabs grant.
+//
+// Plan 18-02 (UX-04, D-03/D-04, Pitfall 4): `commands._execute_action` is
+// Chrome's RESERVED zero-code popup-open shortcut -- present ONLY because a
+// `default_popup` already exists (WXT's `entrypoints/popup/` convention). No
+// `onCommand` listener is added or needed; Chrome opens the popup itself.
+// `suggested_key` is suggested-or-unbound (user-rebindable via
+// chrome://extensions/shortcuts, never silently overrides another
+// extension's binding).
 export default defineConfig({
   modules: ['@wxt-dev/module-svelte'],
   manifest: {
     name: 'Cryptiq',
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19vhX8XkzAUXKFy9ULbh3THq+EUESqEnurUFmD/qlyZNerlM0gxQeuXk61QW/MG9aTBTXnlUQ86+KPbBlORunAs6ST0Nn+AU1sX/UnfCZBlrPQVMY1Y57MRaRviLLwpwpa5W0LKafR0iZHkK4o/WwQzRexsbBlqnR4zu/1b+92d6vYnfEiXIqxYLuB3TF5fy4iGBbuE8CtG7gUD209c+jvJUwcJCBOtGNXAZ65Q8iv25gXBB2BE7Q68BQN7IBsVzt0shzid+PcjNx0zIpMzkyEjwCB29UrucOdJqGazhAfZaFp2AvKpIYHmb+FP1jJ/1duIPifxXyrAhfnQZj2gbdwIDAQAB',
-    permissions: ['nativeMessaging', 'storage', 'activeTab', 'scripting'],
+    permissions: ['nativeMessaging', 'storage', 'activeTab', 'scripting', 'contextMenus'],
+    commands: {
+      _execute_action: {
+        suggested_key: { default: 'Ctrl+Shift+Y' },
+        description: 'Open Cryptiq popup',
+      },
+    },
   },
 });

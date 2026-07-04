@@ -30,6 +30,7 @@ interface StaticManifestShape {
   permissions?: string[];
   host_permissions?: string[];
   content_scripts?: unknown[];
+  commands?: Record<string, unknown>;
 }
 const manifest = config.manifest as StaticManifestShape;
 
@@ -40,9 +41,9 @@ describe('manifest permissions (XSEC-04)', () => {
     expect(permissions).toContain('activeTab');
   });
 
-  it('permissions are EXACTLY the four narrow permissions this milestone has added so far -- no unexpected broadening', () => {
+  it('permissions are EXACTLY the five narrow permissions this milestone has added so far -- no unexpected broadening', () => {
     const permissions = [...(manifest.permissions ?? [])].sort();
-    expect(permissions).toEqual(['activeTab', 'nativeMessaging', 'scripting', 'storage'].sort());
+    expect(permissions).toEqual(['activeTab', 'contextMenus', 'nativeMessaging', 'scripting', 'storage'].sort());
   });
 
   it('has NO host_permissions key', () => {
@@ -56,5 +57,13 @@ describe('manifest permissions (XSEC-04)', () => {
   it('has NO tabs permission (activeTab already covers the popup current-tab read)', () => {
     const permissions = manifest.permissions ?? [];
     expect(permissions).not.toContain('tabs');
+  });
+});
+
+describe('manifest commands (UX-04)', () => {
+  it('has a commands._execute_action block and no more than 4 total commands (Chrome limit)', () => {
+    const commands = manifest.commands ?? {};
+    expect(commands).toHaveProperty('_execute_action');
+    expect(Object.keys(commands).length).toBeLessThanOrEqual(4);
   });
 });
