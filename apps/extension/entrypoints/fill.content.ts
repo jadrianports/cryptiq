@@ -37,7 +37,14 @@
 // Source: 17-RESEARCH.md Architecture Patterns Diagram / Code Examples,
 // 17-CONTEXT.md D-01/D-02/D-03.
 
-import type { CaptureMessage, DetectResult, FillRequest, FillResult } from '../src/lib/contentScriptMessages';
+import type {
+  CaptureMessage,
+  DetectResult,
+  FillFocusedMessage,
+  FillFocusedResult,
+  FillRequest,
+  FillResult,
+} from '../src/lib/contentScriptMessages';
 import { scanForLoginFields } from '../src/lib/fieldDetection';
 import { fillField } from '../src/lib/domFill';
 
@@ -49,9 +56,9 @@ interface PingMessage {
 interface DetectMessage {
   type: 'cryptiq-detect';
 }
-type IncomingMessage = PingMessage | DetectMessage | FillRequest;
+type IncomingMessage = PingMessage | DetectMessage | FillRequest | FillFocusedMessage;
 
-const KNOWN_MESSAGE_TYPES = new Set(['cryptiq-ping', 'cryptiq-detect', 'cryptiq-fill']);
+const KNOWN_MESSAGE_TYPES = new Set(['cryptiq-ping', 'cryptiq-detect', 'cryptiq-fill', 'cryptiq-fill-focused']);
 
 function isKnownMessage(value: unknown): value is IncomingMessage {
   return typeof value === 'object' && value !== null && KNOWN_MESSAGE_TYPES.has((value as { type?: unknown }).type as string);
@@ -80,6 +87,31 @@ function handleFill(msg: FillRequest): FillResult {
   return { ok: true };
 }
 
+/**
+ * cryptiq-fill-focused (Plan 18-02, UX-03): the context-menu's focused-field
+ * write. Unlike `handleFill`, there is no earlier "show picker" moment to
+ * TOCTOU-guard against -- the right-click itself is the fresh gesture on
+ * this same page -- so this branch writes directly into
+ * `document.activeElement` rather than re-scanning for a user/pass pair.
+ * Routes ALL DOM writes through `fillField` (never a raw `.value =`
+ * assignment) -- the one audited native-setter primitive (RESEARCH
+ * Anti-Patterns).
+ */
+function handleFillFocused(msg: FillFocusedMessage): FillFocusedResult {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLInputElement)) {
+    return { ok: false, reason: 'no-field-found' };
+  }
+
+  if (msg.username && active.type === 'password') {
+    const { user } = scanForLoginFields(document);
+    if (user) fillField(user, msg.username);
+  }
+
+  fillField(active, msg.secret);
+  return { ok: true };
+}
+
 function setupMessageListener(): void {
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (!isKnownMessage(message)) return false;
@@ -93,6 +125,11 @@ function setupMessageListener(): void {
       const { user, pass } = scanForLoginFields(document);
       const result: DetectResult = { ok: true, fieldsDetected: Boolean(user || pass) };
       sendResponse(result);
+      return false;
+    }
+
+    if (message.type === 'cryptiq-fill-focused') {
+      sendResponse(handleFillFocused(message));
       return false;
     }
 

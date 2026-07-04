@@ -212,6 +212,37 @@ describe('fill.content', () => {
     sendMessageSpy.mockRestore();
   });
 
+  it('cryptiq-fill-focused fills a focused input via fillField and resolves ok:true (UX-03)', async () => {
+    const { pass } = buildLoginForm();
+    pass.focus();
+
+    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret' });
+
+    expect(result).toEqual({ ok: true });
+    expect(pass.value).toBe('generated-secret');
+  });
+
+  it('cryptiq-fill-focused with a username best-effort fills the sibling user field (UX-03)', async () => {
+    const { user, pass } = buildLoginForm();
+    pass.focus();
+
+    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret', username: 'alice' });
+
+    expect(result).toEqual({ ok: true });
+    expect(user.value).toBe('alice');
+    expect(pass.value).toBe('generated-secret');
+  });
+
+  it('cryptiq-fill-focused resolves no-field-found when the active element is not an input (UX-03)', async () => {
+    document.body.innerHTML = '<div id="not-an-input"></div>';
+    (document.getElementById('not-an-input') as HTMLDivElement).tabIndex = -1;
+    (document.getElementById('not-an-input') as HTMLDivElement).focus();
+
+    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret' });
+
+    expect(result).toEqual({ ok: false, reason: 'no-field-found' });
+  });
+
   it('debounces the MutationObserver re-scan to exactly ONE call per mutation batch (FILL-02)', () => {
     vi.useFakeTimers();
 

@@ -64,6 +64,28 @@ export interface CaptureMessage {
 }
 
 /**
+ * Plan 18-02 (UX-03): the context-menu -> content-script focused-field fill
+ * message. Distinct from `FillRequest` (which carries the popup's captured
+ * `expectedOrigin` for an exact-origin TOCTOU refusal, XSEC-03) because a
+ * context-menu click is itself the fresh user gesture on the SAME page --
+ * there is no earlier "show picker" moment for the origin to have drifted
+ * since. `username` is optional/best-effort (only sent when a sibling
+ * username field was found by background.ts's own match-origin candidate).
+ * Exported standalone (mirrors `CaptureMessage`'s precedent) rather than
+ * folded into `ContentScriptMessageType`, which is specifically the
+ * ping/detect/fill request family.
+ */
+export interface FillFocusedMessage {
+  type: 'cryptiq-fill-focused';
+  secret: string;
+  username?: string;
+}
+
+/** Result of a `cryptiq-fill-focused` message. Fail-closed: mirrors
+ * `FillResult`'s typed-refusal discipline -- never a bare boolean. */
+export type FillFocusedResult = { ok: true } | { ok: false; reason: 'no-field-found' };
+
+/**
  * Metadata-only match shape, extended with the two optional HEALTH-02 health
  * flags (17-RESEARCH.md Open Question #1 — two separate booleans, resolved).
  * Deliberately mirrors `@cryptiq/core`'s `EntryMatchMetadata`
