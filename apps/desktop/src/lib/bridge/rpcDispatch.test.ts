@@ -767,7 +767,7 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       expect(result).toEqual({
         results: [
           {
-            id: vaultState.entries[0]?.id,
+            id: (vaultState.entries[0] as Entry).id,
             title: 'Example',
             username: (vaultState.entries[0] as Entry).username,
             currentTab: false,
