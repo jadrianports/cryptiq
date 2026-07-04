@@ -20,6 +20,12 @@
 //     { code: 'not-found' }. RESEARCH.md Open Question 2: fill-entry-ok stays
 //     `{ secret }` only — the extension already holds title/username from the
 //     prior match-origin response (wire-minimization).
+//   - method 'search-entries' (UX-01) -> { results: [{id,title,username,
+//     currentTab}] }, metadata-only (no password field on the type), current-
+//     tab matches pinned first, capped at 30 rows.
+//   - method 'copy-field' (UX-02)     -> copies the requested secret APP-SIDE
+//     via the same audited clipboard auto-clear guard EntryDetail.svelte uses;
+//     returns { ok: true } only, never the copied value.
 //   - any other method      -> { code: 'invalid-request' }.
 //
 // HARD CONSTRAINT (XSEC-05 / D-12 / T-16-03): this module MUST NOT import
@@ -42,6 +48,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Entry } from '@cryptiq/core';
 import {
   matchByOrigin,
+  registrableHost,
   runAudit,
   getVaultSettings,
   generateFromOptions,
@@ -49,6 +56,8 @@ import {
 } from '@cryptiq/core';
 import { vaultSession } from '../state/vault.svelte';
 import { scorePassword } from '../zxcvbnSetup';
+import { clipboardClear, armClipboardClear } from '../state/clipboardGuard.svelte';
+import { copyField } from '../util/copyField';
 
 /** The decrypted inner RPC request payload emitted by the Rust bridge. */
 interface RpcRequestPayload {
@@ -206,6 +215,71 @@ export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unkn
   if (method === 'score-password') {
     const password = typeof params.password === 'string' ? params.password : '';
     return { score: scorePassword(password) };
+  }
+
+  // search-entries (UX-01): full-vault metadata-only search, current-tab matches pinned first.
+  // Reuses matchByOrigin's registrableHost comparison rather than reimplementing eTLD+1
+  // matching (18-PATTERNS.md Pitfall 5). Rows are structurally { id, title, username,
+  // currentTab } — no password field exists on the type (BRIDGE-08 wire minimization).
+  if (method === 'search-entries') {
+    const query = typeof params.query === 'string' ? params.query.trim().toLowerCase() : '';
+    const currentOrigin = typeof params.currentOrigin === 'string' ? params.currentOrigin : '';
+    const { registrableDomain } = matchByOrigin(entries, currentOrigin);
+
+    const results = entries
+      .filter((e) => e.deletedAt === null)
+      .filter(
+        (e) =>
+          query === '' ||
+          e.title.toLowerCase().includes(query) ||
+          e.username.toLowerCase().includes(query) ||
+          e.url.toLowerCase().includes(query),
+      )
+      .map((e) => ({
+        id: e.id,
+        title: e.title,
+        username: e.username,
+        currentTab: registrableDomain !== null && registrableHost(e.url) === registrableDomain,
+      }))
+      // Stable sort (Array.prototype.sort is stable per spec): currentTab-first, original
+      // order preserved within each group.
+      .sort((a, b) => (a.currentTab === b.currentTab ? 0 : a.currentTab ? -1 : 1))
+      .slice(0, 30);
+
+    return { results };
+  }
+
+  // copy-field (UX-02): copies a secret entirely app-side so NOTHING secret crosses the
+  // bridge (D-01) — mirrors EntryDetail.svelte's handleCopy call sequence verbatim, reusing
+  // the SAME audited clipboard auto-clear guard (no parallel clipboard path).
+  if (method === 'copy-field') {
+    const entryId = typeof params.entryId === 'string' ? params.entryId : '';
+    const field = params.field;
+    const entry = entries.find((e) => e.id === entryId);
+    // V4 Access Control: mirrors fill-entry's tombstone guard — never surface a soft-deleted entry.
+    if (entry === undefined || entry.deletedAt !== null) {
+      return { code: 'not-found' };
+    }
+    if (field !== 'username' && field !== 'password') {
+      return { code: 'invalid-request' };
+    }
+
+    const value = field === 'password' ? entry.password : entry.username;
+
+    if (clipboardClear.active) {
+      try {
+        await invoke('clipboard_clear_if_ours');
+      } catch {
+        // Clear failure is non-fatal — the new write below replaces the clipboard anyway.
+      }
+    }
+
+    await copyField(value, field === 'password' ? 'password' : 'other');
+
+    const settings = getVaultSettings(vaultSession.vault!); // lock gate above guarantees unlocked
+    armClipboardClear(settings.clipboard?.clearSeconds ?? 25);
+
+    return { ok: true };
   }
 
   return { code: 'invalid-request' };

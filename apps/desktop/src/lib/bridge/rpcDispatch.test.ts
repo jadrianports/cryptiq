@@ -92,6 +92,22 @@ vi.mock('../zxcvbnSetup', () => ({
   scorePassword: scorePasswordSpy,
 }));
 
+// UX-02 copy-field: spy-able clipboard-guard state + copyField so we can assert the
+// verbatim EntryDetail.svelte handleCopy call sequence without a real clipboard/timer.
+const clipboardGuardState = vi.hoisted(() => ({ active: false }));
+const armClipboardClearSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('../state/clipboardGuard.svelte', () => ({
+  clipboardClear: clipboardGuardState,
+  armClipboardClear: armClipboardClearSpy,
+}));
+
+const copyFieldSpy = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock('../util/copyField', () => ({
+  copyField: copyFieldSpy,
+}));
+
 let capturedListenHandler: ((event: { payload: unknown }) => Promise<void>) | null = null;
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -141,6 +157,7 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
     vaultState.isUnlocked = true;
     vaultState.entries = [];
     capturedListenHandler = null;
+    clipboardGuardState.active = false;
   });
 
   afterEach(() => {
@@ -646,5 +663,224 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
     });
 
     expect(result).toEqual({ code: 'vault-locked' });
+  });
+
+  // -------------------------------------------------------------------------
+  // (i) search-entries (UX-01)
+  // -------------------------------------------------------------------------
+
+  describe('search-entries', () => {
+    it('vault-locked short-circuits search-entries', async () => {
+      vaultState.isUnlocked = false;
+
+      const result = await handleRpcRequest({
+        requestId: 'se1',
+        method: 'search-entries',
+        params: { query: 'example' },
+      });
+
+      expect(result).toEqual({ code: 'vault-locked' });
+    });
+
+    it('matches on title/username/url and returns metadata-only rows (no password field)', async () => {
+      const match = makeEntry({ title: 'Example Site', username: 'alice', url: 'https://example.com' });
+      const noMatch = makeEntry({ title: 'Other', username: 'bob', url: 'https://other.test' });
+      vaultState.entries = [match, noMatch];
+
+      const result = (await handleRpcRequest({
+        requestId: 'se2',
+        method: 'search-entries',
+        params: { query: 'example', currentOrigin: '' },
+      })) as { results: Array<Record<string, unknown>> };
+
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0]).toEqual({
+        id: match.id,
+        title: 'Example Site',
+        username: 'alice',
+        currentTab: false,
+      });
+      for (const row of result.results) {
+        expect('password' in row).toBe(false);
+        expect(Object.keys(row).sort()).toEqual(['currentTab', 'id', 'title', 'username']);
+      }
+    });
+
+    it('excludes soft-deleted (tombstoned) entries from results', async () => {
+      const deleted = makeEntry({
+        title: 'Deleted Example',
+        url: 'https://example.com',
+        deletedAt: '2026-02-01T00:00:00.000Z',
+      });
+      vaultState.entries = [deleted];
+
+      const result = (await handleRpcRequest({
+        requestId: 'se3',
+        method: 'search-entries',
+        params: { query: 'example' },
+      })) as { results: unknown[] };
+
+      expect(result.results).toEqual([]);
+    });
+
+    it('pins current-tab matches (registrableHost match) before non-matching rows, preserving order within each group', async () => {
+      const otherA = makeEntry({ title: 'Other A', url: 'https://other-a.test' });
+      const currentA = makeEntry({ title: 'Current A', url: 'https://example.com' });
+      const otherB = makeEntry({ title: 'Other B', url: 'https://other-b.test' });
+      const currentB = makeEntry({ title: 'Current B', url: 'https://sub.example.com' });
+      vaultState.entries = [otherA, currentA, otherB, currentB];
+
+      const result = (await handleRpcRequest({
+        requestId: 'se4',
+        method: 'search-entries',
+        params: { query: '', currentOrigin: 'https://example.com' },
+      })) as { results: Array<{ id: string; currentTab: boolean }> };
+
+      expect(result.results.map((r) => r.id)).toEqual([currentA.id, currentB.id, otherA.id, otherB.id]);
+      expect(result.results[0]?.currentTab).toBe(true);
+      expect(result.results[1]?.currentTab).toBe(true);
+      expect(result.results[2]?.currentTab).toBe(false);
+      expect(result.results[3]?.currentTab).toBe(false);
+    });
+
+    it('empty query returns entries (capped at 30) rather than throwing', async () => {
+      vaultState.entries = Array.from({ length: 40 }, (_, i) => makeEntry({ title: `Entry ${String(i)}` }));
+
+      const result = (await handleRpcRequest({
+        requestId: 'se5',
+        method: 'search-entries',
+        params: {},
+      })) as { results: unknown[] };
+
+      expect(result.results).toHaveLength(30);
+    });
+
+    it('coerces non-string query/currentOrigin params safely without throwing', async () => {
+      vaultState.entries = [makeEntry({ title: 'Example', url: 'https://example.com' })];
+
+      const result = await handleRpcRequest({
+        requestId: 'se6',
+        method: 'search-entries',
+        params: { query: 123, currentOrigin: {} },
+      });
+
+      expect(result).toEqual({
+        results: [
+          {
+            id: vaultState.entries[0]?.id,
+            title: 'Example',
+            username: (vaultState.entries[0] as Entry).username,
+            currentTab: false,
+          },
+        ],
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // (j) copy-field (UX-02)
+  // -------------------------------------------------------------------------
+
+  describe('copy-field', () => {
+    it('vault-locked short-circuits copy-field', async () => {
+      vaultState.isUnlocked = false;
+
+      const result = await handleRpcRequest({
+        requestId: 'cf1',
+        method: 'copy-field',
+        params: { entryId: 'e1', field: 'password' },
+      });
+
+      expect(result).toEqual({ code: 'vault-locked' });
+      expect(copyFieldSpy).not.toHaveBeenCalled();
+    });
+
+    it('unknown entryId returns { code: "not-found" }, never a value', async () => {
+      vaultState.entries = [makeEntry()];
+
+      const result = await handleRpcRequest({
+        requestId: 'cf2',
+        method: 'copy-field',
+        params: { entryId: 'does-not-exist', field: 'password' },
+      });
+
+      expect(result).toEqual({ code: 'not-found' });
+      expect(copyFieldSpy).not.toHaveBeenCalled();
+    });
+
+    it('soft-deleted entryId returns { code: "not-found" }, never a value', async () => {
+      const deleted = makeEntry({ deletedAt: '2026-02-01T00:00:00.000Z' });
+      vaultState.entries = [deleted];
+
+      const result = await handleRpcRequest({
+        requestId: 'cf3',
+        method: 'copy-field',
+        params: { entryId: deleted.id, field: 'password' },
+      });
+
+      expect(result).toEqual({ code: 'not-found' });
+      expect(copyFieldSpy).not.toHaveBeenCalled();
+    });
+
+    it('a field other than username/password returns { code: "invalid-request" }', async () => {
+      const entry = makeEntry();
+      vaultState.entries = [entry];
+
+      const result = await handleRpcRequest({
+        requestId: 'cf4',
+        method: 'copy-field',
+        params: { entryId: entry.id, field: 'url' },
+      });
+
+      expect(result).toEqual({ code: 'invalid-request' });
+      expect(copyFieldSpy).not.toHaveBeenCalled();
+    });
+
+    it('valid password copy calls copyField(password, "password") then armClipboardClear(clearSeconds), returns { ok: true } only', async () => {
+      const entry = makeEntry({ password: 'super-secret-value' });
+      vaultState.entries = [entry];
+
+      const result = await handleRpcRequest({
+        requestId: 'cf5',
+        method: 'copy-field',
+        params: { entryId: entry.id, field: 'password' },
+      });
+
+      expect(result).toEqual({ ok: true });
+      expect(copyFieldSpy).toHaveBeenCalledWith('super-secret-value', 'password');
+      expect(armClipboardClearSpy).toHaveBeenCalledWith(25);
+    });
+
+    it('valid username copy calls copyField(username, "other")', async () => {
+      const entry = makeEntry({ username: 'alice' });
+      vaultState.entries = [entry];
+
+      const result = await handleRpcRequest({
+        requestId: 'cf6',
+        method: 'copy-field',
+        params: { entryId: entry.id, field: 'username' },
+      });
+
+      expect(result).toEqual({ ok: true });
+      expect(copyFieldSpy).toHaveBeenCalledWith('alice', 'other');
+      expect(armClipboardClearSpy).toHaveBeenCalledWith(25);
+    });
+
+    it('when a prior clear is active, clipboard_clear_if_ours is invoked first (non-fatal on throw)', async () => {
+      const entry = makeEntry({ password: 'super-secret-value' });
+      vaultState.entries = [entry];
+      clipboardGuardState.active = true;
+      vi.mocked(invoke).mockRejectedValueOnce(new Error('boom'));
+
+      const result = await handleRpcRequest({
+        requestId: 'cf7',
+        method: 'copy-field',
+        params: { entryId: entry.id, field: 'password' },
+      });
+
+      expect(invoke).toHaveBeenCalledWith('clipboard_clear_if_ours');
+      expect(result).toEqual({ ok: true });
+      expect(copyFieldSpy).toHaveBeenCalledWith('super-secret-value', 'password');
+    });
   });
 });
