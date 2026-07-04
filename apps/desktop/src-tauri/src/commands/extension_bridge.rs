@@ -1146,7 +1146,9 @@ async fn handle_rpc_message(app: &tauri::AppHandle, envelope: &BridgeEnvelope) -
                 | Some("fill-entry")
                 | Some("save-or-update-entry")
                 | Some("generate-password")
-                | Some("score-password") => {
+                | Some("score-password")
+                | Some("search-entries")
+                | Some("copy-field") => {
                     dispatch_rpc_method(app, method.unwrap(), params).await
                 }
                 _ => Err(BridgeError::RpcInvalidRequest),
@@ -2055,6 +2057,51 @@ mod tests {
         .expect("dispatch must succeed");
 
         assert_eq!(result.get("score").unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_search_entries_routes_through_dispatch_rpc_method() {
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-search-1".to_string(),
+            Duration::from_secs(5),
+            "search-entries",
+            serde_json::json!({ "query": "example" }),
+            |request_id, _method, params| {
+                assert_eq!(params.get("query").unwrap(), "example");
+                let _ = resolve_pending_rpc(&pending_map, request_id, Ok(serde_json::json!({ "results": [] })));
+            },
+        )
+        .await
+        .expect("dispatch must succeed");
+
+        assert!(result.get("results").unwrap().is_array());
+    }
+
+    #[tokio::test]
+    async fn test_copy_field_routes_through_dispatch_rpc_method() {
+        let pending_map: Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, BridgeError>>>> =
+            Mutex::new(HashMap::new());
+
+        let result = dispatch_rpc_core(
+            &pending_map,
+            "req-copy-1".to_string(),
+            Duration::from_secs(5),
+            "copy-field",
+            serde_json::json!({ "entryId": "e1", "field": "password" }),
+            |request_id, _method, params| {
+                assert_eq!(params.get("entryId").unwrap(), "e1");
+                assert_eq!(params.get("field").unwrap(), "password");
+                let _ = resolve_pending_rpc(&pending_map, request_id, Ok(serde_json::json!({ "ok": true })));
+            },
+        )
+        .await
+        .expect("dispatch must succeed");
+
+        assert_eq!(result.get("ok").unwrap(), true);
     }
 
     #[tokio::test]
