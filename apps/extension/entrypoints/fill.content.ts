@@ -103,7 +103,17 @@ function handleFillFocused(msg: FillFocusedMessage): FillFocusedResult {
     return { ok: false, reason: 'no-field-found' };
   }
 
-  if (msg.username && active.type === 'password') {
+  // CR-01 (secret-leak guard): the context menu is registered on ALL `editable`
+  // fields, so `active` may be a plain text / username / search input. The
+  // secret (a fetched or freshly generated password) must NEVER be written into
+  // a non-password field — that would expose it on screen and submit it to the
+  // site as that field's value. Fail closed; the popup remains the surface for
+  // anything the focused-field write cannot safely satisfy.
+  if (active.type !== 'password') {
+    return { ok: false, reason: 'no-field-found' };
+  }
+
+  if (msg.username) {
     const { user } = scanForLoginFields(document);
     if (user) fillField(user, msg.username);
   }

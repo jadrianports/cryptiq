@@ -243,6 +243,21 @@ describe('fill.content', () => {
     expect(result).toEqual({ ok: false, reason: 'no-field-found' });
   });
 
+  it('cryptiq-fill-focused REFUSES to write the secret into a non-password focused field (CR-01 leak guard)', async () => {
+    // The context menu is registered on ALL `editable` fields, so a right-click may
+    // land on a plain text / username / search input. Writing the password there would
+    // expose it on screen and submit it to the site as that field's value — fail closed.
+    const { user, pass } = buildLoginForm();
+    user.focus();
+
+    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'super-secret-pw', username: 'alice' });
+
+    expect(result).toEqual({ ok: false, reason: 'no-field-found' });
+    // The secret must never land in a visible non-password field, and nothing else is written.
+    expect(user.value).toBe('');
+    expect(pass.value).toBe('');
+  });
+
   it('debounces the MutationObserver re-scan to exactly ONE call per mutation batch (FILL-02)', () => {
     vi.useFakeTimers();
 
