@@ -933,6 +933,219 @@ describe('getVaultSettings — P5-12 default-fill (P5-12 / VALIDATION seam 6)', 
 });
 
 // ---------------------------------------------------------------------------
+// Phase 21: schemaVersion 2->3 migration — additive-only, idempotent, no-split
+// (SCHEMA-01/02/03, IDENT-03)
+// ---------------------------------------------------------------------------
+
+describe('Phase 21: schemaVersion 2->3 migration (SCHEMA-01/02, IDENT-03)', () => {
+  /** Build a v3.0-vintage UnlockedVault (schemaVersion: 2) with a plain-object InnerDoc. */
+  function makeV2Vault(entries: Array<Record<string, unknown>>): UnlockedVault {
+    const inner = {
+      schemaVersion: 2,
+      entries,
+      settings: { generator: DEFAULT_RANDOM_OPTIONS },
+    };
+    return {
+      doc: {
+        format: 'cryptiq-vault',
+        version: 1,
+        wrappedKeys: {
+          master: {
+            ciphertext: '',
+            nonce: '',
+            kdf: { algorithm: 2, opsLimit: 3, memLimit: 268_435_456, salt: '' },
+          },
+        },
+        data: { ciphertext: '', nonce: '' },
+        meta: { createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString() },
+      },
+      entries: inner as unknown as object,
+    };
+  }
+
+  /** A schemaVersion-2 entry with only pre-Phase-21 fields — new fields are ABSENT (key omitted). */
+  function v2Entry(overrides?: Record<string, unknown>): Record<string, unknown> {
+    return {
+      id: 'v2-entry-' + Math.random().toString(36).slice(2),
+      type: 'login',
+      title: 'Legacy Entry',
+      username: 'legacyuser',
+      password: 'legacy-pass',
+      url: 'https://legacy.example.com',
+      notes: 'legacy notes',
+      tags: ['legacy'],
+      favorite: false,
+      needsSiteUpdate: false,
+      generatorPreset: null,
+      passwordHistory: [],
+      lostVersions: [],
+      createdAt: new Date(1_000_000).toISOString(),
+      modifiedAt: new Date(1_000_000).toISOString(),
+      deletedAt: null,
+      ...overrides,
+      // NOTE: email/equivalentUrls/card/identity keys are deliberately absent —
+      // NOT set to `undefined` — to model a real pre-Phase-21 entry (SCHEMA-01).
+    };
+  }
+
+  // -- Fixture 1: v3.0-vintage vault opens unchanged, bumps to 3 (SCHEMA-01) --
+
+  it('Fixture 1 (v3.0-vintage vault): opens unchanged, bumps schemaVersion 2->3, new fields stay absent', () => {
+    const legacy1 = v2Entry({ title: 'Legacy One' });
+    const legacy2 = v2Entry({ title: 'Legacy Two', username: 'seconduser' });
+    const vault = makeV2Vault([legacy1, legacy2]);
+
+    // Capture pre-migration content by value (not by reference — these are plain
+    // object literals we built above, safe to compare directly since we never
+    // mutate `legacy1`/`legacy2` ourselves).
+    const before1 = structuredClone(legacy1);
+    const before2 = structuredClone(legacy2);
+
+    // Any CRUD call triggers asInnerDoc()'s 2->3 bump.
+    const entries = listEntries(vault);
+
+    expect((vault.entries as unknown as InnerDoc).schemaVersion).toBe(3);
+    expect(entries.length).toBe(2);
+
+    for (const [entry, before] of [
+      [entries[0]!, before1],
+      [entries[1]!, before2],
+    ] as const) {
+      // Every pre-existing field is byte-identical to its pre-migration value.
+      expect(entry['title' as keyof Entry]).toBe(before['title']);
+      expect(entry['username' as keyof Entry]).toBe(before['username']);
+      expect(entry['password' as keyof Entry]).toBe(before['password']);
+      expect(entry['url' as keyof Entry]).toBe(before['url']);
+      expect(entry['notes' as keyof Entry]).toBe(before['notes']);
+      expect(entry.tags).toEqual(before['tags']);
+      // New optional fields remain undefined (additive-only — SCHEMA-01).
+      expect(entry.email).toBeUndefined();
+      expect(entry.equivalentUrls).toBeUndefined();
+      expect(entry.card).toBeUndefined();
+      expect(entry.identity).toBeUndefined();
+    }
+  });
+
+  // -- Fixture 2: idempotency across multiple entries, varying optional-field presence (SCHEMA-02) --
+
+  it('Fixture 2 (idempotency): running the migration twice is byte-identical via detached snapshots', () => {
+    const withLostVersions = v2Entry({
+      title: 'Has lostVersions',
+      lostVersions: [
+        {
+          id: 'snap-1',
+          type: 'login',
+          title: 'Old',
+          username: 'u',
+          password: 'p',
+          url: '',
+          notes: '',
+          tags: [],
+          favorite: false,
+          needsSiteUpdate: false,
+          generatorPreset: null,
+          passwordHistory: [],
+          createdAt: new Date(1_000_000).toISOString(),
+          modifiedAt: new Date(1_000_000).toISOString(),
+          deletedAt: null,
+          lostAt: new Date(1_000_000).toISOString(),
+        },
+      ],
+    });
+    const withoutLostVersions = v2Entry({ title: 'No lostVersions' });
+    delete withoutLostVersions['lostVersions'];
+
+    const vault = makeV2Vault([withLostVersions, withoutLostVersions]);
+
+    // 1st call — triggers asInnerDoc()'s 2->3 bump.
+    listEntries(vault);
+    const afterFirst = structuredClone(vault.entries);
+
+    // 2nd call — must be a true no-op (Pitfall 1: detached snapshots, not live references).
+    listEntries(vault);
+    const afterSecond = structuredClone(vault.entries);
+
+    expect(afterSecond).toEqual(afterFirst);
+    expect((afterFirst as unknown as InnerDoc).schemaVersion).toBe(3);
+    expect((afterSecond as unknown as InnerDoc).schemaVersion).toBe(3);
+  });
+
+  // -- Fixture 3: email-shaped-username corpus proves no auto-split (IDENT-03) --
+
+  it('Fixture 3 (email-shaped usernames): migration never splits username into email', () => {
+    const aliceEntry = v2Entry({ title: 'Alice', username: 'alice@example.com' });
+    const bobEntry = v2Entry({ title: 'Bob', username: 'BOB@EXAMPLE.COM' });
+    const atLocalEntry = v2Entry({ title: 'At-but-not-email', username: 'user@local' });
+
+    const vault = makeV2Vault([aliceEntry, bobEntry, atLocalEntry]);
+    const before = {
+      alice: aliceEntry['username'],
+      bob: bobEntry['username'],
+      atLocal: atLocalEntry['username'],
+    };
+
+    const entries = listEntries(vault);
+
+    expect(entries[0]!.username).toBe(before.alice);
+    expect(entries[0]!.email).toBeUndefined();
+    expect(entries[1]!.username).toBe(before.bob);
+    expect(entries[1]!.email).toBeUndefined();
+    expect(entries[2]!.username).toBe(before.atLocal);
+    expect(entries[2]!.email).toBeUndefined();
+  });
+
+  // -- Type-shape assertion: every new field referenced by name (Pitfall 4) --
+
+  it('satisfies Entry: a literal using every new field by name (email/equivalentUrls/card/identity) and a non-login type', () => {
+    const _cardEntry: Entry = {
+      id: 'card-entry-id',
+      type: 'card',
+      title: 'My Visa',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      email: 'cardholder@example.com',
+      equivalentUrls: ['https://alt.example.com', 'https://alt2.example.com'],
+      card: {
+        cardholderName: 'Jane Doe',
+        number: '4111111111111111',
+        expiryMonth: '03',
+        expiryYear: '2027',
+        cvv: '123',
+        brand: 'Visa',
+        nickname: 'Primary card',
+      },
+      identity: {
+        name: 'Jane Doe',
+        email: 'jane@example.com',
+        phone: '+1-555-0100',
+        address: '123 Main St\nAnytown, ST 00000',
+      },
+      favorite: false,
+      needsSiteUpdate: false,
+      generatorPreset: null,
+      passwordHistory: [],
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
+      deletedAt: null,
+    } satisfies Entry;
+
+    expect(_cardEntry.type).toBe('card');
+    expect(_cardEntry.email).toBe('cardholder@example.com');
+    expect(_cardEntry.equivalentUrls).toHaveLength(2);
+    expect(_cardEntry.card!.number).toBe('4111111111111111');
+    expect(typeof _cardEntry.card!.number).toBe('string');
+    expect(typeof _cardEntry.card!.cvv).toBe('string');
+    expect(typeof _cardEntry.card!.expiryMonth).toBe('string');
+    expect(typeof _cardEntry.card!.expiryYear).toBe('string');
+    expect(_cardEntry.identity!.name).toBe('Jane Doe');
+    expect(_cardEntry.identity!.email).toBe('jane@example.com');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Pitfall-3: Phase-2 dev vault (no schemaVersion) is upgraded in place
 // ---------------------------------------------------------------------------
 
