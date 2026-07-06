@@ -455,6 +455,20 @@
 
     fillState = { kind: 'pending', entryId };
 
+    // CR-01: inject the content script on demand before dispatching the fill.
+    // `refreshStatus` only injects in the `connected-matches` branch (for the
+    // current-tab picker); a search-result Fill fired from the
+    // `connected-no-matches` state — the motivating full-vault-search case —
+    // would otherwise deliver `cryptiq-fill` to a tab with no listener and fail
+    // silently. Mirrors the context-menu path (`handleContextFill` injects
+    // first). Idempotent (ping-then-inject), fails closed on a non-injectable
+    // page (e.g. chrome://).
+    const injected = await ensureContentScript(tabId);
+    if (!injected) {
+      fillState = { kind: 'error', message: 'Could not fill this page.' };
+      return;
+    }
+
     const outcome = await sendRpcViaBackground({ method: 'fill-entry', params: { entryId } });
     const secret =
       outcome.ok && typeof outcome.payload === 'object' && outcome.payload !== null
