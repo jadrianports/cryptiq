@@ -112,3 +112,112 @@ describe('CryptiqConfig listenerEnabled field (D-03)', () => {
     });
   });
 });
+
+// UX-05 / D-04 regression-lock for the extensionBridgeEnabled field (Phase 20-01).
+// The device-local browser-extension kill-switch. The 20-01 fix extended parseConfig to
+// round-trip this flag (the plan's tolerant-passthrough premise was wrong — parseConfig
+// reconstructs the object explicitly and silently DROPPED the flag on load). Without the
+// round-trip, a persisted OFF (false) would parse back as true (?? true), desyncing the
+// Settings toggle from the reality the Rust boot-gate enforces. These tests fail if that
+// round-trip regresses.
+describe('CryptiqConfig extensionBridgeEnabled field (UX-05 / D-04)', () => {
+  describe('DEFAULT_CONFIG', () => {
+    it('DEFAULT_CONFIG.extensionBridgeEnabled is true', () => {
+      expect(DEFAULT_CONFIG.extensionBridgeEnabled).toBe(true);
+    });
+  });
+
+  describe('parseConfig — extensionBridgeEnabled absence defaults to true', () => {
+    it('parses a config with no extensionBridgeEnabled key as true (upgrade safety)', () => {
+      // Simulates a pre-Phase-20 config.json written before the field existed.
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({ vaultPath: null, schemaVersion: 1 }, null, 2) + '\n',
+      );
+      const parsed = parseConfig(bytes);
+      expect(parsed.extensionBridgeEnabled).toBe(true);
+    });
+
+    it('parses a config with extensionBridgeEnabled: false as false', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, extensionBridgeEnabled: false },
+          null,
+          2,
+        ) + '\n',
+      );
+      const parsed = parseConfig(bytes);
+      expect(parsed.extensionBridgeEnabled).toBe(false);
+    });
+  });
+
+  describe('parseConfig — extensionBridgeEnabled type validation', () => {
+    it('throws ConfigCorruptError when extensionBridgeEnabled is a string', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, extensionBridgeEnabled: 'off' },
+          null,
+          2,
+        ) + '\n',
+      );
+      expect(() => parseConfig(bytes)).toThrowError(ConfigCorruptError);
+    });
+
+    it('ConfigCorruptError message mentions extensionBridgeEnabled', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({ vaultPath: null, schemaVersion: 1, extensionBridgeEnabled: 1 }, null, 2) +
+          '\n',
+      );
+      expect(() => parseConfig(bytes)).toThrowError(/extensionBridgeEnabled/);
+    });
+
+    it('throws ConfigCorruptError when extensionBridgeEnabled is null', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, extensionBridgeEnabled: null },
+          null,
+          2,
+        ) + '\n',
+      );
+      expect(() => parseConfig(bytes)).toThrowError(ConfigCorruptError);
+    });
+  });
+
+  describe('serializeConfig + parseConfig round-trip (the 20-01 regression)', () => {
+    it('round-trips extensionBridgeEnabled: false — persisted OFF survives a load', () => {
+      // THE regression the 20-01 fix locks: before the parseConfig round-trip, a persisted
+      // false parsed back as true (?? true), so the reloaded Settings toggle showed ON while
+      // the Rust boot-gate kept the bridge OFF — a UI-vs-reality desync (D-04).
+      const original = {
+        vaultPath: null,
+        schemaVersion: 1 as const,
+        extensionBridgeEnabled: false,
+      };
+      const result = parseConfig(serializeConfig(original));
+      expect(result.extensionBridgeEnabled).toBe(false);
+    });
+
+    it('round-trips extensionBridgeEnabled: true — ON persists', () => {
+      const original = {
+        vaultPath: '/some/path',
+        schemaVersion: 1 as const,
+        extensionBridgeEnabled: true,
+      };
+      const result = parseConfig(serializeConfig(original));
+      expect(result.extensionBridgeEnabled).toBe(true);
+      expect(result.vaultPath).toBe('/some/path');
+    });
+
+    it('round-trip preserves extensionBridgeEnabled and listenerEnabled independently', () => {
+      // Guards against the two device-local flags being conflated during parse.
+      const original = {
+        vaultPath: null,
+        schemaVersion: 1 as const,
+        listenerEnabled: true,
+        extensionBridgeEnabled: false,
+      };
+      const result = parseConfig(serializeConfig(original));
+      expect(result.listenerEnabled).toBe(true);
+      expect(result.extensionBridgeEnabled).toBe(false);
+    });
+  });
+});
