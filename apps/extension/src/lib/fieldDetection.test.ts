@@ -84,6 +84,53 @@ describe('fieldDetection — scanForLoginFields (FILL-01/02/07, D-02/D-03)', () 
     expect(result.user?.id).toBe('u');
   });
 
+  it('FILL-08: tokenizes a multi-token autocomplete — reddit-shaped `autocomplete="username webauthn"` + `current-password` resolves BOTH fields', () => {
+    // Reddit appends `webauthn` to the username autocomplete for passkey
+    // conditional UI, producing the space-separated token list
+    // `autocomplete="username webauthn"`. An exact whole-string match against
+    // the single-token set misses it; WHATWG tokenization catches the
+    // `username` token. The password field is single-token and always matched.
+    const container = makeFormFixture(`
+      <form>
+        <input type="text" name="username" autocomplete="username webauthn" id="u" />
+        <input type="password" autocomplete="current-password" id="p" />
+      </form>
+    `);
+
+    const result = scanForLoginFields(container);
+
+    expect(result.user?.id).toBe('u');
+    expect(result.pass?.id).toBe('p');
+  });
+
+  it('FILL-08: tokenizes a multi-token `autocomplete="new-password webauthn"` password field', () => {
+    const container = makeFormFixture(`
+      <form>
+        <input type="text" name="username" autocomplete="username webauthn" id="u" />
+        <input type="password" autocomplete="new-password webauthn" id="p" />
+      </form>
+    `);
+
+    const result = scanForLoginFields(container);
+
+    expect(result.user?.id).toBe('u');
+    expect(result.pass?.id).toBe('p');
+  });
+
+  it('FILL-08: tokenizes a section-prefixed token list (`section-login username`)', () => {
+    const container = makeFormFixture(`
+      <form>
+        <input type="text" autocomplete="section-login username" id="u" />
+        <input type="password" autocomplete="section-login current-password" id="p" />
+      </form>
+    `);
+
+    const result = scanForLoginFields(container);
+
+    expect(result.user?.id).toBe('u');
+    expect(result.pass?.id).toBe('p');
+  });
+
   it('detects input[type=password] with NO autocomplete and pairs the nearest preceding strong-pattern username field', () => {
     const container = makeFormFixture(`
       <form>

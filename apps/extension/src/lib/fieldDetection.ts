@@ -58,8 +58,19 @@ function fieldType(el: HTMLInputElement): string {
   return (el.getAttribute('type') || 'text').toLowerCase();
 }
 
-function autocompleteToken(el: HTMLInputElement): string {
-  return (el.getAttribute('autocomplete') || '').toLowerCase();
+/**
+ * WHATWG-correct tokenization of the `autocomplete` attribute: it is a
+ * space-separated token list, so the field-name token (username / email /
+ * current-password / new-password) can be preceded by section/shipping/
+ * billing prefixes and followed by `webauthn` (e.g. reddit emits
+ * `autocomplete="username webauthn"` for passkey conditional UI). Membership
+ * checks MUST test individual tokens, never the whole attribute string.
+ */
+function autocompleteTokens(el: HTMLInputElement): string[] {
+  return (el.getAttribute('autocomplete') || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
 /**
@@ -107,8 +118,7 @@ function getLabelText(el: HTMLInputElement): string {
 function scoreUsernameCandidate(el: HTMLInputElement): number {
   let score = 0;
 
-  const token = autocompleteToken(el);
-  if (USERNAME_AUTOCOMPLETE_TOKENS.has(token)) score += 3;
+  if (autocompleteTokens(el).some((t) => USERNAME_AUTOCOMPLETE_TOKENS.has(t))) score += 3;
 
   const nameIdPlaceholderLabel = [
     el.getAttribute('name') ?? '',
@@ -132,10 +142,10 @@ function findByAutocomplete(inputs: HTMLInputElement[]): FieldDetectionResult {
   let pass: HTMLInputElement | undefined;
 
   for (const el of inputs) {
-    const token = autocompleteToken(el);
-    if (!token) continue;
-    if (!pass && PASSWORD_AUTOCOMPLETE_TOKENS.has(token)) pass = el;
-    if (!user && USERNAME_AUTOCOMPLETE_TOKENS.has(token)) user = el;
+    const tokens = autocompleteTokens(el);
+    if (tokens.length === 0) continue;
+    if (!pass && tokens.some((t) => PASSWORD_AUTOCOMPLETE_TOKENS.has(t))) pass = el;
+    if (!user && tokens.some((t) => USERNAME_AUTOCOMPLETE_TOKENS.has(t))) user = el;
   }
 
   return { user, pass };
@@ -182,8 +192,7 @@ function findUsernameOnlyCandidate(inputs: HTMLInputElement[]): FieldDetectionRe
   for (const el of inputs) {
     if (!TEXT_LIKE_USERNAME_TYPES.has(fieldType(el))) continue;
 
-    const token = autocompleteToken(el);
-    const hasAutocompleteSignal = USERNAME_AUTOCOMPLETE_TOKENS.has(token);
+    const hasAutocompleteSignal = autocompleteTokens(el).some((t) => USERNAME_AUTOCOMPLETE_TOKENS.has(t));
 
     const nameOrId = `${el.getAttribute('name') ?? ''} ${el.getAttribute('id') ?? ''}`;
     const hasExactKeyword = STRONG_USERNAME_PATTERN.test(nameOrId);
