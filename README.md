@@ -34,6 +34,10 @@ scripts/lint/      # Custom Node lint scripts (workflow SHA pins, capability glo
 
 `packages/core` may not import Svelte, Tauri, or Node `fs`. It receives bytes and returns bytes. Storage is supplied via the `VaultStorageAdapter` interface.
 
+## Browser extension
+
+Cryptiq has a Chromium (Chrome/Edge) autofill extension — a thin client that fills one secret at a time from the running, unlocked desktop app (no keys or crypto in the browser). Install it in $0 developer mode: see [`apps/extension/README.md`](./apps/extension/README.md) for the build-from-source guide, permission justification table, and threat-model caveats.
+
 ## License
 
 TBD — public/open-source decision is deferred to v1.5 when the auto-updater needs signed releases.
