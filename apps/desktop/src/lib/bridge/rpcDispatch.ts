@@ -252,6 +252,21 @@ export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unkn
   // copy-field (UX-02): copies a secret entirely app-side so NOTHING secret crosses the
   // bridge (D-01) — mirrors EntryDetail.svelte's handleCopy call sequence verbatim, reusing
   // the SAME audited clipboard auto-clear guard (no parallel clipboard path).
+  //
+  // WR-04 TRUST-MODEL (explicit, accepted decision): unlike `match-origin`
+  // (current-origin metadata only), `copy-field` places the plaintext
+  // password/username of ANY entryId onto the OS clipboard, and — like every
+  // other bridge method — it carries no per-invocation app-side user gate:
+  // any *associated* extension can invoke it whenever the vault is unlocked.
+  // The popup UX requires a user click, but the bridge method itself does not.
+  // This is deliberately within Cryptiq's "an associated extension is trusted"
+  // model (association is a one-time, user-approved handshake), and is NOT
+  // gated on app foreground: the copy is triggered from the browser popup, so
+  // the browser — not the Tauri app — is the foreground window at call time, and
+  // a foreground check would break the legitimate flow. The clipboard is still
+  // auto-cleared below (armClipboardClear). Callers must treat association as a
+  // full-vault-read grant, of which clipboard exfiltration of arbitrary entries
+  // is one consequence.
   if (method === 'copy-field') {
     const entryId = typeof params.entryId === 'string' ? params.entryId : '';
     const field = params.field;
