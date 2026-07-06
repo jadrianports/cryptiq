@@ -23,6 +23,7 @@
           15-CONTEXT.md D-03/D-04.
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { extensionPeerStore } from './ExtensionPeerStore.svelte';
   import {
     openExtensionRevokeConfirm,
@@ -31,6 +32,11 @@
     type ExtensionRevokeConfirmState,
   } from './extensionUnpairConfirm';
   import { formatPairedAt, formatLastUsedAt } from './bridgeFormat';
+  import { loadConfig, saveConfig } from '../config/config-adapter';
+  import {
+    startExtensionBridgeListener,
+    stopExtensionBridgeListener,
+  } from './bridgeCommands';
 
   // ---------------------------------------------------------------------------
   // Props
@@ -41,6 +47,38 @@
     configDir: string;
   };
   let { configDir }: Props = $props();
+
+  // ---------------------------------------------------------------------------
+  // UX-05 Kill-switch: "Allow browser extension connections"
+  //
+  // Initialized from loadConfig().extensionBridgeEnabled (default true when
+  // absent). Persisted to device-local config.json via saveConfig — NEVER to
+  // InnerDoc.settings or vaultSession (D-04). Associations persist while OFF
+  // (D-02). NOT gated on vaultSession.isUnlocked — this is a device config
+  // preference, mirroring SyncSettingsSection's listener toggle (D-03).
+  // ---------------------------------------------------------------------------
+  let bridgeEnabled = $state(true);
+
+  onMount(async () => {
+    const cfg = await loadConfig();
+    bridgeEnabled = cfg.extensionBridgeEnabled ?? true;
+  });
+
+  async function handleBridgeToggle(): Promise<void> {
+    const next = !bridgeEnabled;
+    bridgeEnabled = next;
+    // Load the full current config first so vaultPath/schemaVersion/listenerEnabled
+    // are preserved (never a bare {extensionBridgeEnabled} object — T-20-10).
+    const currentConfig = await loadConfig();
+    await saveConfig({ ...currentConfig, extensionBridgeEnabled: next });
+    // Drive the real Rust listener lifecycle — the toggle must not lie about the
+    // pipe state (T-20-09). OFF actually stops accepting connections (D-01).
+    if (next) {
+      await startExtensionBridgeListener();
+    } else {
+      await stopExtensionBridgeListener();
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Revoke confirm state — single $state for the whole list.
@@ -94,6 +132,43 @@
     revokeState = closeExtensionRevokeConfirm(revokeState);
   }
 </script>
+
+<!-- UX-05 Kill-switch toggle (D-03) — top of the Browser Extensions section, above
+     the associations list. Persists extensionBridgeEnabled to device-local config.json
+     (never InnerDoc.settings — D-04) and drives the Rust start/stop listener commands
+     (20-01). Associations persist while OFF (D-02). NOT gated on vault-unlock. -->
+<div class="flex items-center justify-between gap-4 px-4 py-3.5">
+  <div class="min-w-0">
+    <p class="text-body font-medium text-cryptiq-fg">Allow browser extension connections</p>
+    <p class="mt-0.5 text-meta text-cryptiq-fg-subtle">
+      Let the Cryptiq browser extension talk to this app on this device.
+    </p>
+  </div>
+  <!-- Toggle switch — LOCKED design system, identical shape to SyncSettingsSection's
+       "Receive syncs on this device" toggle (cryptiq-* tokens only, h-5 w-9, size-4). -->
+  <button
+    type="button"
+    role="switch"
+    aria-checked={bridgeEnabled}
+    aria-label="Allow browser extension connections"
+    onclick={handleBridgeToggle}
+    class="relative h-5 w-9 shrink-0 rounded-full transition-colors
+           {bridgeEnabled ? 'bg-cryptiq-accent' : 'bg-cryptiq-border-strong'}"
+  >
+    <span
+      class="absolute top-0.5 left-0.5 size-4 rounded-full bg-white shadow-cryptiq-panel transition-transform
+             {bridgeEnabled ? 'translate-x-4' : ''}"
+    ></span>
+  </button>
+</div>
+
+{#if !bridgeEnabled}
+  <p class="px-4 pb-3.5 text-meta text-cryptiq-fg-subtle">
+    Connections are off — associations are kept
+  </p>
+{/if}
+
+<div class="mx-4 border-t border-cryptiq-border" aria-hidden="true"></div>
 
 {#if extensionPeerStore.associations.length === 0}
   <!-- Empty state — no browser extensions paired yet -->
