@@ -3,10 +3,17 @@
 ; DIST-02: NSIS installer hooks that reuse the EXACT SAME register/unregister
 ; .ps1 scripts from scripts/native-host/ — no NSIS-native WriteRegStr
 ; reimplementation (single source of truth, T-14-17). Both scripts are
-; bundled into $INSTDIR\resources via tauri.conf.json's bundle.resources MAP
-; entry (array form would fold the "../../../" segments to "_up_" and stage
-; under $INSTDIR\resources\_up_\_up_\_up_\scripts\native-host\..., which the
-; ExecWait calls below would silently miss — the map form pins stable names).
+; bundled to $INSTDIR\<name>.ps1 (install-dir root, alongside cryptiq.exe)
+; via tauri.conf.json's bundle.resources MAP entry — the map VALUE is the
+; destination path relative to $INSTDIR, so value "register-native-host.ps1"
+; lands at $INSTDIR\register-native-host.ps1 (NOT a $INSTDIR\resources\
+; subfolder — Tauri's NSIS bundler does not add a "resources" prefix for the
+; map form). Array form would instead fold the "../../../" segments to "_up_"
+; and stage under $INSTDIR\_up_\_up_\_up_\scripts\native-host\..., which the
+; ExecWait calls below would silently miss — the map form pins stable names.
+; VERIFIED by DIST-02 install-time smoke (2026-07-07): the earlier
+; $INSTDIR\resources\... path failed with exit -196608 (file not found) and
+; popped the POSTINSTALL failure MessageBox; $INSTDIR\... registers cleanly.
 ;
 ; D-14: the installer passes its own known install-dir path for the sidecar
 ; binary ($INSTDIR\cryptiq-nmhost.exe) — same script, different caller-
@@ -25,7 +32,7 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   DetailPrint "Registering Cryptiq native-messaging host..."
-  ExecWait '"powershell.exe" -ExecutionPolicy Bypass -File "$INSTDIR\resources\register-native-host.ps1" -SidecarPath "$INSTDIR\cryptiq-nmhost.exe" -ExtensionId "pmnfhbonekjokipcfeklbajepnjppnca"' $0
+  ExecWait '"powershell.exe" -ExecutionPolicy Bypass -File "$INSTDIR\register-native-host.ps1" -SidecarPath "$INSTDIR\cryptiq-nmhost.exe" -ExtensionId "pmnfhbonekjokipcfeklbajepnjppnca"' $0
   IntCmp $0 0 postinstall_ok postinstall_warn postinstall_warn
   postinstall_warn:
     DetailPrint "WARNING: native-messaging host registration failed (exit code $0)."
@@ -35,7 +42,7 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   DetailPrint "Unregistering Cryptiq native-messaging host..."
-  ExecWait '"powershell.exe" -ExecutionPolicy Bypass -File "$INSTDIR\resources\unregister-native-host.ps1"' $0
+  ExecWait '"powershell.exe" -ExecutionPolicy Bypass -File "$INSTDIR\unregister-native-host.ps1"' $0
   IntCmp $0 0 preuninstall_ok preuninstall_warn preuninstall_warn
   preuninstall_warn:
     DetailPrint "WARNING: native-messaging host unregistration failed (exit code $0)."
