@@ -17,6 +17,13 @@
 // a tombstone must never surface as a fillable match.
 // D-08: results are ordered favorites-first, then `modifiedAt` descending.
 //
+// Phase 21 (D-10): an entry's `equivalentUrls` OR into the host predicate — a
+// candidate matches when its primary `url` OR any `equivalentUrls[i]` reduces
+// to the target's eTLD+1 via `registrableHost()`. Every candidate string
+// (primary and each equivalent) passes through the SAME exact-eTLD+1
+// comparator — never substring/startsWith — so cousin/typosquat lookalike
+// domains remain rejected (T-21-02).
+//
 // `opts?` is a documented-but-unimplemented seam for the committed later-phase
 // per-entry "exact host only" match-strictness toggle (16-CONTEXT.md Deferred
 // Ideas / D-01) — accepting the parameter now avoids a signature-breaking
@@ -88,7 +95,13 @@ export function matchByOrigin(
 
   const candidates = entries
     .filter((e) => e.deletedAt === null) // tombstones never surface as matches
-    .filter((e) => registrableHost(e.url) === targetHost) // D-02: skip unparseable/empty urls
+    .filter((e) => {
+      // D-02: skip unparseable/empty urls. D-10: OR in equivalentUrls — every
+      // candidate (primary url and each equivalent) goes through
+      // registrableHost(), never substring/startsWith (T-21-02).
+      if (registrableHost(e.url) === targetHost) return true;
+      return (e.equivalentUrls ?? []).some((u) => registrableHost(u) === targetHost);
+    })
     .sort((a, b) => {
       if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; // D-08: favorites first
       return b.modifiedAt.localeCompare(a.modifiedAt); // D-08: modifiedAt descending
