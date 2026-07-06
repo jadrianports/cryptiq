@@ -361,7 +361,14 @@ describe('handleMergedBlobForB', () => {
       // Build a blob whose decrypted InnerDoc carries an UNKNOWN schemaVersion (99).
       // resealInnerDoc seals whatever InnerDoc we give it — no schemaVersion validation.
       // The HARDEN-02 Set.has() check fires AFTER decryption, not during sealing.
-      const badInner: InnerDoc = { ...bFixture.innerDoc, schemaVersion: 99 } as InnerDoc;
+      // Phase 21: InnerDoc.schemaVersion widened to 1 | 2 | 3, so literal 99 no longer
+      // "sufficiently overlaps" the union for a direct `as InnerDoc` cast (TS2352) —
+      // route through `unknown` first; the runtime value/intent (an unknown future
+      // schemaVersion) is unchanged.
+      const badInner: InnerDoc = {
+        ...bFixture.innerDoc,
+        schemaVersion: 99,
+      } as unknown as InnerDoc;
       const blobBytes = await resealInnerDoc(badInner, bFixture.vaultKey, bFixture.doc);
 
       const confirmSave = vi.fn(async (_saveOk: boolean) => {});
