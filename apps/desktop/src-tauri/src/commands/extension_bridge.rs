@@ -28,7 +28,10 @@
 //                                    (shared sidecar<->app pipe-channel contract; distinct from
 //                                    Chrome's native-endian stdio framing used by the sidecar
 //                                    on its OTHER side, browser<->sidecar)
-//   start_extension_bridge_listener — always-on accept loop, spawned once from lib.rs .setup()
+//   run_extension_bridge_accept_loop — cancellable accept loop; spawned via
+//                                    spawn_extension_bridge_listener from lib.rs .setup() (gated
+//                                    on extensionBridgeEnabled) and the UX-05 start/stop commands
+//   extension_bridge_enabled        — reads config.json's extensionBridgeEnabled kill-switch (D-04)
 //   handle_bridge_connection      — per-connection: read envelope, validate, dispatch by msg_type
 //
 // Security invariants:
@@ -203,8 +206,9 @@ pub fn validate_envelope(envelope: &BridgeEnvelope) -> Result<(), BridgeError> {
 
 /// Managed state for the extension-bridge listener lifecycle.
 ///
-/// Copied VERBATIM (shape-only, renamed) from `sync.rs`'s `SyncListenerState` — forward-compat
-/// for Phase 20's UX-05 kill-switch. Nothing calls `stop` this phase; no stop command exists yet.
+/// Copied (shape-only, renamed) from `sync.rs`'s `SyncListenerState`. Phase 20 UX-05 now wires it
+/// live: `spawn_extension_bridge_listener` registers the `cancel_tx`, `stop_extension_bridge_listener`
+/// fires it, and the accept loop clears it back to `None` on exit.
 /// Holds only a cancel channel; any live connection state lives on the task stack, not here.
 pub struct ExtensionBridgeState {
     pub cancel_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -750,26 +754,63 @@ pub async fn send_framed_bridge<S: AsyncWrite + Unpin>(
 // Listener — always-on accept loop (BRIDGE-02, spawned once from lib.rs .setup())
 // ---------------------------------------------------------------------------
 
-/// Start the always-on local named-pipe listener.
+/// Best-effort reset of `ExtensionBridgeState.cancel_tx` back to `None` so a later
+/// `spawn_extension_bridge_listener` re-registers cleanly (idempotency, T-20-03). Mirrors
+/// sync.rs's `clear_sync_listener_state`, minus the sync-only pending-blob cleanup — the bridge
+/// listener holds no such renderer state. Ignores a poisoned lock (best-effort teardown).
+fn clear_extension_bridge_state(app: &tauri::AppHandle) {
+    let state = app.state::<ExtensionBridgeState>();
+    let taken = state.cancel_tx.lock().map(|mut guard| guard.take());
+    drop(taken);
+}
+
+/// Run the always-on local named-pipe accept loop, cancellable via `cancel_rx` (UX-05/D-01).
 ///
-/// Spawned exactly once from `lib.rs`'s existing `.setup()` closure — NOT gated by
-/// `#[cfg(debug_assertions)]` (unlike the dev MCP bridge) and NOT gated by vault-unlock state
-/// (D-04: the echo endpoint carries zero vault data, so there is nothing to gate). Runs for the
-/// lifetime of the app.
-pub async fn start_extension_bridge_listener(app: tauri::AppHandle) -> std::io::Result<()> {
+/// Renamed from the Phase-14 `start_extension_bridge_listener` and extended for the kill-switch:
+/// the accept `select!` now also arms `cancel_rx`, so firing `ExtensionBridgeState.cancel_tx` (via
+/// `stop_extension_bridge_listener`) breaks the loop AND drops the pending `server.connect()`,
+/// closing the current listening pipe instance so the extension observes a plain disconnect
+/// (D-01). Still NOT `#[cfg(debug_assertions)]`-gated and NOT gated by vault-unlock state (D-04:
+/// the echo endpoint carries zero vault data). On EVERY exit path the `cancel_tx` is cleared back
+/// to `None` so a later `spawn_extension_bridge_listener` re-registers cleanly (T-20-03).
+async fn run_extension_bridge_accept_loop(
+    app: tauri::AppHandle,
+    mut cancel_rx: oneshot::Receiver<()>,
+) {
     // SECURITY (D-03/T-14-05): reject_remote_clients(true) blocks all NETWORK-origin clients —
     // only local processes on this machine may connect. This does NOT isolate other LOCAL
     // Windows accounts on a shared machine (default per-user pipe DACL, T-14-06 / RESEARCH.md
     // Open Question 1 / Pitfall 3) — accepted for this zero-vault-data skeleton because the echo
     // handler never touches vault state by construction (D-04); Phase 15's crypto_box pairing
     // token is the designed real mitigation for that residual risk.
-    let mut server = ServerOptions::new()
+    let mut server = match ServerOptions::new()
         .reject_remote_clients(true)
         .first_pipe_instance(true)
-        .create(PIPE_NAME)?;
+        .create(PIPE_NAME)
+    {
+        Ok(s) => s,
+        Err(e) => {
+            // Initial pipe create failed (e.g. another instance already owns first_pipe_instance).
+            // Clear cancel_tx so a later start can retry; no secret is ever logged.
+            eprintln!("extension_bridge: initial pipe create failed: {} (no secret logged)", e);
+            clear_extension_bridge_state(&app);
+            return;
+        }
+    };
 
     loop {
-        if server.connect().await.is_err() {
+        // Accept the next client OR observe the kill-switch. Polling `cancel_rx` by `&mut` keeps
+        // it across iterations; firing cancel_tx (stop_extension_bridge_listener) resolves the
+        // recv and breaks the loop. Dropping the pending `server.connect()` on cancel closes the
+        // current listening pipe instance (D-01), so a fresh extension connect is refused.
+        let accepted = tokio::select! {
+            _ = &mut cancel_rx => {
+                // UX-05 kill-switch OFF (or app shutdown / sender dropped): stop accepting.
+                break;
+            }
+            r = server.connect() => r,
+        };
+        if accepted.is_err() {
             // App shutting down or pipe torn down — stop the accept loop cleanly.
             break;
         }
@@ -793,7 +834,83 @@ pub async fn start_extension_bridge_listener(app: tauri::AppHandle) -> std::io::
         });
     }
 
+    // Clear cancel_tx on every exit so a future start re-registers cleanly (T-20-03).
+    clear_extension_bridge_state(&app);
+}
+
+/// Spawn the extension-bridge accept loop if not already running (idempotent — used by both the
+/// `.setup()` boot spawn and the UX-05 kill-switch ON path). Takes the `ExtensionBridgeState`
+/// lock, returns early if `cancel_tx.is_some()`, otherwise registers a fresh `cancel_tx` and
+/// spawns `run_extension_bridge_accept_loop`. Mirrors `sync_listener_start`'s idempotency guard +
+/// cancel_tx registration, minus the confinement/peer/keypair prep — the bridge listener carries
+/// zero vault data by construction (D-04), so there is nothing to confine or key.
+pub fn spawn_extension_bridge_listener(app: tauri::AppHandle) {
+    let state = app.state::<ExtensionBridgeState>();
+    let cancel_rx = {
+        let mut guard = state.cancel_tx.lock().unwrap();
+        if guard.is_some() {
+            // Already running — idempotent no-op (T-20-03). A redundant start never double-binds
+            // `first_pipe_instance`/`PIPE_NAME`.
+            return;
+        }
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        *guard = Some(cancel_tx);
+        cancel_rx
+    };
+    tauri::async_runtime::spawn(run_extension_bridge_accept_loop(app.clone(), cancel_rx));
+}
+
+/// UX-05 kill-switch ON: (re)spawn the extension-bridge listener. Idempotent — a redundant call
+/// while already running is a no-op (`spawn_extension_bridge_listener`'s guard). This is the JS
+/// `invoke('start_extension_bridge_listener')` target (bridgeCommands.ts).
+#[tauri::command]
+pub async fn start_extension_bridge_listener(app: tauri::AppHandle) -> Result<(), String> {
+    spawn_extension_bridge_listener(app);
     Ok(())
+}
+
+/// UX-05 kill-switch OFF: stop the extension-bridge listener. Fires `cancel_tx` to break the
+/// accept loop and drop the pending pipe instance (D-01) so the extension observes a plain
+/// disconnect. Idempotent — Ok(()) if no listener is running. Copied verbatim (renamed) from
+/// sync.rs's `sync_listener_stop`.
+#[tauri::command]
+pub async fn stop_extension_bridge_listener(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<ExtensionBridgeState>();
+    let mut guard = state.cancel_tx.lock().unwrap();
+    if let Some(tx) = guard.take() {
+        let _ = tx.send(());
+    }
+    Ok(())
+}
+
+/// Read the device-local `extensionBridgeEnabled` kill-switch from
+/// `$APPCONFIG/cryptiq/config.json` (D-04). Called from lib.rs `.setup()` to gate the boot spawn
+/// so an explicit OFF persists across an app restart.
+///
+/// SECURITY (T-20-04, accepted fail-OPEN): returns `false` ONLY when the field is explicitly the
+/// JSON boolean `false`. An absent field, a missing file, a non-boolean value, or ANY read/parse
+/// error all fail OPEN to `true` — preserving Phase-14's always-on behavior so a missing/corrupt
+/// config never silently disables the feature. Only a deliberate `false` disables. The real
+/// per-request auth is Phase-15's crypto_box pairing token, unchanged here.
+pub fn extension_bridge_enabled(app: &tauri::AppHandle) -> bool {
+    let config_dir = match app.path().app_config_dir() {
+        Ok(p) => p,
+        Err(_) => return true, // cannot resolve config dir — fail open
+    };
+    let config_path = config_dir.join("cryptiq").join("config.json");
+    let bytes = match std::fs::read(&config_path) {
+        Ok(b) => b,
+        Err(_) => return true, // missing/unreadable config — fail open
+    };
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return true, // corrupt config — fail open
+    };
+    // Only an explicit JSON `false` disables; Some(true), absent, or non-bool → fail open to true.
+    !matches!(
+        value.get("extensionBridgeEnabled").and_then(|v| v.as_bool()),
+        Some(false)
+    )
 }
 
 /// Handle a single connected pipe client: read one framed envelope, validate it, and respond.

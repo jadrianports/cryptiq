@@ -91,12 +91,15 @@ pub fn run() {
             {
                 start_sleep_watcher(app.handle().clone());
             }
-            // Phase 14 Plan 02 — always-on local named-pipe listener (BRIDGE-02), production.
+            // Phase 14 Plan 02 — local named-pipe listener (BRIDGE-02), production.
             // Explicitly NOT #[cfg(debug_assertions)]-gated (unlike the dev MCP bridge above) and
             // NOT gated by vault-unlock state — the echo endpoint carries zero vault data (D-04).
-            tauri::async_runtime::spawn(commands::extension_bridge::start_extension_bridge_listener(
-                app.handle().clone(),
-            ));
+            // Phase 20 UX-05/D-04: gated on the device-local `extensionBridgeEnabled` kill-switch
+            // read from config.json, so an explicit OFF persists across an app restart. Fail-open:
+            // absent/missing/corrupt config spawns as before.
+            if commands::extension_bridge::extension_bridge_enabled(app.handle()) {
+                commands::extension_bridge::spawn_extension_bridge_listener(app.handle().clone());
+            }
             // Touch `app` on platforms where the watcher is compiled out (Linux excluded from v1).
             let _ = app;
             Ok(())
@@ -155,6 +158,9 @@ pub fn run() {
             // Phase 16 — RPC dispatch commands (BRIDGE-08/XSEC-05)
             commands::extension_bridge::bridge_rpc_response,
             commands::extension_bridge::focus_app,
+            // Phase 20 — UX-05 extension-bridge kill-switch start/stop (D-01/D-04)
+            commands::extension_bridge::start_extension_bridge_listener,
+            commands::extension_bridge::stop_extension_bridge_listener,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");
