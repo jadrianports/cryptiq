@@ -883,12 +883,26 @@
               {row.title}{row.currentTab ? ' 📌' : ''}
             </span>
             <span style="display: flex; gap: 4px; flex-shrink: 0;">
+              <!-- WR-03 (anti-phishing): a full-vault search lets any entry be
+                   filled into the CURRENT tab, even one saved for a different
+                   site. The origin guards only prove the secret reaches the
+                   page the popup opened on — not that the entry's domain
+                   matches it. When `currentTab` is false, surface a visible
+                   caution (color + ⚠ + tooltip) so a cross-domain Fill never
+                   has the same affordance as a same-domain Fill. -->
               <button
                 onclick={() => handleFillClick(row.id, row.username)}
                 disabled={fillState.kind === 'pending'}
-                style="font-size: 11px;"
+                title={row.currentTab
+                  ? undefined
+                  : 'This login is saved for a different site than the page you are on — only fill it if you trust this page.'}
+                style="font-size: 11px;{row.currentTab ? '' : ' color: #a15c00;'}"
               >
-                {fillState.kind === 'pending' && fillState.entryId === row.id ? 'Filling…' : 'Fill'}
+                {fillState.kind === 'pending' && fillState.entryId === row.id
+                  ? 'Filling…'
+                  : row.currentTab
+                    ? 'Fill'
+                    : 'Fill ⚠'}
               </button>
               <button
                 onclick={() => handleCopyClick(row.id, 'username')}
