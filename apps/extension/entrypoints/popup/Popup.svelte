@@ -511,13 +511,23 @@
    * before the user types anything) and again on every `oninput`.
    */
   async function handleSearchInput(): Promise<void> {
+    // WR-01: capture the query at call time so out-of-order responses can be
+    // discarded. Each keystroke fires an un-debounced async round trip through
+    // background.ts + a fresh native port, so responses can resolve out of
+    // order (typing `a` then `ab` may resolve `a` last). Without this guard the
+    // stale `a` results would clobber `searchRows`/`searchState` for a query no
+    // longer in the box.
+    const queryAtCall = searchQuery;
     searchState = { kind: 'pending' };
 
     const tab = await getCurrentTab();
     const outcome = await sendRpcViaBackground({
       method: 'search-entries',
-      params: { query: searchQuery, currentOrigin: tab?.origin ?? '' },
+      params: { query: queryAtCall, currentOrigin: tab?.origin ?? '' },
     });
+
+    // A newer keystroke superseded this in-flight response — drop it.
+    if (queryAtCall !== searchQuery) return;
 
     if (!outcome.ok) {
       searchState = { kind: 'error', message: 'Could not search the vault.' };
