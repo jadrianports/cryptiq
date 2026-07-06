@@ -89,15 +89,23 @@ function handleFill(msg: FillRequest): FillResult {
 
 /**
  * cryptiq-fill-focused (Plan 18-02, UX-03): the context-menu's focused-field
- * write. Unlike `handleFill`, there is no earlier "show picker" moment to
- * TOCTOU-guard against -- the right-click itself is the fresh gesture on
- * this same page -- so this branch writes directly into
- * `document.activeElement` rather than re-scanning for a user/pass pair.
- * Routes ALL DOM writes through `fillField` (never a raw `.value =`
- * assignment) -- the one audited native-setter primitive (RESEARCH
- * Anti-Patterns).
+ * write. It writes directly into `document.activeElement` rather than
+ * re-scanning for a user/pass pair. Routes ALL DOM writes through `fillField`
+ * (never a raw `.value =` assignment) -- the one audited native-setter
+ * primitive (RESEARCH Anti-Patterns).
+ *
+ * WR-02: exact-origin refusal FIRST, mirroring `handleFill`. Although the
+ * right-click is a fresh gesture on this page, background.ts performs several
+ * native-messaging round trips (ensureContentScript, match-origin, fill-entry)
+ * between that click and this message, and the tab can navigate cross-origin
+ * in that window. `location.origin` is the browser's own ASCII/punycode-
+ * normalized form; refuse (write NOTHING) on any mismatch.
  */
 function handleFillFocused(msg: FillFocusedMessage): FillFocusedResult {
+  if (location.origin !== msg.expectedOrigin) {
+    return { ok: false, reason: 'origin-mismatch' };
+  }
+
   const active = document.activeElement;
   if (!(active instanceof HTMLInputElement)) {
     return { ok: false, reason: 'no-field-found' };

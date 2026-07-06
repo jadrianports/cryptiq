@@ -68,8 +68,13 @@ export interface CaptureMessage {
  * message. Distinct from `FillRequest` (which carries the popup's captured
  * `expectedOrigin` for an exact-origin TOCTOU refusal, XSEC-03) because a
  * context-menu click is itself the fresh user gesture on the SAME page --
- * there is no earlier "show picker" moment for the origin to have drifted
- * since. `username` is optional/best-effort (only sent when a sibling
+ * but background.ts performs several native-messaging round trips
+ * (ensureContentScript, match-origin, fill-entry / generate-password) between
+ * the right-click and this DOM write, so the tab may have navigated in that
+ * window (WR-02). `expectedOrigin` is the origin background.ts captured at
+ * right-click time; `handleFillFocused` re-derives `location.origin` at write
+ * time and refuses on any mismatch (same XSEC-03 TOCTOU discipline as
+ * `FillRequest`). `username` is optional/best-effort (only sent when a sibling
  * username field was found by background.ts's own match-origin candidate).
  * Exported standalone (mirrors `CaptureMessage`'s precedent) rather than
  * folded into `ContentScriptMessageType`, which is specifically the
@@ -78,12 +83,13 @@ export interface CaptureMessage {
 export interface FillFocusedMessage {
   type: 'cryptiq-fill-focused';
   secret: string;
+  expectedOrigin: string;
   username?: string;
 }
 
 /** Result of a `cryptiq-fill-focused` message. Fail-closed: mirrors
  * `FillResult`'s typed-refusal discipline -- never a bare boolean. */
-export type FillFocusedResult = { ok: true } | { ok: false; reason: 'no-field-found' };
+export type FillFocusedResult = { ok: true } | { ok: false; reason: 'origin-mismatch' | 'no-field-found' };
 
 /**
  * Metadata-only match shape, extended with the two optional HEALTH-02 health

@@ -22,7 +22,7 @@
 import { sendAssociate, sendRpc, bytesToBase64, type BridgeErrorResult } from '../src/lib/bridgeRpc';
 import { getOrCreateIdentityKeypair, loadAssociation, saveAssociation } from '../src/lib/associationStore';
 import { writeCapture, clearCaptureForTab } from '../src/lib/captureBuffer';
-import { ensureContentScript } from '../src/lib/popupFill';
+import { ensureContentScript, recheckTabUnchanged } from '../src/lib/popupFill';
 import { pickTopCandidate, shouldRefuseFrame } from '../src/lib/contextMenu';
 import type { EntryMatchMetadata } from '../src/lib/contentScriptMessages';
 
@@ -382,8 +382,22 @@ export default defineBackground(() => {
         : undefined;
     if (typeof secret !== 'string') return;
 
+    // WR-02: re-verify the tab id + origin are unchanged since `origin` was
+    // captured at right-click time — several native-messaging round trips
+    // (ensureContentScript, match-origin, fill-entry) opened a TOCTOU window.
+    // Refuse on any drift, and pass `expectedOrigin` so the content script's
+    // `handleFillFocused` enforces the same exact-origin check (defense in
+    // depth, same discipline as the popup fill path).
+    const stillCurrent = await recheckTabUnchanged(tabId, origin);
+    if (!stillCurrent) return;
+
     try {
-      await chrome.tabs.sendMessage(tabId, { type: 'cryptiq-fill-focused', secret, username: top.username });
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'cryptiq-fill-focused',
+        secret,
+        username: top.username,
+        expectedOrigin: origin,
+      });
     } catch {
       // Best-effort only -- e.g. the tab navigated away between the RPC and
       // this send; nothing further to do.
@@ -398,8 +412,15 @@ export default defineBackground(() => {
    */
   async function handleContextGenerate(tab: chrome.tabs.Tab | undefined, frameId: number | undefined): Promise<void> {
     if (shouldRefuseFrame(frameId)) return;
-    if (!tab || tab.id === undefined) return;
+    if (!tab || tab.id === undefined || !tab.url) return;
     const tabId = tab.id;
+
+    let origin: string;
+    try {
+      origin = new URL(tab.url).origin;
+    } catch {
+      return; // e.g. a chrome:// page -- fail closed, never guess
+    }
 
     const injected = await ensureContentScript(tabId);
     if (!injected) return;
@@ -411,8 +432,14 @@ export default defineBackground(() => {
         : undefined;
     if (typeof generated !== 'string') return;
 
+    // WR-02: same TOCTOU recheck as handleContextFill — the generate-password
+    // round trip is a navigation window; refuse on drift and pass
+    // `expectedOrigin` for the content script's own exact-origin guard.
+    const stillCurrent = await recheckTabUnchanged(tabId, origin);
+    if (!stillCurrent) return;
+
     try {
-      await chrome.tabs.sendMessage(tabId, { type: 'cryptiq-fill-focused', secret: generated });
+      await chrome.tabs.sendMessage(tabId, { type: 'cryptiq-fill-focused', secret: generated, expectedOrigin: origin });
     } catch {
       // Best-effort only.
     }

@@ -216,7 +216,7 @@ describe('fill.content', () => {
     const { pass } = buildLoginForm();
     pass.focus();
 
-    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret' });
+    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret', expectedOrigin: location.origin });
 
     expect(result).toEqual({ ok: true });
     expect(pass.value).toBe('generated-secret');
@@ -226,11 +226,32 @@ describe('fill.content', () => {
     const { user, pass } = buildLoginForm();
     pass.focus();
 
-    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret', username: 'alice' });
+    const result = await emitMessage({
+      type: 'cryptiq-fill-focused',
+      secret: 'generated-secret',
+      username: 'alice',
+      expectedOrigin: location.origin,
+    });
 
     expect(result).toEqual({ ok: true });
     expect(user.value).toBe('alice');
     expect(pass.value).toBe('generated-secret');
+  });
+
+  it('cryptiq-fill-focused refuses on origin mismatch and writes NOTHING to the DOM (WR-02 TOCTOU)', async () => {
+    const { user, pass } = buildLoginForm();
+    pass.focus();
+
+    const result = await emitMessage({
+      type: 'cryptiq-fill-focused',
+      secret: 'generated-secret',
+      username: 'alice',
+      expectedOrigin: 'https://this-will-never-match.example',
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'origin-mismatch' });
+    expect(user.value).toBe('');
+    expect(pass.value).toBe('');
   });
 
   it('cryptiq-fill-focused resolves no-field-found when the active element is not an input (UX-03)', async () => {
@@ -238,7 +259,7 @@ describe('fill.content', () => {
     (document.getElementById('not-an-input') as HTMLDivElement).tabIndex = -1;
     (document.getElementById('not-an-input') as HTMLDivElement).focus();
 
-    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret' });
+    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'generated-secret', expectedOrigin: location.origin });
 
     expect(result).toEqual({ ok: false, reason: 'no-field-found' });
   });
@@ -250,7 +271,12 @@ describe('fill.content', () => {
     const { user, pass } = buildLoginForm();
     user.focus();
 
-    const result = await emitMessage({ type: 'cryptiq-fill-focused', secret: 'super-secret-pw', username: 'alice' });
+    const result = await emitMessage({
+      type: 'cryptiq-fill-focused',
+      secret: 'super-secret-pw',
+      username: 'alice',
+      expectedOrigin: location.origin,
+    });
 
     expect(result).toEqual({ ok: false, reason: 'no-field-found' });
     // The secret must never land in a visible non-password field, and nothing else is written.
