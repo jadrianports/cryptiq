@@ -102,13 +102,26 @@ function asInnerDoc(vault: UnlockedVault): InnerDoc {
   // until the user sets them (SCHEMA-01/02, IDENT-03 — never rewrites an existing
   // field, never splits `username` into `email`).
   //
-  // PHASE-22 BREADCRUMB (do not fix here — read-only this phase): `sync/merge.ts`'s
-  // `deepCopyEntry` (object-literal return, `merge.ts:240-275`) silently strips any
-  // new `Entry` field (it is not a spread — only named fields are copied), and
-  // `contentEqual`/`canonicalEntry`/`meaningfulContentDiffers` hand-enumerate fields
-  // and don't know about `email`/`equivalentUrls`/`card`/`identity` either. Phase 22
-  // (SYNCP-01 GATE) must update all four before any sync path exercises entries
-  // carrying the new fields, or a merge will silently drop them.
+  // PHASE-22 BREADCRUMB (do not fix here — read-only this phase). This bump makes every
+  // opened vault schemaVersion 3 on the next CRUD call, but the LOCKED sync path only
+  // knows versions 1|2. Phase 22 (SYNCP-01 GATE) MUST update ALL of the following before
+  // any sync path exercises a v3 vault, or sync either fails closed or silently drops the
+  // new fields:
+  //   1. `apps/desktop/src/lib/sync/syncOrchestration.ts:96`
+  //      `KNOWN_INNER_DOC_SCHEMA_VERSIONS = new Set([1, 2])` — the fail-closed HARDEN-02
+  //      allowlist (enforced at :470 A-side and :834 B-side). A v3 vault currently throws
+  //      `MergeSchemaMismatchError` here. Widen to include 3 — but ONLY together with the
+  //      merge-field-parity fixes below, else a v3↔v3 merge PROCEEDS and silently strips
+  //      the new fields (fail-safe loud error → silent data loss). Do not widen alone.
+  //   2. `sync/merge.ts:361` exact-equality gate (`local.schemaVersion !== remote.schemaVersion`)
+  //      — decide mixed 2/3-peer semantics (a v2 device syncing with a migrated v3 device).
+  //   3. `sync/merge.ts` `deepCopyEntry` (object-literal return, `merge.ts:240-275`) silently
+  //      strips any new `Entry` field (it is not a spread — only named fields are copied), and
+  //      `contentEqual`/`canonicalEntry`/`meaningfulContentDiffers` hand-enumerate fields and
+  //      don't know about `email`/`equivalentUrls`/`card`/`identity` either.
+  //   4. Add a sync regression test whose fixtures carry `schemaVersion: 3` (or route through
+  //      `asInnerDoc()`) — the existing sync tests build InnerDoc directly from `createVault`
+  //      (schemaVersion 1) and never exercise the v3 path, so they stay green while sync is broken.
   if (raw['schemaVersion'] === 2) {
     raw['schemaVersion'] = 3;
   }

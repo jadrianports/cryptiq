@@ -963,10 +963,14 @@ describe('Phase 21: schemaVersion 2->3 migration (SCHEMA-01/02, IDENT-03)', () =
     };
   }
 
+  /** Monotonic fixture-id counter — CLAUDE.md bans `Math.random` anywhere in `packages/core`. */
+  let v2EntryCounter = 0;
+
   /** A schemaVersion-2 entry with only pre-Phase-21 fields — new fields are ABSENT (key omitted). */
   function v2Entry(overrides?: Record<string, unknown>): Record<string, unknown> {
+    v2EntryCounter += 1;
     return {
-      id: 'v2-entry-' + Math.random().toString(36).slice(2),
+      id: `v2-entry-${v2EntryCounter}`,
       type: 'login',
       title: 'Legacy Entry',
       username: 'legacyuser',
