@@ -9,10 +9,17 @@ export interface CryptiqConfig {
    * Default: true (existing behavior preserved on upgrade). Outbound Sync Now unaffected.
    */
   listenerEnabled?: boolean;
+  /**
+   * Whether this device accepts browser-extension bridge connections (UX-05).
+   * Device-local — config.json only, NEVER InnerDoc.settings. Default: true
+   * (existing installs keep working on upgrade). Mirrors listenerEnabled (D-04).
+   */
+  extensionBridgeEnabled?: boolean;
 }
 
 export const DEFAULT_CONFIG: CryptiqConfig = {
   vaultPath: null,
   schemaVersion: 1,
   listenerEnabled: true,
+  extensionBridgeEnabled: true,
 };

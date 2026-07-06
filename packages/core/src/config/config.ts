@@ -42,7 +42,22 @@ export function parseConfig(bytes: Uint8Array): CryptiqConfig {
     throw new ConfigCorruptError('config.json: listenerEnabled must be boolean or absent.');
   }
 
-  return { vaultPath, schemaVersion, listenerEnabled: (listenerEnabled as boolean | undefined) ?? true };
+  // extensionBridgeEnabled: optional boolean, default true (UX-05 / D-04 / Phase 20).
+  // Device-local kill-switch for browser-extension bridge connections. Mirrors
+  // listenerEnabled — old builds omit it; new builds read it as true if absent. This MUST
+  // round-trip through parseConfig (not just serializeConfig) so the OFF state the Rust
+  // boot-gate honors is also reflected by the Settings toggle after a reload (D-04).
+  const extensionBridgeEnabled = obj.extensionBridgeEnabled;
+  if (extensionBridgeEnabled !== undefined && typeof extensionBridgeEnabled !== 'boolean') {
+    throw new ConfigCorruptError('config.json: extensionBridgeEnabled must be boolean or absent.');
+  }
+
+  return {
+    vaultPath,
+    schemaVersion,
+    listenerEnabled: (listenerEnabled as boolean | undefined) ?? true,
+    extensionBridgeEnabled: (extensionBridgeEnabled as boolean | undefined) ?? true,
+  };
 }
 
 /** Serialize a CryptiqConfig to UTF-8 JSON bytes. */

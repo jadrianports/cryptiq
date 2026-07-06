@@ -99,3 +99,22 @@ export async function revokeExtensionAssociation(
 ): Promise<void> {
   return invoke<void>('revoke_extension_association_cmd', { configDir, clientId });
 }
+
+/**
+ * Start the extension-bridge named-pipe listener (UX-05 kill-switch ON). Idempotent —
+ * a redundant call while the listener is already running is a no-op. Takes no args: the
+ * Rust command receives only the injected `app` handle (the bridge toggle is not a vault
+ * operation, so there is no configDir/vaultPath param and no vault-unlock guard).
+ */
+export async function startExtensionBridgeListener(): Promise<void> {
+  return invoke<void>('start_extension_bridge_listener');
+}
+
+/**
+ * Stop the extension-bridge listener (UX-05 kill-switch OFF). Fires the Rust `cancel_tx`
+ * to break the accept loop and drop the pending pipe instance so the extension observes a
+ * plain disconnect (D-01). Idempotent — safe to call when no listener is running.
+ */
+export async function stopExtensionBridgeListener(): Promise<void> {
+  return invoke<void>('stop_extension_bridge_listener');
+}
