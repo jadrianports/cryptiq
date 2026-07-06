@@ -20,24 +20,60 @@ export interface PasswordHistoryItem {
 }
 
 /**
+ * Payment-card sub-shape (Phase 21, D-07). All fields are `string` — `number` and
+ * `cvv` are NEVER a JS number (leading zeros, spacing, 16+ digit precision).
+ * Expiry is stored as separate `expiryMonth`/`expiryYear` strings (e.g. `'03'`/`'2027'`)
+ * rather than a combined `'MM/YY'` string, so it maps 1:1 onto the WHATWG
+ * `cc-exp-month`/`cc-exp-year` `<select>` fill target with no parse-at-fill-time.
+ */
+export interface EntryCard {
+  cardholderName: string;
+  number: string;
+  expiryMonth: string;
+  expiryYear: string;
+  cvv: string;
+  brand?: string;
+  nickname?: string;
+}
+
+/**
+ * Identity sub-shape (Phase 21, D-08). `address` is a single free-text (multi-line)
+ * field, not structured sub-parts. `email` here is distinct from a login entry's
+ * top-level `Entry.email`.
+ */
+export interface EntryIdentity {
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+}
+
+/**
  * A single vault entry.
  *
  * Field invariants (ENTRY-01):
  *   - `id`   — UUIDv4 derived from `sodium.randombytes_buf(16)` (P3-03; never Math.random)
- *   - `type` — `'login'` in v1; field exists for v2 expansion (card, identity, secure-note)
+ *   - `type` — `'login'` in v1; widened in Phase 21 (D-04) to `'login' | 'card' |
+ *     'identity' | 'secure-note'`. Immutable after creation — `EntryUpdate` omits it.
  *   - `deletedAt` — `null` when active; ISO 8601 when soft-deleted (ENTRY-04 tombstone)
  *   - `passwordHistory` — newest-first; cap 10 (ENTRY-07); pushed on any password change
  *   - `generatorPreset` — mirrors GeneratorOptions union exactly (P3-07); `null` = no preset
  *   - `tags` — first-class string array (ENTRY-02)
  *   - `lostVersions` — Phase 8 (D-01/D-02/D-10): full-entry snapshots of losing sync versions;
  *     optional — absent on pre-Phase-8 entries; `asInnerDoc()` fills with `[]`; cap 5 newest.
+ *   - `email` — Phase 21 (D-05): optional, independent of `username` (never derived from
+ *     it); absent on pre-Phase-21 entries and never backfilled by the 2→3 migration.
+ *   - `equivalentUrls` — Phase 21 (D-06): optional raw user-entered alternate URLs (same
+ *     shape as `url`), reduced to eTLD+1 only at match time (`matchByOrigin`); no cap.
+ *   - `card` / `identity` — Phase 21 (D-07/D-08): optional sub-shapes for the widened
+ *     `type` union; absent on pre-Phase-21 entries and on every `'login'` entry.
  */
 export interface Entry {
   // -- Identity (immutable after creation) --
   /** UUIDv4 (CSPRNG-backed; P3-03). */
   id: string;
-  /** Entry type discriminator. `'login'` in v1. */
-  type: 'login';
+  /** Entry type discriminator. Widened in Phase 21 (D-04) beyond `'login'`. */
+  type: 'login' | 'card' | 'identity' | 'secure-note';
 
   // -- Content --
   /** Display name. Required. */
@@ -48,6 +84,28 @@ export interface Entry {
   notes: string;
   /** First-class tag list (ENTRY-02). Empty array when no tags. */
   tags: string[];
+  /**
+   * Independent optional email identifier (Phase 21, D-05). Orthogonal to `username` —
+   * never derived/split from it (IDENT-03). Optional — absent until the user sets it;
+   * the 2→3 migration never backfills this field.
+   */
+  email?: string;
+  /**
+   * Alternate URLs for origin matching (Phase 21, D-06). Raw user-entered strings, same
+   * shape as `url`; reduced to eTLD+1 only at match time via `registrableHost()`. No cap.
+   * Optional — absent until the user sets it; the 2→3 migration never backfills this field.
+   */
+  equivalentUrls?: string[];
+  /**
+   * Payment-card details (Phase 21, D-07). Present only on `type: 'card'` entries in
+   * practice; optional at the type level since the 2→3 migration never backfills it.
+   */
+  card?: EntryCard;
+  /**
+   * Identity details (Phase 21, D-08). Present only on `type: 'identity'` entries in
+   * practice; optional at the type level since the 2→3 migration never backfills it.
+   */
+  identity?: EntryIdentity;
 
   // -- Metadata --
   /** Pinned / starred by the user. */
@@ -102,10 +160,19 @@ export interface Entry {
  * `settings.lock` stores the auto-lock preferences (P5-12). Optional — absent on
  * pre-Phase-5 vaults; `asInnerDoc()` fills defaults idempotently.
  * `settings.clipboard` stores the clipboard auto-clear preference (P5-12). Optional.
+ *
+ * Phase 21 (D-01/D-03): `schemaVersion` widens 2→3 via a PURE version bump in
+ * `asInnerDoc()` — no field backfill. This is the same additive `asInnerDoc()` idiom as
+ * the 1→2 bump, NOT the outer `loadAndMigrate` back-up→migrate→cold-decrypt-verify→swap
+ * pipeline (which guards the AEAD-bound LOCKED wire format and stays untouched).
  */
 export interface InnerDoc {
-  /** Inner schema version. 1 in v1; 2 after the Phase 8 additive bump (D-02/D-10). */
-  schemaVersion: 1 | 2;
+  /**
+   * Inner schema version. 1 in v1; 2 after the Phase 8 additive bump (D-02/D-10);
+   * 3 after the Phase 21 additive bump (D-01/D-03) — pure version-number flip, no
+   * new field is backfilled onto existing entries.
+   */
+  schemaVersion: 1 | 2 | 3;
   /** All entries (active + tombstones). */
   entries: Entry[];
   /** Vault-level settings. */

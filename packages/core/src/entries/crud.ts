@@ -48,6 +48,13 @@ function nowIso(): string {
  * Phase 8 (D-02/D-10): this function is also the v1→v2 upgrade site. It bumps
  * `schemaVersion` 1→2 and fills `lostVersions: []` on any entry that lacks it.
  * Idempotent — never downgrades, never overwrites an existing lostVersions array.
+ *
+ * Phase 21 (D-01/D-03): this function is ALSO the v2→v3 upgrade site (inner schema
+ * widening for `email`/`equivalentUrls`/`card`/`identity` — SCHEMA-01/02, IDENT-03).
+ * Unlike the 1→2 bump, the 2→3 bump is a PURE version-number flip with NO per-entry
+ * backfill loop — the new optional fields stay absent until the user sets them. This
+ * is NOT the outer `loadAndMigrate` back-up→migrate→cold-decrypt-verify→swap pipeline,
+ * which guards the AEAD-bound LOCKED wire format and is untouched by this bump.
  */
 function asInnerDoc(vault: UnlockedVault): InnerDoc {
   const raw = vault.entries as Record<string, unknown>;
@@ -88,6 +95,22 @@ function asInnerDoc(vault: UnlockedVault): InnerDoc {
         entry['lostVersions'] = [];
       }
     }
+  }
+  // Phase 21 (D-01): additive schemaVersion 2→3 bump — a PURE version-number flip,
+  // strictly narrower than the 1→2 block above. NO per-entry backfill: `email`,
+  // `equivalentUrls`, `card`, `identity` stay absent on every pre-existing entry
+  // until the user sets them (SCHEMA-01/02, IDENT-03 — never rewrites an existing
+  // field, never splits `username` into `email`).
+  //
+  // PHASE-22 BREADCRUMB (do not fix here — read-only this phase): `sync/merge.ts`'s
+  // `deepCopyEntry` (object-literal return, `merge.ts:240-275`) silently strips any
+  // new `Entry` field (it is not a spread — only named fields are copied), and
+  // `contentEqual`/`canonicalEntry`/`meaningfulContentDiffers` hand-enumerate fields
+  // and don't know about `email`/`equivalentUrls`/`card`/`identity` either. Phase 22
+  // (SYNCP-01 GATE) must update all four before any sync path exercises entries
+  // carrying the new fields, or a merge will silently drop them.
+  if (raw['schemaVersion'] === 2) {
+    raw['schemaVersion'] = 3;
   }
 
   return vault.entries as InnerDoc;
