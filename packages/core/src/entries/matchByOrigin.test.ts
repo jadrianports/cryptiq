@@ -147,4 +147,41 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
     });
     expect(matchByOrigin(entries, '')).toEqual({ registrableDomain: null, candidates: [] });
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase 21 (URLS-02, D-10/D-11): equivalentUrls OR + typosquat rejection
+  // ---------------------------------------------------------------------------
+
+  it('matches a page origin via an equivalentUrls entry when the primary url differs (D-10)', () => {
+    const entries = [makeEntry({ url: 'example.com', equivalentUrls: ['other-brand.com'] })];
+    const result = matchByOrigin(entries, 'https://other-brand.com');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]!.id).toBe(entries[0]!.id);
+  });
+
+  it('still matches the same entry via its primary url (equivalentUrls is additive, not a replacement) (D-10)', () => {
+    const entries = [makeEntry({ url: 'example.com', equivalentUrls: ['other-brand.com'] })];
+    const result = matchByOrigin(entries, 'https://example.com');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]!.id).toBe(entries[0]!.id);
+  });
+
+  it('does NOT match a typosquat equivalentUrls entry against the real target domain (D-11)', () => {
+    const entries = [makeEntry({ url: 'my-own-site.com', equivalentUrls: ['gooogle.com'] })];
+    expect(matchByOrigin(entries, 'https://google.com').candidates).toEqual([]);
+  });
+
+  it('does NOT match a cousin-domain equivalentUrls entry against the real target domain (D-11, proves no substring)', () => {
+    const entries = [
+      makeEntry({ url: 'my-own-site.com', equivalentUrls: ['evil-google.com.attacker.net'] }),
+    ];
+    expect(matchByOrigin(entries, 'https://google.com').candidates).toEqual([]);
+  });
+
+  it('behaves exactly as before for an entry with no equivalentUrls field (regression guard for ?? [])', () => {
+    const entries = [makeEntry({ url: 'example.com' })];
+    const result = matchByOrigin(entries, 'https://example.com');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]!.id).toBe(entries[0]!.id);
+  });
 });

@@ -51,4 +51,9 @@ describe('entries/originMatch — eTLD+1 registrable-host extraction (FILL-03)',
   it('leniently accepts a bare host with no scheme and a trailing port/path (D-02)', () => {
     expect(registrableHost('example.com:8080/path')).toBe('example.com');
   });
+
+  it('treats a typosquat lookalike as its own distinct registrable domain, not a match for the real one (Phase 21 URLS-02/D-11)', () => {
+    expect(registrableHost('gooogle.com')).toBe('gooogle.com');
+    expect(registrableHost('gooogle.com')).not.toBe(registrableHost('google.com'));
+  });
 });
