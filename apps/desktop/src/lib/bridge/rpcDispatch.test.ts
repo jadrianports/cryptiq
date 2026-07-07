@@ -277,6 +277,7 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       title: 'Example',
       username: 'alice',
       domainHint: 'example.com',
+      type: 'login',
       weak: false,
       reused: false,
     });
@@ -324,7 +325,7 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       params: { entryId: target.id },
     });
 
-    expect(result).toEqual({ secret: 'target-secret' });
+    expect(result).toEqual({ type: 'login', secret: 'target-secret' });
   });
 
   it('fill-entry returns { code: "not-found" } for a soft-deleted entry id', async () => {
@@ -451,6 +452,15 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
 
     for (const candidate of result.candidates) {
       expect('password' in candidate).toBe(false);
+      // RPC-02/D-05 wire-layer structural half: the picker channel must never
+      // carry any card/identity sub-shape or secret field.
+      expect(candidate).not.toHaveProperty('card');
+      expect(candidate).not.toHaveProperty('identity');
+      expect(candidate).not.toHaveProperty('cvv');
+      expect(candidate).not.toHaveProperty('number');
+      expect(candidate).not.toHaveProperty('name');
+      expect(candidate).not.toHaveProperty('phone');
+      expect(candidate).not.toHaveProperty('address');
     }
   });
 
@@ -882,5 +892,159 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       expect(result).toEqual({ ok: true });
       expect(copyFieldSpy).toHaveBeenCalledWith('super-secret-value', 'password');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 24 Plan 03 (RPC-01/RPC-02): fill-entry discriminated union + the
+// D-05a runtime serialization-level GATE proving CVV/PAN/identity secrets
+// never ride the match-origin wire.
+// ---------------------------------------------------------------------------
+
+describe('bridge/rpcDispatch — Phase 24 typed fill-entry union + wire-minimization GATE', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vaultState.isUnlocked = true;
+    vaultState.entries = [];
+    capturedListenHandler = null;
+    clipboardGuardState.active = false;
+  });
+
+  afterEach(() => {
+    stopIdleController();
+    vi.useRealTimers();
+  });
+
+  it('fill-entry(login) returns { type: "login", secret }', async () => {
+    const entry = makeEntry({ type: 'login', password: 'target-secret' });
+    vaultState.entries = [entry];
+
+    const result = await handleRpcRequest({
+      requestId: 'u1',
+      method: 'fill-entry',
+      params: { entryId: entry.id },
+    });
+
+    expect(result).toEqual({ type: 'login', secret: 'target-secret' });
+  });
+
+  it('fill-entry(card) returns { type: "card", card } with the whole EntryCard sub-shape', async () => {
+    const card = {
+      cardholderName: 'Alice Cardholder',
+      number: '4111 1111 1111 1111',
+      expiryMonth: '03',
+      expiryYear: '2027',
+      cvv: '987',
+    };
+    const entry = makeEntry({ type: 'card', card });
+    vaultState.entries = [entry];
+
+    const result = await handleRpcRequest({
+      requestId: 'u2',
+      method: 'fill-entry',
+      params: { entryId: entry.id },
+    });
+
+    expect(result).toEqual({ type: 'card', card });
+  });
+
+  it('fill-entry(identity) returns { type: "identity", identity } with the whole EntryIdentity sub-shape', async () => {
+    const identity = {
+      name: 'Bob Identity',
+      email: 'bob@example.com',
+      phone: '555-0100',
+      address: '123 Identity Ln',
+    };
+    const entry = makeEntry({ type: 'identity', identity });
+    vaultState.entries = [entry];
+
+    const result = await handleRpcRequest({
+      requestId: 'u3',
+      method: 'fill-entry',
+      params: { entryId: entry.id },
+    });
+
+    expect(result).toEqual({ type: 'identity', identity });
+  });
+
+  it('fill-entry(secure-note) returns { code: "not-found" } — secure-note is NOT a discriminant member', async () => {
+    const entry = makeEntry({ type: 'secure-note' });
+    vaultState.entries = [entry];
+
+    const result = await handleRpcRequest({
+      requestId: 'u4',
+      method: 'fill-entry',
+      params: { entryId: entry.id },
+    });
+
+    expect(result).toEqual({ code: 'not-found' });
+  });
+
+  it('fill-entry for a tombstoned id returns { code: "not-found" } (V4 access control unchanged)', async () => {
+    const entry = makeEntry({
+      type: 'login',
+      password: 'should-never-surface',
+      deletedAt: '2026-02-01T00:00:00.000Z',
+    });
+    vaultState.entries = [entry];
+
+    const result = await handleRpcRequest({
+      requestId: 'u5',
+      method: 'fill-entry',
+      params: { entryId: entry.id },
+    });
+
+    expect(result).toEqual({ code: 'not-found' });
+  });
+
+  it('GATE (D-05a): the actual match-origin wire object never serializes the PAN, CVV, or identity name/phone/address, but DOES carry type and email', async () => {
+    const card = {
+      cardholderName: 'Carol Cardholder',
+      number: '4111 1111 1111 1111',
+      expiryMonth: '09',
+      expiryYear: '2028',
+      cvv: '741',
+    };
+    const cardEntry = makeEntry({
+      type: 'card',
+      url: 'example.com',
+      card: {
+        cardholderName: card.cardholderName,
+        number: card.number,
+        expiryMonth: card.expiryMonth,
+        expiryYear: card.expiryYear,
+        cvv: card.cvv,
+      },
+    });
+    const identityEntry = makeEntry({
+      type: 'identity',
+      url: 'example.com',
+      identity: {
+        name: 'Dana Distinctive Identity',
+        email: 'dana@example.com',
+        phone: '555-0199-distinct',
+        address: '456 Distinctive Address Ave',
+      },
+    });
+    vaultState.entries = [cardEntry, identityEntry];
+
+    const result = await handleRpcRequest({
+      requestId: 'gate1',
+      method: 'match-origin',
+      params: { origin: 'https://example.com' },
+    });
+
+    const wire = JSON.stringify(result);
+
+    // Secrets must NEVER appear on the wire.
+    expect(wire).not.toContain(card.number);
+    expect(wire).not.toContain(card.cvv);
+    expect(wire).not.toContain('Dana Distinctive Identity');
+    expect(wire).not.toContain('555-0199-distinct');
+    expect(wire).not.toContain('456 Distinctive Address Ave');
+
+    // Non-secret metadata fields DO cross.
+    expect(wire).toContain('"type"');
+    expect(wire).toContain('dana@example.com');
   });
 });
