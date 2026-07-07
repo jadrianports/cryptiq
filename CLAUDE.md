@@ -92,6 +92,17 @@ for new code · `Math.random()` near secrets · `nodeLinker: hoisted` · global 
 - CI: every workflow `uses:` is a 40-char SHA + `# tag` comment (CVE-2025-30066). Custom Node lints in `scripts/lint/*.mjs` enforce the JSON/YAML invariants ESLint can't see; wired into `pnpm lint`.
 - Dev-only diagnostics (`lib/dev/`) are DEV-gated dynamic imports, stripped from production bundles by Vite.
 
+**Browser extension / native host (v3.0 — Phases 14–20, shipped)**
+- Two workspace apps: `apps/extension` (WXT + Svelte MV3) and `apps/native-host` (Rust native-messaging bridge). The extension reaches the vault ONLY through the native host — never the network.
+- Native host serves **one request per stdin/stdout connection**; `background.ts` opens a fresh single-use port per request (reusing one port ⇒ 2nd request `disconnected`). Error envelopes carry the request `id` so the extension surfaces typed failures instead of 5s timeouts.
+- Fill contract (LOCKED behavior): click-to-fill only, **never auto-submit**, iframe-refusing, exact-origin match, React-safe native-setter fill; autocomplete-first field detection + heuristic fallback. Kill-switch is Rust-enforced and survives restart (`listenerEnabled`).
+- `wxt build` is NOT a GSD test gate — run it yourself; keep extension tests in `src/lib/`, never in `entrypoints/` (a test file there breaks the build).
+
+**Schema v3 / entry widening (v3.1 — Phases 21–22)**
+- `InnerDoc.schemaVersion` widened 2→3 via the additive `asInnerDoc()` cast (single upgrade site) — NOT the outer `loadAndMigrate` pipeline (that guards the LOCKED AEAD wire format, untouched). Migration never backfills the new fields.
+- `Entry.type` widened to `'login' | 'card' | 'identity' | 'secure-note'` (immutable after create); new OPTIONAL fields `email`/`equivalentUrls`/`card`/`identity` — omit the key when absent (exactOptionalPropertyTypes). `matchByOrigin` reduces `url`/`equivalentUrls` to eTLD+1 via `registrableHost()` at match time.
+- Sync parity (GATE): the pure merge engine reads Entry content at **5** sites — `deepCopyEntry`/`contentEqual`/`canonicalEntry`/`validateEntry` AND `isPermanentTombstone` (D-06); adding an Entry field means widening ALL of them or a sparse soft-delete silently loses peer data. `snapshotOf`/`meaningfulContentDiffers` stay password-centric by design (D-02/D-02a). The two schemaVersion allowlists (`merge.ts KNOWN_SCHEMA_VERSIONS` + desktop `KNOWN_INNER_DOC_SCHEMA_VERSIONS`) move to `{1,2,3}` in lockstep — widen-alone = silent field-strip.
+
 **Phase close:** append a short (≤3 bullet) summary of patterns landed to Conventions + Architecture. Full prose lives in `.planning/` — keep this file lean.
 
 <!-- GSD:conventions-end -->
@@ -116,7 +127,7 @@ cryptiq/
 │   ├── generator/                        # types, random, passphrase, entropy, eff-long.json
 │   ├── storage/                          # VaultStorageAdapter (interface), lockLogic (pure)
 │   └── config/                           # CryptiqConfig parse/serialize (incl. listenerEnabled)
-└── apps/desktop/
+├── apps/desktop/
     ├── vite.config.ts / vitest.config.ts
     ├── src/lib/state/vault.svelte.ts     # VaultSession singleton ($state.raw + non-reactive #vaultKey)
     ├── src/lib/sync/                      # SyncStore/PairingStore ($state.raw) + syncOrchestration + syncBridge
@@ -127,18 +138,26 @@ cryptiq/
         ├── src/commands/{pairing,sync}.rs # Noise pairing (CredManager, SAS) + sync transport (IK, binding gate)
         ├── tauri.conf.json               # strict prod CSP + dev CSP (+ tauri.mcp-bridge.conf.json = dev-only UAT bridge)
         └── capabilities/{default,bootstrap}.json  # literal fs scopes (incl. peers.json) + TCP; platforms [windows, macOS]
+├── apps/extension/                       # WXT + Svelte MV3 browser extension (v3.0)
+│   ├── entrypoints/                       # background (native-port broker), content (field-detect + click-to-fill), popup
+│   └── src/lib/                           # RPC client, field detection, fill primitive — EXTENSION TESTS LIVE HERE (not entrypoints/; wxt build is NOT a GSD gate)
+└── apps/native-host/                     # Rust native-messaging host (v3.0) — extension ↔ desktop bridge
+    └── src/                               # length-prefixed stdin/stdout JSON; ONE request per connection; Rust kill-switch honored
 ```
 
 **Tier responsibilities**
 - `packages/core` — pure crypto/vault/entries logic, bytes in/out; owns the `VaultStorageAdapter` interface and typed errors.
 - `apps/desktop/src` — Svelte renderer; owns UI + in-memory `VaultSession`.
 - `apps/desktop/src-tauri` — Rust shell; owns capabilities, CSP, plugin wiring, atomic save, single-instance.
+- `apps/extension` — WXT + Svelte MV3 extension; owns field detection + click-to-fill; reaches the vault only through the native host.
+- `apps/native-host` — Rust native-messaging host; single-use per-request ports; bridges extension ↔ desktop and honors the kill-switch.
 
 **Locked decision boundaries** (change only via explicit cross-phase decision)
 - Vault wire format (`VaultDocumentV1`: `format` discriminator + `version` gate + per-wrap `kdf` + open `wrappedKeys` + `data` sealed under `VAULT_AD`) — **do not change after Phase 2**.
 - Crypto params (combined XChaCha20-Poly1305 IETF, Argon2id 256 MiB/3 ops floor no ceiling, BLAKE2b recovery key, tiered padding + uint32-LE prefix, base64 ORIGINAL) — **do not modify after Phase 2**; pinned by KAT-1..4.
 - Sync wire protocol (`snow` `Noise_XXpsk3` pairing + `Noise_IKpsk2` transport, 4-byte u32 large-blob framing, `vaultPairId` binding gate before any vault bytes, cold-decrypt-verify before swap, secureWipe) — **locked at v2.0**; pinned by the Rust `#[tokio::test]` suite.
 - Capability JSON shape (literal paths incl. `peers.json` + explicit TCP permission, explicit `platforms`, two-file split), production CSP block, pnpm minimumReleaseAge, single-instance plugin order, `$state.raw` for vault state, Linux structurally excluded, typed-error fail-closed contract.
+- Extension fill contract (click-to-fill, never-auto-submit, iframe-refusing, exact-origin) + native-host one-request-per-connection framing — **locked at v3.0**. Inner schema (`InnerDoc.schemaVersion ∈ {1,2,3}`, additive `asInnerDoc()` bump only) + the two sync schemaVersion allowlists move only in lockstep with the merge.ts field-parity sites (v3.1).
 
 <!-- GSD:architecture-end -->
 
