@@ -45,8 +45,8 @@ import type {
   FillRequest,
   FillResult,
 } from '../src/lib/contentScriptMessages';
-import { scanForLoginFields } from '../src/lib/fieldDetection';
-import { fillField } from '../src/lib/domFill';
+import { scanForCardFields, scanForIdentityFields, scanForLoginFields } from '../src/lib/fieldDetection';
+import { fillField, fillSelectField, formatExpiryForField, isFieldVisible } from '../src/lib/domFill';
 
 const OBSERVER_DEBOUNCE_MS = 250; // 17-RESEARCH.md MutationObserver Pattern: ~200-300ms window.
 
@@ -65,15 +65,107 @@ function isKnownMessage(value: unknown): value is IncomingMessage {
 }
 
 /**
- * cryptiq-fill: exact-origin refusal FIRST (XSEC-03), then a FRESH re-scan
- * (the page may have mutated since an earlier cryptiq-detect call -- never
- * reuse a cached field reference), then fillField (never a direct `.value =`
- * assignment, never a submit). Drops all local references to `msg.secret`
- * on return by simply not retaining them past this call's stack frame.
+ * Phase 25 (CFILL-03, D-04 forgiving fill): fills the card branch of
+ * `handleFill`. Every write is gated on (a) the field being detected, (b)
+ * `isFieldVisible` (a hidden decoy field never receives a value even on a
+ * token match, T-25-09), and (c) a stored value being present. `expiryMonth`/
+ * `expiryYear` route through `fillSelectField` when the matched element is a
+ * `<select>` (else `fillField`); `ccExpCombined` routes through
+ * `formatExpiryForField` then `fillField`; every other field routes through
+ * `fillField`. Returns the count of fields actually written -- the caller
+ * decides ok/no-field-found from that count (D-04: >=1 write is success).
+ * NEVER calls submit()/requestSubmit() -- same never-auto-submit discipline
+ * as `fillField`/`fillSelectField` themselves.
+ */
+function fillCardFields(card: Extract<FillRequest, { kind: 'card' }>['card']): number {
+  const fields = scanForCardFields(document);
+  let written = 0;
+
+  const fillText = (el: HTMLInputElement | HTMLSelectElement | undefined, value: string | undefined): void => {
+    if (!el || !value) return;
+    if (!(el instanceof HTMLInputElement)) return; // not a text-writable field
+    if (!isFieldVisible(el)) return;
+    fillField(el, value);
+    written += 1;
+  };
+
+  const fillExpiry = (el: HTMLInputElement | HTMLSelectElement | undefined, value: string | undefined): void => {
+    if (!el || !value) return;
+    if (!isFieldVisible(el)) return;
+    if (el instanceof HTMLSelectElement) {
+      const result = fillSelectField(el, value);
+      if (result.filled) written += 1;
+      return; // a fillSelectField skip (no matching <option>) does NOT count
+    }
+    fillField(el, value);
+    written += 1;
+  };
+
+  fillText(fields.cardholderName, card.cardholderName);
+  fillText(fields.number, card.number);
+  fillText(fields.cvv, card.cvv);
+  fillText(fields.brand, card.brand);
+  fillExpiry(fields.expiryMonth, card.expiryMonth);
+  fillExpiry(fields.expiryYear, card.expiryYear);
+
+  const combined = fields.ccExpCombined;
+  if (combined instanceof HTMLInputElement && isFieldVisible(combined) && card.expiryMonth && card.expiryYear) {
+    fillField(combined, formatExpiryForField(combined, card.expiryMonth, card.expiryYear));
+    written += 1;
+  }
+
+  return written;
+}
+
+/**
+ * Phase 25 (CFILL-03, D-04 forgiving fill): fills the identity branch of
+ * `handleFill`. Same matched+visible+valued gate as `fillCardFields`; no
+ * `<select>` path for identity fields -- always routes through `fillField`.
+ * Returns the count of fields actually written.
+ */
+function fillIdentityFields(identity: Extract<FillRequest, { kind: 'identity' }>['identity']): number {
+  const fields = scanForIdentityFields(document);
+  let written = 0;
+
+  const fillText = (el: HTMLInputElement | undefined, value: string | undefined): void => {
+    if (!el || !value) return;
+    if (!isFieldVisible(el)) return;
+    fillField(el, value);
+    written += 1;
+  };
+
+  fillText(fields.email, identity.email);
+  fillText(fields.tel, identity.phone);
+  fillText(fields.address, identity.address);
+
+  return written;
+}
+
+/**
+ * cryptiq-fill: exact-origin refusal FIRST (XSEC-03), unconditionally for
+ * every `kind` -- do NOT move this check inside a branch. Then dispatches on
+ * `msg.kind` (Phase 25, CFILL-03/D-01): `login` is the pre-Phase-25 behavior
+ * verbatim (a FRESH re-scan -- the page may have mutated since an earlier
+ * cryptiq-detect call -- then fillField, never a direct `.value =`
+ * assignment, never a submit); `card`/`identity` route through
+ * `fillCardFields`/`fillIdentityFields`'s forgiving-fill gate (D-04: >=1
+ * field written -> ok:true, else no-field-found). Drops all local references
+ * to the incoming secret on return by simply not retaining them past this
+ * call's stack frame.
  */
 function handleFill(msg: FillRequest): FillResult {
   if (location.origin !== msg.expectedOrigin) {
     return { ok: false, reason: 'origin-mismatch' };
+  }
+
+  if (msg.kind === 'card') {
+    const written = fillCardFields(msg.card);
+    return written > 0 ? { ok: true } : { ok: false, reason: 'no-field-found' };
+  }
+
+  if (msg.kind === 'identity') {
+    const written = fillIdentityFields(msg.identity);
+    return written > 0 ? { ok: true } : { ok: false, reason: 'no-field-found' };
   }
 
   const { user, pass } = scanForLoginFields(document);

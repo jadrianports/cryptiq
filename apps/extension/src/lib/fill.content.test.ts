@@ -35,7 +35,7 @@ const scanForLoginFieldsSpy = vi.hoisted(() => vi.fn());
 vi.mock('./fieldDetection', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./fieldDetection')>();
   scanForLoginFieldsSpy.mockImplementation(actual.scanForLoginFields);
-  return { scanForLoginFields: scanForLoginFieldsSpy };
+  return { ...actual, scanForLoginFields: scanForLoginFieldsSpy };
 });
 
 import fillContentScript from '../../entrypoints/fill.content';
@@ -51,6 +51,75 @@ function buildLoginForm(): { form: HTMLFormElement; user: HTMLInputElement; pass
   form.appendChild(pass);
   document.body.appendChild(form);
   return { form, user, pass };
+}
+
+// Task 2 (Plan 25-03): card/identity fixture builders, mirroring
+// buildLoginForm's shape -- one small named builder per fixture, colocated
+// here (PATTERNS.md "fixture-builder-per-file convention").
+function buildCardForm(): {
+  cardholderName: HTMLInputElement;
+  number: HTMLInputElement;
+  expiryMonth: HTMLSelectElement;
+  expiryYear: HTMLSelectElement;
+  cvv: HTMLInputElement;
+} {
+  const form = document.createElement('form');
+
+  const cardholderName = document.createElement('input');
+  cardholderName.setAttribute('autocomplete', 'cc-name');
+
+  const number = document.createElement('input');
+  number.setAttribute('autocomplete', 'cc-number');
+
+  const expiryMonth = document.createElement('select');
+  expiryMonth.setAttribute('autocomplete', 'cc-exp-month');
+  for (const m of ['01', '02', '03']) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    expiryMonth.appendChild(opt);
+  }
+
+  const expiryYear = document.createElement('select');
+  expiryYear.setAttribute('autocomplete', 'cc-exp-year');
+  for (const y of ['2027', '2028']) {
+    const opt = document.createElement('option');
+    opt.value = y;
+    opt.textContent = y;
+    expiryYear.appendChild(opt);
+  }
+
+  const cvv = document.createElement('input');
+  cvv.setAttribute('autocomplete', 'cc-csc');
+
+  form.appendChild(cardholderName);
+  form.appendChild(number);
+  form.appendChild(expiryMonth);
+  form.appendChild(expiryYear);
+  form.appendChild(cvv);
+  document.body.appendChild(form);
+
+  return { cardholderName, number, expiryMonth, expiryYear, cvv };
+}
+
+function buildIdentityForm(): { email: HTMLInputElement; tel: HTMLInputElement; address: HTMLInputElement } {
+  const form = document.createElement('form');
+
+  const email = document.createElement('input');
+  email.setAttribute('autocomplete', 'email');
+
+  const tel = document.createElement('input');
+  tel.setAttribute('autocomplete', 'tel');
+
+  const address = document.createElement('input');
+  address.setAttribute('autocomplete', 'street-address');
+
+  form.appendChild(email);
+  form.appendChild(tel);
+  form.appendChild(address);
+  document.body.appendChild(form);
+
+  return { email, tel, address };
 }
 
 // fakeBrowser (== globalThis.chrome, see auto.mjs) extends chrome.runtime.onMessage
@@ -284,34 +353,156 @@ describe('fill.content', () => {
     expect(pass.value).toBe('');
   });
 
-  it('debounces the MutationObserver re-scan to exactly ONE call per mutation batch (FILL-02)', () => {
-    vi.useFakeTimers();
+  // Task 2 (Plan 25-03, CFILL-03): the typed card/identity branches. There is
+  // NO popup send-side yet (Phase 26) -- these construct the typed
+  // FillRequest message directly, exactly like the login tests above
+  // (RESEARCH.md Pitfall 2), not a simulated popup click. Placed BEFORE the
+  // debounce test below, which calls vi.unstubAllGlobals() and clobbers the
+  // fakeBrowser/chrome global stub for any test running after it.
+  describe('cryptiq-fill kind:card / kind:identity (CFILL-03)', () => {
+    it('kind:card with a visible matching form fills text fields + a <select> expiry and resolves ok:true', async () => {
+      const { cardholderName, number, expiryMonth, expiryYear, cvv } = buildCardForm();
 
-    let capturedCallback: MutationCallback | undefined;
-    class FakeMutationObserver {
-      constructor(cb: MutationCallback) {
-        capturedCallback = cb;
-      }
-      observe(): void {}
-      disconnect(): void {}
-    }
-    vi.stubGlobal('MutationObserver', FakeMutationObserver);
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: {
+          cardholderName: 'Alice Example',
+          number: '4111111111111111',
+          expiryMonth: '03',
+          expiryYear: '2027',
+          cvv: '123',
+        },
+        expectedOrigin: location.origin,
+      });
 
-    fillContentScript.main(createCtx());
-    scanForLoginFieldsSpy.mockClear();
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(cardholderName.value).toBe('Alice Example');
+      expect(number.value).toBe('4111111111111111');
+      expect(expiryMonth.value).toBe('03');
+      expect(expiryYear.value).toBe('2027');
+      expect(cvv.value).toBe('123');
+    });
 
-    expect(capturedCallback).toBeDefined();
-    // Simulate a burst of mutation-record batches arriving inside the same
-    // debounce window -- the debounce must coalesce all of them into one
-    // scheduled re-scan, not one per callback invocation.
-    capturedCallback?.([], {} as MutationObserver);
-    capturedCallback?.([], {} as MutationObserver);
-    capturedCallback?.([], {} as MutationObserver);
+    it('kind:card does NOT write a field that is display:none (CFILL-03 visibility gate)', async () => {
+      const { cardholderName, number, cvv } = buildCardForm();
+      cvv.style.display = 'none';
 
-    vi.advanceTimersByTime(300);
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: {
+          cardholderName: 'Alice Example',
+          number: '4111111111111111',
+          expiryMonth: '03',
+          expiryYear: '2027',
+          cvv: '123',
+        },
+        expectedOrigin: location.origin,
+      });
 
-    expect(scanForLoginFieldsSpy).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(cardholderName.value).toBe('Alice Example');
+      expect(number.value).toBe('4111111111111111');
+      expect(cvv.value).toBe('');
+    });
 
-    vi.unstubAllGlobals();
+    it('kind:card is forgiving: a form with only cardholderName+number still resolves ok:true when >=1 field is written', async () => {
+      const form = document.createElement('form');
+      const cardholderName = document.createElement('input');
+      cardholderName.setAttribute('autocomplete', 'cc-name');
+      form.appendChild(cardholderName);
+      document.body.appendChild(form);
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: { cardholderName: 'Alice Example', number: '', expiryMonth: '', expiryYear: '', cvv: '' },
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(cardholderName.value).toBe('Alice Example');
+    });
+
+    it('kind:card resolves no-field-found when zero fields were written', async () => {
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: { cardholderName: 'Alice Example', number: '4111', expiryMonth: '03', expiryYear: '2027', cvv: '123' },
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'no-field-found' } satisfies FillResult);
+    });
+
+    it('kind:card refuses on origin mismatch and writes NOTHING to the DOM (XSEC-03)', async () => {
+      const { cardholderName, number } = buildCardForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: { cardholderName: 'Alice Example', number: '4111111111111111', expiryMonth: '03', expiryYear: '2027', cvv: '123' },
+        expectedOrigin: 'https://this-will-never-match.example',
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'origin-mismatch' } satisfies FillResult);
+      expect(cardholderName.value).toBe('');
+      expect(number.value).toBe('');
+    });
+
+    it('kind:card never calls form.submit()/requestSubmit() (never-auto-submit)', async () => {
+      buildCardForm();
+      const submitSpy = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {});
+      const requestSubmitSpy = vi
+        .spyOn(HTMLFormElement.prototype, 'requestSubmit')
+        .mockImplementation(() => {});
+
+      await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: { cardholderName: 'Alice Example', number: '4111111111111111', expiryMonth: '03', expiryYear: '2027', cvv: '123' },
+        expectedOrigin: location.origin,
+      });
+
+      expect(submitSpy).not.toHaveBeenCalled();
+      expect(requestSubmitSpy).not.toHaveBeenCalled();
+
+      submitSpy.mockRestore();
+      requestSubmitSpy.mockRestore();
+    });
+
+    it('kind:identity fills email/tel/address forgivingly and resolves ok:true', async () => {
+      const { email, tel, address } = buildIdentityForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'identity',
+        identity: { email: 'alice@example.com', phone: '555-0100', address: '123 Main St' },
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(email.value).toBe('alice@example.com');
+      expect(tel.value).toBe('555-0100');
+      expect(address.value).toBe('123 Main St');
+    });
+
+    it('kind:identity refuses on origin mismatch and writes NOTHING to the DOM (XSEC-03)', async () => {
+      const { email, tel, address } = buildIdentityForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'identity',
+        identity: { email: 'alice@example.com', phone: '555-0100', address: '123 Main St' },
+        expectedOrigin: 'https://this-will-never-match.example',
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'origin-mismatch' } satisfies FillResult);
+      expect(email.value).toBe('');
+      expect(tel.value).toBe('');
+      expect(address.value).toBe('');
+    });
   });
+
 });
