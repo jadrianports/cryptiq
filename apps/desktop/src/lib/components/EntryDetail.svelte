@@ -93,6 +93,14 @@
   let favorite = $state(false);
   let needsUpdate = $state(false);
 
+  // Identity form mirrors (D-07/TYPES-02). All four subfields are required
+  // strings on EntryIdentity — sent as a whole object on every persist (no
+  // deep-merge; caller-sends-full-object contract per 23-01 updateEntry).
+  let idName = $state('');
+  let idEmail = $state('');
+  let idPhone = $state('');
+  let idAddress = $state('');
+
   // Equivalent-URL chip editor draft state (URLS-01, D-09/D-10).
   let newUrlDraft = $state('');
   let urlHint = $state<string | null>(null);
@@ -115,6 +123,10 @@
       notes = entry.notes ?? '';
       favorite = entry.favorite ?? false;
       needsUpdate = entry.needsSiteUpdate ?? false;
+      idName = entry.identity?.name ?? '';
+      idEmail = entry.identity?.email ?? '';
+      idPhone = entry.identity?.phone ?? '';
+      idAddress = entry.identity?.address ?? '';
     } else {
       // Blank "+New" form (P4-14)
       title = '';
@@ -126,6 +138,10 @@
       notes = '';
       favorite = false;
       needsUpdate = false;
+      idName = '';
+      idEmail = '';
+      idPhone = '';
+      idAddress = '';
     }
     // Reset the chip-editor draft state on every entry-identity change.
     newUrlDraft = '';
@@ -287,6 +303,17 @@
   function handleNotesBlur() {
     if (entryId === null) return;
     vaultSession.updateEntry(entryId, { notes });
+    scheduleSave();
+  }
+
+  // ── Identity form persist (D-07/TYPES-02) ─────────────────────────────
+  // EntryIdentity's four subfields are all required strings — send the whole
+  // reconstructed object (wholesale-replace, no deep-merge, per 23-01).
+  function persistIdentity() {
+    if (entryId === null) return; // blank form — held in mirrors until first save
+    vaultSession.updateEntry(entryId, {
+      identity: { name: idName, email: idEmail, phone: idPhone, address: idAddress },
+    });
     scheduleSave();
   }
 
@@ -482,212 +509,282 @@
     </button>
   </header>
 
-  <!-- Fields -->
+  <!-- Fields — one dynamic form, swapped by entry.type (D-04). Header + Notes are
+       universal (rendered for every type); everything else lives inside a type branch. -->
   <div class="flex-1 space-y-5 overflow-y-auto px-6 py-5">
-    <!-- Username -->
-    <div>
-      <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Username</span>
-      <div class="flex items-center gap-1">
-        <input
-          bind:value={username}
-          onblur={handleUsernameBlur}
-          placeholder="—"
-          aria-label="Username"
-          class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
-                 outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
-        />
-        {@render copyButton('username', username)}
-      </div>
-    </div>
-
-    <!-- Email (IDENT-01) — orthogonal to Username, never derived/split from it (IDENT-03) -->
-    <div>
-      <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Email</span>
-      <div class="flex items-center gap-1">
-        <input
-          bind:value={email}
-          onblur={handleEmailBlur}
-          placeholder="—"
-          aria-label="Email"
-          class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
-                 outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
-        />
-        {@render copyButton('email', email)}
-      </div>
-    </div>
-
-    <!-- Password (P4-13 reveal, P4-12 generator) -->
-    <div class="relative">
-      <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Password</span>
-      <div class="flex items-center gap-1">
-        <!-- Hold anywhere on the value to peek; release re-masks (P4-13). -->
-        <div
-          class="flex min-w-0 flex-1 items-center rounded-cryptiq bg-cryptiq-surface-2 px-2 py-1.5"
-          onpointerdown={() => (heldReveal = true)}
-          onpointerup={() => (heldReveal = false)}
-          onpointerleave={() => (heldReveal = false)}
-          onpointercancel={() => (heldReveal = false)}
-          role="presentation"
-        >
-          <!-- Password edit input — visible when held or toggled -->
-          {#if revealed}
-            <input
-              type="text"
-              bind:value={password}
-              onblur={handlePasswordBlur}
-              placeholder="—"
-              aria-label="Password"
-              class="min-w-0 flex-1 bg-transparent font-mono text-body text-cryptiq-fg outline-none"
-            />
-          {:else}
-            <span class="min-w-0 flex-1 truncate font-mono text-body text-cryptiq-fg select-none">
-              {'•'.repeat(Math.min(12, password.length || 12))}
-            </span>
-            <span class="ml-2 text-meta text-cryptiq-fg-subtle select-none">hold to peek</span>
-          {/if}
-        </div>
-
-        <!-- Click toggle (accessibility fallback for press-and-hold). -->
-        <button
-          type="button"
-          onclick={() => (toggledReveal = !toggledReveal)}
-          aria-pressed={toggledReveal}
-          title={toggledReveal ? 'Hide password' : 'Show password'}
-          class="grid size-8 shrink-0 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg"
-        >
-          {#if revealed}
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.16 3.19M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9.3 9.3 0 0 0 5.4-1.6" /><path d="m2 2 20 20" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>
-          {:else}
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-8 10-8 10 8 10 8-3 8-10 8-10-8-10-8Z" /><circle cx="12" cy="12" r="3" /></svg>
-          {/if}
-        </button>
-
-        <!-- Inline generator trigger (popover, P4-12). -->
-        <button
-          type="button"
-          onclick={() => (showGen = !showGen)}
-          aria-expanded={showGen}
-          title="Generate password"
-          class="grid size-8 shrink-0 place-items-center rounded-cryptiq transition-colors hover:bg-cryptiq-hover
-                 {showGen ? 'text-cryptiq-accent' : 'text-cryptiq-fg-subtle hover:text-cryptiq-fg'}"
-        >
-          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 6-6" /><path d="M14 4l6 6" /><path d="M16.5 2.5 21.5 7.5l-3 3-5-5z" /><circle cx="8" cy="16" r="0.5" fill="currentColor" /><circle cx="6" cy="6" r="0.5" fill="currentColor" /><circle cx="18" cy="16" r="0.5" fill="currentColor" /></svg>
-        </button>
-        {@render copyButton('password', password)}
-      </div>
-
-      {#if showGen}
-        <!-- Click-away closer + anchored popover. -->
-        <button
-          type="button"
-          class="fixed inset-0 z-10 cursor-default"
-          aria-label="Close generator"
-          onclick={() => (showGen = false)}
-        ></button>
-        <div class="absolute top-full right-0 z-20 mt-2">
-          <GeneratorSurface
-            variant="popover"
-            generate={coreGenerate}
-            estimateBits={coreEstimateBits}
-            onUse={useGenerated}
+    {#if entry === null || entry.type === 'login'}
+      <!-- Username -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Username</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={username}
+            onblur={handleUsernameBlur}
+            placeholder="—"
+            aria-label="Username"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
           />
+          {@render copyButton('username', username)}
         </div>
-      {/if}
-    </div>
-
-    <!-- URL -->
-    <div>
-      <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Website</span>
-      <div class="flex items-center gap-1">
-        <input
-          bind:value={url}
-          onblur={handleUrlBlur}
-          placeholder="https://"
-          aria-label="Website URL"
-          class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-accent
-                 outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
-        />
-        <!-- Open URL (UI-07) -->
-        <button
-          type="button"
-          onclick={handleOpenUrl}
-          disabled={!url}
-          title="Open URL"
-          aria-label="Open URL in browser"
-          class="grid size-8 shrink-0 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg disabled:opacity-40 disabled:hover:bg-transparent"
-        >
-          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>
-        </button>
-        {@render copyButton('url', url)}
       </div>
 
-      <!-- Equivalent-URL chip editor (D-09/D-10, URLS-01) -->
-      <div class="mt-2">
-        {#if equivalentUrls.length > 0}
-          <div class="mb-1.5 flex flex-wrap gap-1.5">
-            {#each equivalentUrls as chip, i (chip + i)}
-              <span class="flex items-center gap-1 rounded bg-cryptiq-surface-2 px-1 text-xs text-cryptiq-fg">
-                {chip}
-                <button
-                  type="button"
-                  onclick={() => removeEquivalentUrl(i)}
-                  title="Remove"
-                  aria-label="Remove equivalent URL {chip}"
-                  class="grid size-3.5 place-items-center rounded-full text-cryptiq-fg-subtle hover:text-cryptiq-danger"
-                >
-                  <svg class="size-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18" /></svg>
-                </button>
+      <!-- Email (IDENT-01) — orthogonal to Username, never derived/split from it (IDENT-03) -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Email</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={email}
+            onblur={handleEmailBlur}
+            placeholder="—"
+            aria-label="Email"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+          {@render copyButton('email', email)}
+        </div>
+      </div>
+
+      <!-- Password (P4-13 reveal, P4-12 generator) -->
+      <div class="relative">
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Password</span>
+        <div class="flex items-center gap-1">
+          <!-- Hold anywhere on the value to peek; release re-masks (P4-13). -->
+          <div
+            class="flex min-w-0 flex-1 items-center rounded-cryptiq bg-cryptiq-surface-2 px-2 py-1.5"
+            onpointerdown={() => (heldReveal = true)}
+            onpointerup={() => (heldReveal = false)}
+            onpointerleave={() => (heldReveal = false)}
+            onpointercancel={() => (heldReveal = false)}
+            role="presentation"
+          >
+            <!-- Password edit input — visible when held or toggled -->
+            {#if revealed}
+              <input
+                type="text"
+                bind:value={password}
+                onblur={handlePasswordBlur}
+                placeholder="—"
+                aria-label="Password"
+                class="min-w-0 flex-1 bg-transparent font-mono text-body text-cryptiq-fg outline-none"
+              />
+            {:else}
+              <span class="min-w-0 flex-1 truncate font-mono text-body text-cryptiq-fg select-none">
+                {'•'.repeat(Math.min(12, password.length || 12))}
               </span>
-            {/each}
+              <span class="ml-2 text-meta text-cryptiq-fg-subtle select-none">hold to peek</span>
+            {/if}
+          </div>
+
+          <!-- Click toggle (accessibility fallback for press-and-hold). -->
+          <button
+            type="button"
+            onclick={() => (toggledReveal = !toggledReveal)}
+            aria-pressed={toggledReveal}
+            title={toggledReveal ? 'Hide password' : 'Show password'}
+            class="grid size-8 shrink-0 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg"
+          >
+            {#if revealed}
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.16 3.19M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9.3 9.3 0 0 0 5.4-1.6" /><path d="m2 2 20 20" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>
+            {:else}
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-8 10-8 10 8 10 8-3 8-10 8-10-8-10-8Z" /><circle cx="12" cy="12" r="3" /></svg>
+            {/if}
+          </button>
+
+          <!-- Inline generator trigger (popover, P4-12). -->
+          <button
+            type="button"
+            onclick={() => (showGen = !showGen)}
+            aria-expanded={showGen}
+            title="Generate password"
+            class="grid size-8 shrink-0 place-items-center rounded-cryptiq transition-colors hover:bg-cryptiq-hover
+                   {showGen ? 'text-cryptiq-accent' : 'text-cryptiq-fg-subtle hover:text-cryptiq-fg'}"
+          >
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 6-6" /><path d="M14 4l6 6" /><path d="M16.5 2.5 21.5 7.5l-3 3-5-5z" /><circle cx="8" cy="16" r="0.5" fill="currentColor" /><circle cx="6" cy="6" r="0.5" fill="currentColor" /><circle cx="18" cy="16" r="0.5" fill="currentColor" /></svg>
+          </button>
+          {@render copyButton('password', password)}
+        </div>
+
+        {#if showGen}
+          <!-- Click-away closer + anchored popover. -->
+          <button
+            type="button"
+            class="fixed inset-0 z-10 cursor-default"
+            aria-label="Close generator"
+            onclick={() => (showGen = false)}
+          ></button>
+          <div class="absolute top-full right-0 z-20 mt-2">
+            <GeneratorSurface
+              variant="popover"
+              generate={coreGenerate}
+              estimateBits={coreEstimateBits}
+              onUse={useGenerated}
+            />
           </div>
         {/if}
-        <input
-          bind:value={newUrlDraft}
-          onkeydown={handleUrlDraftKeydown}
-          onpaste={handleUrlDraftPaste}
-          oninput={handleUrlDraftInput}
-          placeholder="Add equivalent URL…"
-          aria-label="Add equivalent URL"
-          class="w-full min-w-0 rounded-cryptiq bg-transparent px-2 py-1 text-meta text-cryptiq-fg
-                 outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
-        />
-        {#if urlHint}
-          <span class="mt-0.5 block text-meta text-cryptiq-danger">{urlHint}</span>
-        {/if}
       </div>
-    </div>
 
-    <!-- Notes -->
+      <!-- URL -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Website</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={url}
+            onblur={handleUrlBlur}
+            placeholder="https://"
+            aria-label="Website URL"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-accent
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+          <!-- Open URL (UI-07) -->
+          <button
+            type="button"
+            onclick={handleOpenUrl}
+            disabled={!url}
+            title="Open URL"
+            aria-label="Open URL in browser"
+            class="grid size-8 shrink-0 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>
+          </button>
+          {@render copyButton('url', url)}
+        </div>
+
+        <!-- Equivalent-URL chip editor (D-09/D-10, URLS-01) -->
+        <div class="mt-2">
+          {#if equivalentUrls.length > 0}
+            <div class="mb-1.5 flex flex-wrap gap-1.5">
+              {#each equivalentUrls as chip, i (chip + i)}
+                <span class="flex items-center gap-1 rounded bg-cryptiq-surface-2 px-1 text-xs text-cryptiq-fg">
+                  {chip}
+                  <button
+                    type="button"
+                    onclick={() => removeEquivalentUrl(i)}
+                    title="Remove"
+                    aria-label="Remove equivalent URL {chip}"
+                    class="grid size-3.5 place-items-center rounded-full text-cryptiq-fg-subtle hover:text-cryptiq-danger"
+                  >
+                    <svg class="size-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                  </button>
+                </span>
+              {/each}
+            </div>
+          {/if}
+          <input
+            bind:value={newUrlDraft}
+            onkeydown={handleUrlDraftKeydown}
+            onpaste={handleUrlDraftPaste}
+            oninput={handleUrlDraftInput}
+            placeholder="Add equivalent URL…"
+            aria-label="Add equivalent URL"
+            class="w-full min-w-0 rounded-cryptiq bg-transparent px-2 py-1 text-meta text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+          {#if urlHint}
+            <span class="mt-0.5 block text-meta text-cryptiq-danger">{urlHint}</span>
+          {/if}
+        </div>
+      </div>
+    {:else if entry.type === 'identity'}
+      <!-- Identity form (D-07/TYPES-02): name/email/phone + single free-text address. -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Name</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={idName}
+            onblur={persistIdentity}
+            placeholder="—"
+            aria-label="Name"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+          {@render copyButton('idName', idName)}
+        </div>
+      </div>
+
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Email</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={idEmail}
+            onblur={persistIdentity}
+            placeholder="—"
+            aria-label="Identity email"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+          {@render copyButton('idEmail', idEmail)}
+        </div>
+      </div>
+
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Phone</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={idPhone}
+            onblur={persistIdentity}
+            placeholder="—"
+            aria-label="Phone"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+          {@render copyButton('idPhone', idPhone)}
+        </div>
+      </div>
+
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Address</span>
+        <textarea
+          bind:value={idAddress}
+          onblur={persistIdentity}
+          rows="3"
+          placeholder="Add an address…"
+          aria-label="Address"
+          class="w-full resize-none rounded-cryptiq bg-transparent px-2 py-1.5 text-body leading-relaxed text-cryptiq-fg
+                 outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+        ></textarea>
+      </div>
+    {:else if entry.type === 'secure-note'}
+      <!-- Secure-note (D-07/TYPES-03): title + free-text body only — the universal
+           Notes field below IS the body. Zero autofill surface: no username/password/url. -->
+    {/if}
+    <!-- {:else if entry.type === 'card'} branch is added by plan 23-06. -->
+
+    <!-- Notes — universal (also doubles as the secure-note body, D-07) -->
     <div>
-      <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Notes</span>
+      <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">
+        {entry?.type === 'secure-note' ? 'Note' : 'Notes'}
+      </span>
       <textarea
         bind:value={notes}
         onblur={handleNotesBlur}
         rows="3"
         placeholder="Add a note…"
-        aria-label="Notes"
+        aria-label={entry?.type === 'secure-note' ? 'Note' : 'Notes'}
         class="w-full resize-none rounded-cryptiq bg-transparent px-2 py-1.5 text-body leading-relaxed text-cryptiq-fg
                outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
       ></textarea>
     </div>
 
-    <!-- Needs-site-update toggle (ENTRY-08, UI-09) -->
-    <label class="flex items-center justify-between gap-3 rounded-cryptiq border border-cryptiq-border bg-cryptiq-surface-2 px-3 py-2.5">
-      <span class="min-w-0">
-        <span class="block text-body font-medium text-cryptiq-fg">Needs site update</span>
-        <span class="block text-meta text-cryptiq-fg-subtle">Flag this login to revisit and rotate later.</span>
-      </span>
-      <button
-        bind:this={needsUpdateButtonEl}
-        type="button"
-        role="switch"
-        aria-checked={needsUpdate}
-        aria-label="Needs site update"
-        onclick={toggleNeedsUpdate}
-        class="relative h-5 w-9 shrink-0 rounded-full transition-colors {needsUpdate ? 'bg-cryptiq-attention' : 'bg-cryptiq-border-strong'}"
-      >
-        <span class="absolute top-0.5 left-0.5 size-4 rounded-full bg-white shadow-cryptiq-panel transition-transform {needsUpdate ? 'translate-x-4' : ''}"></span>
-      </button>
-    </label>
+    {#if entry === null || entry.type === 'login'}
+      <!-- Needs-site-update toggle (ENTRY-08, UI-09) -->
+      <label class="flex items-center justify-between gap-3 rounded-cryptiq border border-cryptiq-border bg-cryptiq-surface-2 px-3 py-2.5">
+        <span class="min-w-0">
+          <span class="block text-body font-medium text-cryptiq-fg">Needs site update</span>
+          <span class="block text-meta text-cryptiq-fg-subtle">Flag this login to revisit and rotate later.</span>
+        </span>
+        <button
+          bind:this={needsUpdateButtonEl}
+          type="button"
+          role="switch"
+          aria-checked={needsUpdate}
+          aria-label="Needs site update"
+          onclick={toggleNeedsUpdate}
+          class="relative h-5 w-9 shrink-0 rounded-full transition-colors {needsUpdate ? 'bg-cryptiq-attention' : 'bg-cryptiq-border-strong'}"
+        >
+          <span class="absolute top-0.5 left-0.5 size-4 rounded-full bg-white shadow-cryptiq-panel transition-transform {needsUpdate ? 'translate-x-4' : ''}"></span>
+        </button>
+      </label>
+    {/if}
   </div>
 </section>
