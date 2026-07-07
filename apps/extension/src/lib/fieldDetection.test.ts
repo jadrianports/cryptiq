@@ -6,7 +6,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { scanForLoginFields } from './fieldDetection';
+import { lastMeaningfulToken, scanForCardFields, scanForLoginFields } from './fieldDetection';
 
 /** Builds a detached-then-attached container from an HTML string, mirroring
  * matchByOrigin.test.ts's makeEntry(overrides) fixture-builder convention. */
@@ -271,5 +271,113 @@ describe('fieldDetection — scanForLoginFields (FILL-01/02/07, D-02/D-03)', () 
 
     const allStorage = await chrome.storage.local.get(null);
     expect(Object.keys(allStorage)).toHaveLength(0);
+  });
+});
+
+describe('fieldDetection — lastMeaningfulToken (CFILL-01, D-05)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('resolves a section/billing-prefixed multi-token string on its LAST token', () => {
+    const container = makeFormFixture(`<input autocomplete="section-x billing postal-code" id="pc" />`);
+    const el = container.querySelector('#pc')!;
+
+    expect(lastMeaningfulToken(el)).toBe('postal-code');
+  });
+
+  it('strips a trailing webauthn credential modifier (reddit-shaped username field)', () => {
+    const container = makeFormFixture(`<input autocomplete="username webauthn" id="u" />`);
+    const el = container.querySelector('#u')!;
+
+    expect(lastMeaningfulToken(el)).toBe('username');
+  });
+
+  it('returns undefined when the autocomplete attribute is empty/absent', () => {
+    const container = makeFormFixture(`<input id="bare" />`);
+    const el = container.querySelector('#bare')!;
+
+    expect(lastMeaningfulToken(el)).toBeUndefined();
+  });
+
+  it('resolves a bare single-token attribute directly', () => {
+    const container = makeFormFixture(`<input autocomplete="cc-number" id="cc" />`);
+    const el = container.querySelector('#cc')!;
+
+    expect(lastMeaningfulToken(el)).toBe('cc-number');
+  });
+});
+
+describe('fieldDetection — scanForCardFields (CFILL-01, D-04/D-05)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('resolves "billing cc-number" to result.number via last-token routing', () => {
+    const container = makeFormFixture(`<input autocomplete="billing cc-number" id="num" />`);
+
+    const result = scanForCardFields(container);
+
+    expect(result.number?.id).toBe('num');
+  });
+
+  it('resolves cc-exp-month / cc-exp-year <select> elements to expiryMonth / expiryYear', () => {
+    const container = makeFormFixture(`
+      <select autocomplete="cc-exp-month" id="month"><option value="03">03</option></select>
+      <select autocomplete="cc-exp-year" id="year"><option value="2027">2027</option></select>
+    `);
+
+    const result = scanForCardFields(container);
+
+    expect(result.expiryMonth?.id).toBe('month');
+    expect(result.expiryYear?.id).toBe('year');
+    expect(result.expiryMonth).toBeInstanceOf(HTMLSelectElement);
+    expect(result.expiryYear).toBeInstanceOf(HTMLSelectElement);
+  });
+
+  it('resolves a single "cc-exp" field to result.ccExpCombined', () => {
+    const container = makeFormFixture(`<input autocomplete="cc-exp" id="exp" />`);
+
+    const result = scanForCardFields(container);
+
+    expect(result.ccExpCombined?.id).toBe('exp');
+  });
+
+  it('resolves cc-csc / cc-name / cc-type to cvv / cardholderName / brand', () => {
+    const container = makeFormFixture(`
+      <input autocomplete="cc-csc" id="csc" />
+      <input autocomplete="cc-name" id="name" />
+      <input autocomplete="cc-type" id="type" />
+    `);
+
+    const result = scanForCardFields(container);
+
+    expect(result.cvv?.id).toBe('csc');
+    expect(result.cardholderName?.id).toBe('name');
+    expect(result.brand?.id).toBe('type');
+  });
+
+  it('returns {} (all-absent) when no cc-* token is present anywhere', () => {
+    const container = makeFormFixture(`
+      <input type="text" name="username" id="u" />
+      <input type="password" id="p" />
+    `);
+
+    const result = scanForCardFields(container);
+
+    expect(result).toEqual({});
+  });
+
+  it('is stateless: two calls after a DOM mutation return independently-current elements', () => {
+    const container = makeFormFixture(`<div id="slot"></div>`);
+
+    const firstScan = scanForCardFields(container);
+    expect(firstScan.number).toBeUndefined();
+
+    const slot = container.querySelector('#slot')!;
+    slot.innerHTML = `<input autocomplete="cc-number" id="late-num" />`;
+
+    const secondScan = scanForCardFields(container);
+    expect(secondScan.number?.id).toBe('late-num');
   });
 });

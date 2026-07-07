@@ -26,6 +26,25 @@ export interface FieldDetectionResult {
   pass?: HTMLInputElement;
 }
 
+/**
+ * Card-field detection result (CFILL-01, D-05). Elements only, never values —
+ * mirrors `FieldDetectionResult`'s shape convention. `expiryMonth`/
+ * `expiryYear` tolerate either `<select>` (WHATWG `cc-exp-month`/
+ * `cc-exp-year`) or `<input>` markup; `ccExpCombined` is the single-field
+ * `cc-exp` variant. `brand` maps `cc-type` — a direct forgiving-fill of an
+ * already-stored brand string, distinct from deferred BIN/Luhn
+ * auto-*detection* (D-06).
+ */
+export interface CardFieldDetectionResult {
+  cardholderName?: HTMLInputElement | HTMLSelectElement;
+  number?: HTMLInputElement | HTMLSelectElement;
+  expiryMonth?: HTMLInputElement | HTMLSelectElement;
+  expiryYear?: HTMLInputElement | HTMLSelectElement;
+  cvv?: HTMLInputElement | HTMLSelectElement;
+  ccExpCombined?: HTMLInputElement | HTMLSelectElement;
+  brand?: HTMLInputElement | HTMLSelectElement;
+}
+
 /** WHATWG HTML Standard "Autofill field name" tokens this module trusts
  * directly. `email` is treated as a username-equivalent signal per D-02. */
 const USERNAME_AUTOCOMPLETE_TOKENS = new Set(['username', 'email']);
@@ -59,6 +78,24 @@ function fieldType(el: HTMLInputElement): string {
 }
 
 /**
+ * Recursively collects every `<select>` under `root`, descending into OPEN
+ * shadow roots — mirrors `collectInputs`'s shadow-DOM-aware traversal
+ * exactly, for the new card-field scanner (D-02: `cc-exp-month`/
+ * `cc-exp-year` may be `<select>` elements).
+ */
+function collectSelects(root: ParentNode): HTMLSelectElement[] {
+  const selects: HTMLSelectElement[] = Array.from(root.querySelectorAll('select'));
+  const descendants = root.querySelectorAll('*');
+  for (const el of descendants) {
+    const shadow = (el as Element).shadowRoot;
+    if (shadow) {
+      selects.push(...collectSelects(shadow));
+    }
+  }
+  return selects;
+}
+
+/**
  * WHATWG-correct tokenization of the `autocomplete` attribute: it is a
  * space-separated token list, so the field-name token (username / email /
  * current-password / new-password) can be preceded by section/shipping/
@@ -71,6 +108,67 @@ function autocompleteTokens(el: HTMLInputElement): string[] {
     .toLowerCase()
     .split(/\s+/)
     .filter(Boolean);
+}
+
+/**
+ * D-05: extracts the field-name token for the payment/identity detection
+ * tier via LAST-token extraction (`"section-x billing postal-code"` ->
+ * `postal-code`), defensively stripping a trailing `webauthn` credential
+ * modifier if present (WHATWG grammar: `webauthn` only ever trails
+ * `username`/`current-password`/`new-password`/`one-time-code`, never a
+ * `cc-*` or address/contact token — so this is correct-by-spec, not merely
+ * defensive). Distinct from the existing username/password MEMBERSHIP test
+ * (`USERNAME_/PASSWORD_AUTOCOMPLETE_TOKENS`) — do NOT reuse this helper for
+ * login detection; the two rules solve different, non-interacting grammar
+ * problems (suffix-tolerant membership vs prefix-tolerant last-token) and
+ * merging them risks regressing BUG-17-01. Returns `undefined` when the
+ * `autocomplete` attribute is empty/absent (a miss is safe — D-05).
+ */
+export function lastMeaningfulToken(el: Element): string | undefined {
+  const tokens = (el.getAttribute('autocomplete') || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return undefined;
+  const last = tokens[tokens.length - 1]!;
+  return last === 'webauthn' ? tokens[tokens.length - 2] : last;
+}
+
+/** Closed allowlist (D-04/D-05, T-25-01): a token with no entry here is
+ * skipped silently — never mis-routed to a semantically-different field
+ * (e.g. `"section-x billing postal-code"` resolves to `postal-code`, which
+ * has no entry, and is therefore skipped, never mis-routed to `billing`). */
+const CARD_TOKEN_FIELD_MAP: Record<string, keyof CardFieldDetectionResult> = {
+  'cc-name': 'cardholderName',
+  'cc-number': 'number',
+  'cc-exp-month': 'expiryMonth',
+  'cc-exp-year': 'expiryYear',
+  'cc-exp': 'ccExpCombined',
+  'cc-csc': 'cvv',
+  'cc-type': 'brand',
+};
+
+/**
+ * Scans `root` for WHATWG `cc-*` payment-token fields (CFILL-01). Stateless
+ * and re-queries the live DOM every call, like `scanForLoginFields`. Returns
+ * element references only (never values) via a closed token->field
+ * allowlist; first-match-wins per field. A miss (no `cc-*` token anywhere)
+ * returns `{}` — safe, not a guess (D-03/D-05 stance).
+ */
+export function scanForCardFields(root: ParentNode): CardFieldDetectionResult {
+  const result: CardFieldDetectionResult = {};
+  const elements: (HTMLInputElement | HTMLSelectElement)[] = [...collectInputs(root), ...collectSelects(root)];
+
+  for (const el of elements) {
+    const token = lastMeaningfulToken(el);
+    if (!token) continue;
+    const field = CARD_TOKEN_FIELD_MAP[token];
+    if (!field) continue;
+    if (result[field]) continue;
+    result[field] = el;
+  }
+
+  return result;
 }
 
 /**
