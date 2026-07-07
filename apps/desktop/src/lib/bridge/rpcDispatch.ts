@@ -142,7 +142,21 @@ export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unkn
     const entry = entries.find((e) => e.id === entryId);
     // V4 Access Control: exactly one secret, only for a live (non-tombstoned) id.
     if (entry !== undefined && entry.deletedAt === null) {
-      return { secret: entry.password };
+      // RPC-01/D-04: discriminated fill-entry union keyed on entry.type. Still
+      // exactly ONE click-gated secret-crossing RPC per entry — no new
+      // secret-crossing pattern, Rust dispatch whitelist unchanged. secure-note
+      // is NOT a discriminant member (D-04) and falls through to not-found.
+      if (entry.type === 'login') {
+        // D-04a: byte-compatible with the pre-Phase-24 payload plus the `type` tag.
+        return { type: 'login', secret: entry.password };
+      }
+      if (entry.type === 'card' && entry.card !== undefined) {
+        return { type: 'card', card: entry.card };
+      }
+      if (entry.type === 'identity' && entry.identity !== undefined) {
+        return { type: 'identity', identity: entry.identity };
+      }
+      return { code: 'not-found' };
     }
     return { code: 'not-found' };
   }
