@@ -43,6 +43,7 @@
   import Sidebar from '../components/Sidebar.svelte';
   import EntryList from '../components/EntryList.svelte';
   import EntryDetail from '../components/EntryDetail.svelte';
+  import TypePickerModal from '../components/TypePickerModal.svelte';
   import RecentlyDeletedList from './RecentlyDeletedList.svelte';
   import SyncNowButton from '../components/SyncNowButton.svelte';
   import SyncErrorAlert from '../sync/SyncErrorAlert.svelte';
@@ -177,15 +178,25 @@
     return () => window.removeEventListener('keydown', handleKeydown);
   });
 
-  // ── "+ New" affordance (P4-14) ─────────────────────────────────────────────
+  // ── "+ New" affordance (P4-14, replaced by the type picker in 23-03) ───────
 
   /**
-   * Create a blank entry and select it so the detail pane opens in edit mode.
-   * Title is empty — EntryDetail enforces non-empty title before the first save (P4-14).
-   * Uses addEntry (async) → set selectedEntryId synchronously after await.
+   * D-01/D-02: the `+` button now opens the type-picker modal instead of
+   * instantly creating a login entry. Only a boolean is held locally — no
+   * entry object is ever copied into `$state` (T-23-08).
    */
-  async function handleNewEntry(): Promise<void> {
-    const entry = await vaultSession.addEntry({ title: 'New Entry' });
+  let showTypePicker = $state(false);
+
+  /**
+   * Create a blank entry of the chosen type and select it so the detail pane
+   * opens in edit mode. Title is empty — EntryDetail enforces non-empty title
+   * before the first save (P4-14). Choosing 'login' reproduces the old
+   * one-click fast path (D-02). Uses the typed addEntry (23-01, async) → set
+   * selectedEntryId synchronously after await.
+   */
+  async function handleCreateOfType(type: Entry['type']): Promise<void> {
+    showTypePicker = false;
+    const entry = await vaultSession.addEntry({ title: 'New Entry', type });
     ui.selectedEntryId = entry.id;
   }
 
@@ -363,10 +374,10 @@
       <!-- Sync Now header button (D-04) — self-hides when unpaired -->
       <SyncNowButton {configDir} {vaultPath} />
 
-      <!-- "+ New" button (P4-14) -->
+      <!-- "+ New" button (P4-14; opens the type picker per D-01/D-02) -->
       <button
         type="button"
-        onclick={handleNewEntry}
+        onclick={() => (showTypePicker = true)}
         class="grid size-8 shrink-0 place-items-center rounded-cryptiq bg-cryptiq-accent text-cryptiq-accent-fg
                transition-colors hover:bg-cryptiq-accent-hover outline-none
                focus-visible:ring-2 focus-visible:ring-cryptiq-ring"
@@ -552,6 +563,16 @@
     {/if}
   </div>
 </div>
+
+<!--
+  Type picker modal (D-01/D-02, 23-03) — mounted at the top level, a sibling
+  of the three-column shell, so it is NEVER caught by the D-11 sync-lock dim
+  container (mirrors the SyncErrorAlert placement rationale, Pitfall 6): the
+  picker must always be interactive even while a sync is in-flight.
+-->
+{#if showTypePicker}
+  <TypePickerModal onSelect={handleCreateOfType} onCancel={() => (showTypePicker = false)} />
+{/if}
 
 <style>
   @media (prefers-reduced-motion: reduce) {
