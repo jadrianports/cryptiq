@@ -184,4 +184,20 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]!.id).toBe(entries[0]!.id);
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase 23 Task 3 (D-13/SC-5): secure-note exclusion guard
+  // ---------------------------------------------------------------------------
+
+  it('excludes a secure-note entry from match candidates even with a matching url (D-13/SC-5)', () => {
+    const entries = [makeEntry({ url: 'example.com', type: 'secure-note' })];
+    const result = matchByOrigin(entries, 'https://example.com');
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('still returns a matching login entry as a candidate (regression guard)', () => {
+    const entries = [makeEntry({ url: 'example.com', type: 'login' })];
+    const result = matchByOrigin(entries, 'https://example.com');
+    expect(result.candidates).toHaveLength(1);
+  });
 });

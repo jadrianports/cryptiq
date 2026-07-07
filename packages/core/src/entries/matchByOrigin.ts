@@ -24,6 +24,11 @@
 // comparator — never substring/startsWith — so cousin/typosquat lookalike
 // domains remain rejected (T-21-02).
 //
+// Phase 23 (D-13/SC-5): `secure-note` is a non-fillable entry type and must
+// NEVER surface as an origin-match candidate — excluded via a type guard
+// alongside the existing `deletedAt === null` filter. `card`/`identity`
+// matching beyond this exclusion is deferred to Phase 24/25.
+//
 // `opts?` is a documented-but-unimplemented seam for the committed later-phase
 // per-entry "exact host only" match-strictness toggle (16-CONTEXT.md Deferred
 // Ideas / D-01) — accepting the parameter now avoids a signature-breaking
@@ -95,6 +100,7 @@ export function matchByOrigin(
 
   const candidates = entries
     .filter((e) => e.deletedAt === null) // tombstones never surface as matches
+    .filter((e) => e.type !== 'secure-note') // D-13/SC-5: secure-note is non-fillable
     .filter((e) => {
       // D-02: skip unparseable/empty urls. D-10: OR in equivalentUrls — every
       // candidate (primary url and each equivalent) goes through
