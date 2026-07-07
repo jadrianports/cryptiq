@@ -101,6 +101,16 @@
   let idPhone = $state('');
   let idAddress = $state('');
 
+  // Card form mirrors (D-06/D-07/TYPES-01). number/cvv/expiryMonth/expiryYear are
+  // strings (never JS number, Phase 21 D-07) — leading zeros/precision preserved.
+  let cardName = $state('');
+  let cardNumber = $state('');
+  let cardExpM = $state('');
+  let cardExpY = $state('');
+  let cardCvv = $state('');
+  let cardBrand = $state('');
+  let cardNickname = $state('');
+
   // Equivalent-URL chip editor draft state (URLS-01, D-09/D-10).
   let newUrlDraft = $state('');
   let urlHint = $state<string | null>(null);
@@ -110,6 +120,13 @@
   const headerIcon = $derived(
     entry !== null && entry.type !== 'login' ? TYPE_ICON[entry.type] : undefined,
   );
+
+  // Card expiry dropdown option lists (D-06). Month = 2-digit strings '01'-'12';
+  // year = 4-digit strings spanning current year through +15. Both stored as
+  // STRINGS on EntryCard — never coerced to a JS number (Phase 21 D-07).
+  const CARD_EXPIRY_MONTHS = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
+  const CARD_EXPIRY_YEAR_START = new Date().getFullYear();
+  const CARD_EXPIRY_YEARS = Array.from({ length: 16 }, (_, i) => String(CARD_EXPIRY_YEAR_START + i));
 
   // Seed field mirrors whenever the entry identity changes.
   $effect(() => {
@@ -127,6 +144,13 @@
       idEmail = entry.identity?.email ?? '';
       idPhone = entry.identity?.phone ?? '';
       idAddress = entry.identity?.address ?? '';
+      cardName = entry.card?.cardholderName ?? '';
+      cardNumber = entry.card?.number ?? '';
+      cardExpM = entry.card?.expiryMonth ?? '';
+      cardExpY = entry.card?.expiryYear ?? '';
+      cardCvv = entry.card?.cvv ?? '';
+      cardBrand = entry.card?.brand ?? '';
+      cardNickname = entry.card?.nickname ?? '';
     } else {
       // Blank "+New" form (P4-14)
       title = '';
@@ -142,6 +166,13 @@
       idEmail = '';
       idPhone = '';
       idAddress = '';
+      cardName = '';
+      cardNumber = '';
+      cardExpM = '';
+      cardExpY = '';
+      cardCvv = '';
+      cardBrand = '';
+      cardNickname = '';
     }
     // Reset the chip-editor draft state on every entry-identity change.
     newUrlDraft = '';
@@ -179,6 +210,15 @@
   let toggledReveal = $state(false);
   let heldReveal = $state(false);
   const revealed = $derived(toggledReveal || heldReveal);
+
+  // Card number/CVV each get INDEPENDENT reveal state (D-05) — never the shared
+  // password toggledReveal/heldReveal pair. Both masked-by-default.
+  let numberToggled = $state(false);
+  let numberHeld = $state(false);
+  const numberRevealed = $derived(numberToggled || numberHeld);
+  let cvvToggled = $state(false);
+  let cvvHeld = $state(false);
+  const cvvRevealed = $derived(cvvToggled || cvvHeld);
 
   // ── Generator popover ─────────────────────────────────────────────────
   let showGen = $state(false);
@@ -313,6 +353,26 @@
     if (entryId === null) return; // blank form — held in mirrors until first save
     vaultSession.updateEntry(entryId, {
       identity: { name: idName, email: idEmail, phone: idPhone, address: idAddress },
+    });
+    scheduleSave();
+  }
+
+  // ── Card form persist (D-06/D-07, TYPES-01) ───────────────────────────
+  // EntryCard is wholesale-replaced (no deep-merge, caller-sends-full-object,
+  // per 23-01 updateEntry). brand/nickname are optional — conditional spread
+  // omits the key entirely when blank (exactOptionalPropertyTypes-safe).
+  function persistCard() {
+    if (entryId === null) return; // blank form — held in mirrors until first save
+    vaultSession.updateEntry(entryId, {
+      card: {
+        cardholderName: cardName,
+        number: cardNumber,
+        expiryMonth: cardExpM,
+        expiryYear: cardExpY,
+        cvv: cardCvv,
+        ...(cardBrand !== '' ? { brand: cardBrand } : {}),
+        ...(cardNickname !== '' ? { nickname: cardNickname } : {}),
+      },
     });
     scheduleSave();
   }
@@ -747,8 +807,176 @@
     {:else if entry.type === 'secure-note'}
       <!-- Secure-note (D-07/TYPES-03): title + free-text body only — the universal
            Notes field below IS the body. Zero autofill surface: no username/password/url. -->
+    {:else if entry.type === 'card'}
+      <!-- Card form (D-05/D-06/D-07/D-08, TYPES-01/TYPES-05): cardholder name, masked
+           number, month/year expiry, masked CVV, optional brand/nickname, honest disclosure. -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Cardholder Name</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={cardName}
+            onblur={persistCard}
+            placeholder="—"
+            aria-label="Cardholder Name"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+          {@render copyButton('cardName', cardName)}
+        </div>
+      </div>
+
+      <!-- Card number (D-05: masked-by-default, press-hold + toggle reveal) -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Card Number</span>
+        <div class="flex items-center gap-1">
+          <div
+            class="flex min-w-0 flex-1 items-center rounded-cryptiq bg-cryptiq-surface-2 px-2 py-1.5"
+            onpointerdown={() => (numberHeld = true)}
+            onpointerup={() => (numberHeld = false)}
+            onpointerleave={() => (numberHeld = false)}
+            onpointercancel={() => (numberHeld = false)}
+            role="presentation"
+          >
+            {#if numberRevealed}
+              <input
+                type="text"
+                bind:value={cardNumber}
+                onblur={persistCard}
+                placeholder="—"
+                aria-label="Card Number"
+                class="min-w-0 flex-1 bg-transparent font-mono text-body text-cryptiq-fg outline-none"
+              />
+            {:else}
+              <span class="min-w-0 flex-1 truncate font-mono text-body text-cryptiq-fg select-none">
+                {'•'.repeat(Math.min(19, cardNumber.length || 16))}
+              </span>
+              <span class="ml-2 text-meta text-cryptiq-fg-subtle select-none">hold to peek</span>
+            {/if}
+          </div>
+          <button
+            type="button"
+            onclick={() => (numberToggled = !numberToggled)}
+            aria-pressed={numberToggled}
+            title={numberToggled ? 'Hide card number' : 'Show card number'}
+            class="grid size-8 shrink-0 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg"
+          >
+            {#if numberRevealed}
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.16 3.19M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9.3 9.3 0 0 0 5.4-1.6" /><path d="m2 2 20 20" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>
+            {:else}
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-8 10-8 10 8 10 8-3 8-10 8-10-8-10-8Z" /><circle cx="12" cy="12" r="3" /></svg>
+            {/if}
+          </button>
+          {@render copyButton('cardNumber', cardNumber)}
+        </div>
+      </div>
+
+      <!-- Expiry (D-06: two dropdowns, 2-digit month / 4-digit year strings) -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Expiry</span>
+        <div class="flex items-center gap-2">
+          <select
+            bind:value={cardExpM}
+            onchange={persistCard}
+            aria-label="Expiry month"
+            class="rounded-cryptiq bg-cryptiq-surface-2 px-2 py-1.5 text-body text-cryptiq-fg outline-none focus:ring-2 focus:ring-cryptiq-ring"
+          >
+            <option value="">MM</option>
+            {#each CARD_EXPIRY_MONTHS as m (m)}
+              <option value={m}>{m}</option>
+            {/each}
+          </select>
+          <select
+            bind:value={cardExpY}
+            onchange={persistCard}
+            aria-label="Expiry year"
+            class="rounded-cryptiq bg-cryptiq-surface-2 px-2 py-1.5 text-body text-cryptiq-fg outline-none focus:ring-2 focus:ring-cryptiq-ring"
+          >
+            <option value="">YYYY</option>
+            {#each CARD_EXPIRY_YEARS as y (y)}
+              <option value={y}>{y}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+
+      <!-- CVV (D-05: masked-by-default; D-08: honest disclosure below) -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">CVV</span>
+        <div class="flex items-center gap-1">
+          <div
+            class="flex min-w-0 flex-1 items-center rounded-cryptiq bg-cryptiq-surface-2 px-2 py-1.5"
+            onpointerdown={() => (cvvHeld = true)}
+            onpointerup={() => (cvvHeld = false)}
+            onpointerleave={() => (cvvHeld = false)}
+            onpointercancel={() => (cvvHeld = false)}
+            role="presentation"
+          >
+            {#if cvvRevealed}
+              <input
+                type="text"
+                bind:value={cardCvv}
+                onblur={persistCard}
+                placeholder="—"
+                aria-label="CVV"
+                class="min-w-0 flex-1 bg-transparent font-mono text-body text-cryptiq-fg outline-none"
+              />
+            {:else}
+              <span class="min-w-0 flex-1 truncate font-mono text-body text-cryptiq-fg select-none">
+                {'•'.repeat(Math.min(4, cardCvv.length || 3))}
+              </span>
+              <span class="ml-2 text-meta text-cryptiq-fg-subtle select-none">hold to peek</span>
+            {/if}
+          </div>
+          <button
+            type="button"
+            onclick={() => (cvvToggled = !cvvToggled)}
+            aria-pressed={cvvToggled}
+            title={cvvToggled ? 'Hide CVV' : 'Show CVV'}
+            class="grid size-8 shrink-0 place-items-center rounded-cryptiq text-cryptiq-fg-subtle transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg"
+          >
+            {#if cvvRevealed}
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.16 3.19M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9.3 9.3 0 0 0 5.4-1.6" /><path d="m2 2 20 20" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>
+            {:else}
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-8 10-8 10 8 10 8-3 8-10 8-10-8-10-8Z" /><circle cx="12" cy="12" r="3" /></svg>
+            {/if}
+          </button>
+          {@render copyButton('cardCvv', cardCvv)}
+        </div>
+        <!-- Honest CVV disclosure (D-08, TYPES-05): store-by-default, no per-entry opt-in gate. -->
+        <p class="mt-1.5 text-meta text-cryptiq-fg-subtle">
+          Stored encrypted in your vault, like your passwords.
+        </p>
+      </div>
+
+      <!-- Brand / Nickname (D-07: plain optional text, no BIN detection) -->
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Brand</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={cardBrand}
+            onblur={persistCard}
+            placeholder="—"
+            aria-label="Card brand"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+        </div>
+      </div>
+
+      <div>
+        <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Nickname</span>
+        <div class="flex items-center gap-1">
+          <input
+            bind:value={cardNickname}
+            onblur={persistCard}
+            placeholder="—"
+            aria-label="Card nickname"
+            class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                   outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+          />
+        </div>
+      </div>
     {/if}
-    <!-- {:else if entry.type === 'card'} branch is added by plan 23-06. -->
 
     <!-- Notes — universal (also doubles as the secure-note body, D-07) -->
     <div>
