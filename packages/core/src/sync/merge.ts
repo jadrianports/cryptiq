@@ -238,7 +238,7 @@ function validateEntry(entry: Entry): number {
     if (entry.card === null || typeof entry.card !== 'object' || Array.isArray(entry.card)) {
       throw new MergeInvalidInputError(`Entry ${entry.id}: card must be an object when present`);
     }
-    const card = entry.card as Record<string, unknown>;
+    const card = entry.card as unknown as Record<string, unknown>;
     for (const key of [
       'cardholderName',
       'number',
@@ -265,7 +265,7 @@ function validateEntry(entry: Entry): number {
         `Entry ${entry.id}: identity must be an object when present`,
       );
     }
-    const identity = entry.identity as Record<string, unknown>;
+    const identity = entry.identity as unknown as Record<string, unknown>;
     for (const key of ['name', 'email', 'phone', 'address'] as const) {
       if (identity[key] !== undefined && typeof identity[key] !== 'string') {
         throw new MergeInvalidInputError(
