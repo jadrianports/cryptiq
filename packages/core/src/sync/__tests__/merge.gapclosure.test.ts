@@ -19,6 +19,7 @@ import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
 import type { InnerDoc, Entry } from '../../entries/types';
 import type { MergeContext } from '../types';
+import { isPermanentTombstone } from '../types';
 import { DEFAULT_RANDOM_OPTIONS } from '../../generator/types';
 import { mergeInnerDocs } from '../merge';
 import { findPossibleDuplicates } from '../duplicate';
@@ -136,6 +137,59 @@ describe('gap: sparse soft delete is NOT permanent (D-06/D-07 fail-open)', () =>
     const merged = result.merged.entries.find((e) => e.id === ID)!;
     // soft delete-wins (NOT permanent): tombstone survives BUT the peer's live secret is preserved
     expect(merged.deletedAt).not.toBeNull();
+    expect(recoverablePasswords(merged).has('PEER-LIVE-SECRET')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CRITICAL (Phase 22 gap): a v3 card/identity entry is content-RICH in the new
+// fields (card/identity/email/equivalentUrls) even when every login field is
+// empty. isPermanentTombstone (D-06) was never widened for those fields, so a
+// soft-deleted, empty-title card reads as a permanent marker → D-07 silently
+// destroys the peer's live entry with no snapshot and no conflict record.
+// ---------------------------------------------------------------------------
+
+describe('gap: v3 card/identity soft delete is NOT permanent (D-06 field-parity, Phase 22)', () => {
+  it('isPermanentTombstone returns false when only the new v3 fields carry content', () => {
+    // Login-sparse SOFT delete: title + every login field empty, deletedAt set.
+    const base = makeEntry({
+      title: '', username: '', password: '', url: '', notes: '',
+      tags: [], passwordHistory: [], lostVersions: [],
+      deletedAt: iso(EPOCH + 1000),
+    });
+    // control: the genuinely-collapsed marker (no v3 content) IS permanent.
+    expect(isPermanentTombstone(base)).toBe(true);
+    // but any populated v3 field means real content survives → NOT permanent.
+    expect(
+      isPermanentTombstone({
+        ...base,
+        card: { cardholderName: 'Jane', number: '4111111111111111', expiryMonth: '03', expiryYear: '2030', cvv: '123' },
+      }),
+    ).toBe(false);
+    expect(
+      isPermanentTombstone({ ...base, identity: { name: 'Jane', email: 'j@x.io', phone: '555', address: '1 St' } }),
+    ).toBe(false);
+    expect(isPermanentTombstone({ ...base, email: 'j@x.io' })).toBe(false);
+    expect(isPermanentTombstone({ ...base, equivalentUrls: ['https://alt.example'] })).toBe(false);
+  });
+
+  it('soft-deleted empty-title card vs live peer: peer secret is preserved, not destroyed by D-07', () => {
+    // Card entry whose login fields are all empty (natural for a card) with an
+    // empty title, SOFT-deleted on this device — must NOT be read as permanent.
+    const softCard = makeEntry({
+      id: ID, type: 'card', title: '', username: '', password: '', url: '', notes: '',
+      tags: [], passwordHistory: [], lostVersions: [],
+      card: { cardholderName: 'Jane', number: '4111111111111111', expiryMonth: '03', expiryYear: '2030', cvv: '123' },
+      deletedAt: iso(EPOCH + 1000), modifiedAt: iso(EPOCH + 1000),
+    });
+    // The peer holds a live (active) version of the same entry carrying a secret.
+    const livePeer = makeEntry({
+      id: ID, type: 'card', title: '', username: '', password: 'PEER-LIVE-SECRET', url: '', notes: '',
+      modifiedAt: iso(EPOCH + 5000),
+    });
+    const result = mergeInnerDocs(makeInnerDoc([softCard]), makeInnerDoc([livePeer]), makeCtx());
+    const merged = result.merged.entries.find((e) => e.id === ID)!;
+    // Correctly SOFT → delete-wins WITH preservation; the peer's live secret survives.
     expect(recoverablePasswords(merged).has('PEER-LIVE-SECRET')).toBe(true);
   });
 });
