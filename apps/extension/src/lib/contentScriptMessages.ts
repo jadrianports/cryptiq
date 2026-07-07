@@ -31,13 +31,42 @@ export interface DetectResult {
  * the secret over the authenticated bridge (bridgeRpc.ts). `expectedOrigin`
  * is the exact origin the popup captured when it fetched the match list —
  * the content script re-derives `location.origin` at fill time and refuses
- * on any mismatch (XSEC-03 TOCTOU + punycode-homograph guard). */
-export interface FillRequest {
-  type: 'cryptiq-fill';
-  secret: string;
-  username: string;
-  expectedOrigin: string;
-}
+ * on any mismatch (XSEC-03 TOCTOU + punycode-homograph guard).
+ *
+ * Phase 25 (CFILL-03, D-01/D-05): widened to a `kind`-discriminated union so
+ * the same message carries card/identity secrets alongside the original
+ * login shape. `kind` is an INNER discriminant — `type` stays the single
+ * `'cryptiq-fill'` message type, so `ContentScriptMessageType`/
+ * `KNOWN_MESSAGE_TYPES` (fill.content.ts) need no new entry. The `login`
+ * variant is byte-compatible with the pre-Phase-25 shape (bare `secret`/
+ * `username`) so no existing call site changes until Phase 26 touches the
+ * popup send-side. The `card`/`identity` variants redeclare `EntryCard`/
+ * `EntryIdentity` (packages/core/src/entries/types.ts, Phase 21 LOCKED)
+ * field-for-field WITHOUT importing `@cryptiq/core` — same thin-client
+ * boundary discipline as `EntryMatchMetadata` below (CLAUDE.md). All three
+ * variants carry decrypted-upstream secrets crossing on this sole
+ * click-gated fill message — never on the metadata wire. */
+export type FillRequest =
+  | { type: 'cryptiq-fill'; kind: 'login'; secret: string; username: string; expectedOrigin: string }
+  | {
+      type: 'cryptiq-fill';
+      kind: 'card';
+      card: {
+        cardholderName: string;
+        number: string;
+        expiryMonth: string;
+        expiryYear: string;
+        cvv: string;
+        brand?: string;
+      };
+      expectedOrigin: string;
+    }
+  | {
+      type: 'cryptiq-fill';
+      kind: 'identity';
+      identity: { email: string; phone: string; address: string };
+      expectedOrigin: string;
+    };
 
 /** Result of a `cryptiq-fill` message. Fail-closed: any refusal reason is
  * explicit and typed, never a bare boolean. No field ever echoes the secret
