@@ -396,9 +396,15 @@
   }
 
   // ── Copy (UI-06, T-04-17: write-only; P5-08/09 password path) ─────────
+  // Fields whose copied value is a high-value secret and must ride the Rust
+  // sensitive-clipboard path (platform markers + hash stash + armed auto-clear),
+  // exactly like the master password. Card PAN and CVV are as sensitive as any
+  // password — the card branch's own disclosure promises "like your passwords".
+  const SENSITIVE_COPY_FIELDS = new Set(['password', 'cardNumber', 'cardCvv']);
+
   async function handleCopy(field: string, value: string) {
-    if (field === 'password') {
-      // Password path: route through Rust (markers + stash) and arm the
+    if (SENSITIVE_COPY_FIELDS.has(field)) {
+      // Sensitive path: route through Rust (markers + stash) and arm the
       // module-level auto-clear guard (NOT a component-owned timer).
       //
       // Cancel-on-re-copy: if a clear is already armed, clear the prior clipboard
