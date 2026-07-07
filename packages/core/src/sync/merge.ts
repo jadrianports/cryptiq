@@ -40,7 +40,13 @@
 //
 // Source: CONTEXT.md D-01..D-19; PATTERNS.md merge.ts section
 
-import type { Entry, InnerDoc, PasswordHistoryItem } from '../entries/types';
+import type {
+  Entry,
+  EntryCard,
+  EntryIdentity,
+  InnerDoc,
+  PasswordHistoryItem,
+} from '../entries/types';
 import {
   MergeClockSkewError,
   MergeSchemaMismatchError,
@@ -54,6 +60,20 @@ import type {
   MergeCounts,
 } from './types';
 import { isPermanentTombstone } from './types';
+
+// ---------------------------------------------------------------------------
+// Phase 22 (SYNCP-02/D-03): set of InnerDoc.schemaVersion values this build
+// understands. Fails closed (MergeSchemaMismatchError) on anything outside
+// this set BEFORE any record is processed — see GUARD 0 in mergeInnerDocs.
+//
+// MUST be kept in exact lockstep with apps/desktop/src/lib/sync/
+// syncOrchestration.ts:96's KNOWN_INNER_DOC_SCHEMA_VERSIONS (HARDEN-02). The
+// two are independent literals (core has no import path to desktop — core
+// purity) so this is a discipline point, not an enforceable-by-import
+// invariant. Widen ONLY together with that constant (Pitfall 1 — widen-alone
+// converts a loud fail-safe into a silent field-strip).
+// ---------------------------------------------------------------------------
+const KNOWN_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 
 // ---------------------------------------------------------------------------
 // Private helpers
@@ -198,7 +218,99 @@ function validateEntry(entry: Entry): number {
       `Entry ${entry.id}: deletedAt must be null or a parseable ISO string`,
     );
   }
+  // Phase 22 (SYNCP-01/T-08-11): the remote InnerDoc is attacker-influenceable —
+  // strictly type-check the four Phase-21 v3 fields when present. Whole objects
+  // stay optional (undefined is always valid, matching every pre-Phase-21 entry
+  // and every non-card/identity `type`).
+  if (entry.email !== undefined && typeof entry.email !== 'string') {
+    throw new MergeInvalidInputError(`Entry ${entry.id}: email must be a string when present`);
+  }
+  if (
+    entry.equivalentUrls !== undefined &&
+    (!Array.isArray(entry.equivalentUrls) ||
+      entry.equivalentUrls.some((u) => typeof u !== 'string'))
+  ) {
+    throw new MergeInvalidInputError(
+      `Entry ${entry.id}: equivalentUrls must be a string[] when present`,
+    );
+  }
+  if (entry.card !== undefined) {
+    if (entry.card === null || typeof entry.card !== 'object' || Array.isArray(entry.card)) {
+      throw new MergeInvalidInputError(`Entry ${entry.id}: card must be an object when present`);
+    }
+    const card = entry.card as Record<string, unknown>;
+    for (const key of [
+      'cardholderName',
+      'number',
+      'expiryMonth',
+      'expiryYear',
+      'cvv',
+      'brand',
+      'nickname',
+    ] as const) {
+      if (card[key] !== undefined && typeof card[key] !== 'string') {
+        throw new MergeInvalidInputError(
+          `Entry ${entry.id}: card.${key} must be a string when present`,
+        );
+      }
+    }
+  }
+  if (entry.identity !== undefined) {
+    if (
+      entry.identity === null ||
+      typeof entry.identity !== 'object' ||
+      Array.isArray(entry.identity)
+    ) {
+      throw new MergeInvalidInputError(
+        `Entry ${entry.id}: identity must be an object when present`,
+      );
+    }
+    const identity = entry.identity as Record<string, unknown>;
+    for (const key of ['name', 'email', 'phone', 'address'] as const) {
+      if (identity[key] !== undefined && typeof identity[key] !== 'string') {
+        throw new MergeInvalidInputError(
+          `Entry ${entry.id}: identity.${key} must be a string when present`,
+        );
+      }
+    }
+  }
   return parseModifiedAt(entry.modifiedAt, entry.id);
+}
+
+/**
+ * Compare two optional `equivalentUrls` arrays. `undefined` vs `undefined` is
+ * equal; `undefined` vs `[]` is NOT (a real semantic distinction between
+ * "never set" and "explicitly cleared" — Phase 22 RESEARCH Code Examples).
+ */
+function equivalentUrlsEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/** Field-by-field EntryCard comparison (house style — no deep-equal library). */
+function cardEqual(a: EntryCard | undefined, b: EntryCard | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.cardholderName === b.cardholderName &&
+    a.number === b.number &&
+    a.expiryMonth === b.expiryMonth &&
+    a.expiryYear === b.expiryYear &&
+    a.cvv === b.cvv &&
+    a.brand === b.brand &&
+    a.nickname === b.nickname
+  );
+}
+
+/** Field-by-field EntryIdentity comparison (house style — no deep-equal library). */
+function identityEqual(a: EntryIdentity | undefined, b: EntryIdentity | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.name === b.name && a.email === b.email && a.phone === b.phone && a.address === b.address
+  );
 }
 
 /**
@@ -216,6 +328,14 @@ function contentEqual(a: Entry, b: Entry): boolean {
   if (a.url !== b.url) return false;
   if (a.notes !== b.notes) return false;
   if (a.title !== b.title) return false;
+  // Phase 22 (SYNCP-01/D-02a): contentEqual DOES gain the new fields — required
+  // so merge(A,A) stays a true no-op when v3 entries carry email/equivalentUrls/
+  // card/identity, and so two entries differing ONLY in a new field are never
+  // false-equalled by the D-14 idempotency shortcut.
+  if (a.email !== b.email) return false;
+  if (!equivalentUrlsEqual(a.equivalentUrls, b.equivalentUrls)) return false;
+  if (!cardEqual(a.card, b.card)) return false;
+  if (!identityEqual(a.identity, b.identity)) return false;
   if (a.modifiedAt !== b.modifiedAt) return false;
   if (a.deletedAt !== b.deletedAt) return false;
   if (a.favorite !== b.favorite) return false;
@@ -247,6 +367,17 @@ function deepCopyEntry(entry: Entry): Entry {
     url: entry.url,
     notes: entry.notes,
     tags: [...entry.tags],
+    // Phase 22 (SYNCP-01): the four Phase-21 v3 fields, each conditionally
+    // spread so the key is OMITTED when absent (never assigned `undefined` —
+    // exactOptionalPropertyTypes). `card`/`identity` are flat all-string
+    // interfaces (entries/types.ts) so a shallow `{...}` IS a legitimate deep
+    // copy here — no nested arrays/objects to alias.
+    ...(entry.email !== undefined ? { email: entry.email } : {}),
+    ...(entry.equivalentUrls !== undefined
+      ? { equivalentUrls: [...entry.equivalentUrls] }
+      : {}),
+    ...(entry.card !== undefined ? { card: { ...entry.card } } : {}),
+    ...(entry.identity !== undefined ? { identity: { ...entry.identity } } : {}),
     favorite: entry.favorite,
     needsSiteUpdate: entry.needsSiteUpdate,
     // Deep-copy the preset object so the merged result never aliases an input doc
@@ -282,6 +413,16 @@ function deepCopyEntry(entry: Entry): Entry {
  * overwrite, and (b) decide whether a tombstone tie needs loser preservation. Symmetric
  * (argument-order-independent), so it never breaks commutativity.
  */
+// Phase 22 (D-02a, option (a) — DELIBERATE, do not "fix" by adding fields here):
+// email/equivalentUrls/card/identity are NOT included in this function on purpose.
+// snapshotOf (D-02) stays password-centric and never captures these four fields,
+// so widening meaningfulContentDiffers to treat a new-field-only difference as
+// "meaningful" would push a ConflictRecord/lostVersions entry whose loserSnapshot
+// looks byte-identical to the winner on every field it actually stores — an
+// honest-looking but empty "recovery" record that overclaims recoverability the
+// snapshot cannot deliver. A loser that differs from the winner ONLY in a new
+// field is therefore treated as "not meaningfully different": no conflict is
+// recorded, and no false promise of snapshot-recoverable content is made.
 function meaningfulContentDiffers(a: Entry, b: Entry): boolean {
   if (a.password !== b.password) return true;
   if (a.username !== b.username) return true;
@@ -306,6 +447,15 @@ function canonicalEntry(e: Entry): string {
     e.url,
     e.notes,
     e.title,
+    // Phase 22 (SYNCP-01/Pitfall 4): canonicalEntry DOES gain the new fields —
+    // omitting them would make two entries differing ONLY in card/identity/
+    // email/equivalentUrls compare canonically-equal-ish in the pathological
+    // equal-deviceId + equal-modifiedAt tiebreak, breaking D-18 determinism
+    // for v3 entries in that edge case.
+    e.email ?? null,
+    e.equivalentUrls ?? null,
+    e.card ?? null,
+    e.identity ?? null,
     e.modifiedAt,
     e.deletedAt,
     e.favorite,
@@ -355,6 +505,25 @@ export function mergeInnerDocs(
   remote: InnerDoc,
   ctx: MergeContext,
 ): MergeResult {
+  // -------------------------------------------------------------------------
+  // GUARD 0: schemaVersion ceiling (D-03/SYNCP-02) — fires BEFORE GUARD 1's
+  // exact-equality check and before any entry validation. Additive to (never
+  // a replacement of) D-01's exact-equality gate: two known-but-mismatched
+  // versions (e.g. 2 vs 3) still fall through to GUARD 1 below and throw
+  // there; this guard only catches a schemaVersion this build does not
+  // understand at all (e.g. a future 4+, or a corrupt/attacker-influenced
+  // value) — a case the exact-equality check alone cannot catch when BOTH
+  // sides happen to carry the same unknown value.
+  // -------------------------------------------------------------------------
+  if (
+    !KNOWN_SCHEMA_VERSIONS.has(local.schemaVersion) ||
+    !KNOWN_SCHEMA_VERSIONS.has(remote.schemaVersion)
+  ) {
+    throw new MergeSchemaMismatchError(
+      `Unknown InnerDoc schemaVersion: local=${local.schemaVersion}, remote=${remote.schemaVersion} (known: ${[...KNOWN_SCHEMA_VERSIONS].join(',')})`,
+    );
+  }
+
   // -------------------------------------------------------------------------
   // GUARD 1: Schema version equality (D-09) — must fire before any records merge.
   // -------------------------------------------------------------------------

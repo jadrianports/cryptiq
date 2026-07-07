@@ -92,8 +92,18 @@ import { loadConfig } from '../config/config-adapter';
 // future schema version whose semantics are unknown to this build, risking
 // corrupted merges (Phase 8 D-09 / 13-RESEARCH Pitfall 3).
 // Extend this set ONLY when a new schemaVersion is fully understood and tested.
+//
+// Phase 22 (SYNCP-02/D-03): widened 1,2 -> 1,2,3 in the SAME wave as
+// packages/core/src/sync/merge.ts's field-parity fixes (deepCopyEntry/
+// contentEqual/canonicalEntry/validateEntry now recognize email/equivalentUrls/
+// card/identity) and its new KNOWN_SCHEMA_VERSIONS ceiling guard. Widening this
+// allowlist alone, without those merge.ts fixes, would let a v3<->v3 merge
+// PROCEED while silently stripping the four new fields — converting a loud
+// MergeSchemaMismatchError fail-safe into a silent data-loss bug (Pitfall 1).
+// Kept in exact lockstep with merge.ts's KNOWN_SCHEMA_VERSIONS by discipline
+// (core has no import path to desktop — core purity forbids a shared import).
 // ---------------------------------------------------------------------------
-const KNOWN_INNER_DOC_SCHEMA_VERSIONS = new Set([1, 2]);
+const KNOWN_INNER_DOC_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 
 // ---------------------------------------------------------------------------
 // Error-mapping convention (mirrors the comment in syncBridge.ts)
