@@ -203,13 +203,21 @@ export interface PermanentTombstoneMarker {
  * Recognition (D-06): `deletedAt` is set AND the entry has collapsed to the
  * secret-free `PermanentTombstoneMarker` shape — EVERY content field is empty
  * (`password`/`username`/`notes`/`url`/`title` empty, `tags`/`passwordHistory`/
- * `lostVersions` empty). This must be STRICT: a content-sparse SOFT delete (e.g. a
- * url-only bookmark a user soft-deletes, which has empty password/username/notes but
- * a non-empty title/url) must NOT be read as permanent — otherwise D-07's sanctioned
+ * `lostVersions` empty, and the Phase-21 v3 fields `email`/`equivalentUrls`/`card`/
+ * `identity` all absent-or-empty). This must be STRICT: a content-sparse SOFT delete
+ * (e.g. a url-only bookmark a user soft-deletes, which has empty password/username/notes
+ * but a non-empty title/url) must NOT be read as permanent — otherwise D-07's sanctioned
  * loss fires on an ordinary soft delete and silently destroys a peer's live edit.
  * Anything short of the full empty-marker shape is treated as SOFT (fail-safe: prefer
  * preserving the peer over destroying it). Phase 11/12 will replace this with an
  * explicit marker field once `purgeEntry` wipes in place.
+ *
+ * Phase 22 (D-06 field-parity): a `card`/`identity` entry is content-RICH in the new
+ * v3 fields even when every login field is empty (a card's title/username/password/url
+ * are all naturally blank). Without these clauses such an entry would misclassify as a
+ * permanent marker and D-07 would silently destroy the peer's live copy — the exact
+ * failure this predicate exists to prevent, reintroduced by the widened Entry shape.
+ * Must move in lockstep with the merge.ts field-parity sites.
  */
 export function isPermanentTombstone(entry: Entry): boolean {
   return (
@@ -221,6 +229,11 @@ export function isPermanentTombstone(entry: Entry): boolean {
     entry.title === '' &&
     entry.tags.length === 0 &&
     entry.passwordHistory.length === 0 &&
-    (entry.lostVersions === undefined || entry.lostVersions.length === 0)
+    (entry.lostVersions === undefined || entry.lostVersions.length === 0) &&
+    // Phase 21/22 v3 fields: absent-or-empty, else real content survives → SOFT.
+    (entry.email === undefined || entry.email === '') &&
+    (entry.equivalentUrls === undefined || entry.equivalentUrls.length === 0) &&
+    entry.card === undefined &&
+    entry.identity === undefined
   );
 }
