@@ -147,7 +147,23 @@
       const q = committedQuery.trim().toLowerCase();
       if (q === '') return filteredByCategory;
       return filteredByCategory.filter((e) => {
-        const fields = [e.title, e.username, e.url, e.notes, ...e.tags];
+        // Index every non-secret first-class field. Card PAN/CVV/expiry are
+        // deliberately EXCLUDED — a secret must never be findable via search.
+        const fields = [
+          e.title,
+          e.username,
+          e.url,
+          e.notes,
+          ...e.tags,
+          e.email ?? '',
+          e.identity?.name ?? '',
+          e.identity?.email ?? '',
+          e.identity?.phone ?? '',
+          e.identity?.address ?? '',
+          e.card?.cardholderName ?? '',
+          e.card?.brand ?? '',
+          e.card?.nickname ?? '',
+        ];
         return fields.some((f) => f.toLowerCase().includes(q));
       });
     })(),
