@@ -163,8 +163,12 @@ function pushHistory(entry: Entry, oldPassword: string): void {
  * Add a new entry to the vault (ENTRY-01/ENTRY-02).
  *
  * - Generates a CSPRNG-backed UUIDv4 for `id` (P3-03).
- * - Sets `type: 'login'`, `createdAt`, `modifiedAt` to now.
+ * - Sets `type` from `input.type` (default `'login'`), `createdAt`, `modifiedAt` to now.
+ *   `type` is immutable after creation (Phase 23 D-03) — `EntryUpdate` continues to omit it.
  * - `deletedAt` is `null`; `passwordHistory` is `[]`.
+ * - Maps the Phase-21 optional fields (`email`/`equivalentUrls`/`card`/`identity`) from
+ *   `input` onto the created entry via conditional spread — an absent input field stays
+ *   OMITTED on the entry (never set to `undefined`, per `exactOptionalPropertyTypes`).
  * - Mutates `vault.entries` in place and returns the new Entry.
  *
  * @throws GeneratorError if entry input is structurally invalid (future validation).
@@ -178,13 +182,17 @@ export async function addEntry(vault: UnlockedVault, input: EntryInput): Promise
 
   const entry: Entry = {
     id,
-    type: 'login',
+    type: input.type ?? 'login',
     title: input.title,
     username: input.username ?? '',
     password: input.password ?? '',
     url: input.url ?? '',
     notes: input.notes ?? '',
     tags: input.tags ?? [],
+    ...(input.email !== undefined ? { email: input.email } : {}),
+    ...(input.equivalentUrls !== undefined ? { equivalentUrls: input.equivalentUrls } : {}),
+    ...(input.card !== undefined ? { card: input.card } : {}),
+    ...(input.identity !== undefined ? { identity: input.identity } : {}),
     favorite: input.favorite ?? false,
     needsSiteUpdate: input.needsSiteUpdate ?? false,
     generatorPreset: input.generatorPreset ?? null,

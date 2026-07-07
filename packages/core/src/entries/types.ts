@@ -218,11 +218,15 @@ export interface InnerDoc {
  * Input type for `addEntry`. Only `title` is required; all other fields have
  * sensible defaults and are optional.
  *
- * Omits auto-managed fields: `id`, `type`, `createdAt`, `modifiedAt`,
+ * Phase 23 (D-03): `type` is now accepted at create time — `addEntry` honors
+ * `input.type` and defaults to `'login'` when absent. `type` is immutable
+ * thereafter — only `EntryInput` accepts it; `EntryUpdate` continues to omit it.
+ *
+ * Omits auto-managed fields: `id`, `createdAt`, `modifiedAt`,
  * `deletedAt`, and `passwordHistory`.
  */
 export type EntryInput = Pick<Entry, 'title'> &
-  Partial<Omit<Entry, 'id' | 'type' | 'createdAt' | 'modifiedAt' | 'deletedAt' | 'passwordHistory'>>;
+  Partial<Omit<Entry, 'id' | 'createdAt' | 'modifiedAt' | 'deletedAt' | 'passwordHistory'>>;
 
 /**
  * Update type for `updateEntry`. Any subset of mutable entry fields.

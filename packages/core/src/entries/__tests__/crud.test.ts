@@ -242,6 +242,82 @@ describe('addEntry (ENTRY-01/ENTRY-03)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 23 Task 1: typed create + v3.1 field mapping (TYPES-01..04, D-03)
+// ---------------------------------------------------------------------------
+
+describe('addEntry — typed create + v3.1 field mapping (Phase 23 Task 1)', () => {
+  it('honors input.type ("card")', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, { title: 'X', type: 'card' });
+    expect(entry.type).toBe('card');
+  });
+
+  it('defaults to type "login" when input.type is absent', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, { title: 'X' });
+    expect(entry.type).toBe('login');
+  });
+
+  it('maps input.email onto the entry', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, { title: 'X', email: 'a@b.c' });
+    expect(entry.email).toBe('a@b.c');
+  });
+
+  it('omits the email key entirely when absent from input (not undefined)', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, { title: 'X' });
+    expect(Object.hasOwn(entry, 'email')).toBe(false);
+  });
+
+  it('maps input.card onto the entry (deep-equal); omits key when absent', async () => {
+    const vault = makeVault();
+    const card = {
+      cardholderName: 'Jane Doe',
+      number: '4111111111111111',
+      expiryMonth: '03',
+      expiryYear: '2027',
+      cvv: '123',
+    };
+    const withCard = await addEntry(vault, { title: 'X', type: 'card', card });
+    expect(withCard.card).toEqual(card);
+
+    const withoutCard = await addEntry(vault, { title: 'Y' });
+    expect(Object.hasOwn(withoutCard, 'card')).toBe(false);
+  });
+
+  it('maps input.equivalentUrls onto the entry (deep-equal); omits key when absent', async () => {
+    const vault = makeVault();
+    const withUrls = await addEntry(vault, { title: 'X', equivalentUrls: ['x.com'] });
+    expect(withUrls.equivalentUrls).toEqual(['x.com']);
+
+    const withoutUrls = await addEntry(vault, { title: 'Y' });
+    expect(Object.hasOwn(withoutUrls, 'equivalentUrls')).toBe(false);
+  });
+
+  it('maps input.identity onto the entry (deep-equal); omits key when absent', async () => {
+    const vault = makeVault();
+    const identity = {
+      name: 'Jane Doe',
+      email: 'jane@example.com',
+      phone: '+1-555-0100',
+      address: '123 Main St',
+    };
+    const withIdentity = await addEntry(vault, { title: 'X', type: 'identity', identity });
+    expect(withIdentity.identity).toEqual(identity);
+
+    const withoutIdentity = await addEntry(vault, { title: 'Y' });
+    expect(Object.hasOwn(withoutIdentity, 'identity')).toBe(false);
+  });
+
+  it('addEntry source no longer hard-codes type: \'login\' — new type() literal is honored', async () => {
+    const vault = makeVault();
+    const secureNote = await addEntry(vault, { title: 'Note', type: 'secure-note' });
+    expect(secureNote.type).toBe('secure-note');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // updateEntry (ENTRY-03/ENTRY-07)
 // ---------------------------------------------------------------------------
 
