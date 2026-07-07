@@ -997,6 +997,37 @@ describe('bridge/rpcDispatch — Phase 24 typed fill-entry union + wire-minimiza
     expect(result).toEqual({ code: 'not-found' });
   });
 
+  it('fill-entry for a card-typed entry with a missing card sub-object returns { code: "not-found" } (D-03 guard, never { card: undefined })', async () => {
+    // Legacy/migration-corruption case: card is optional at the type level, so
+    // the discriminated branch must narrow on `entry.card !== undefined` and
+    // degrade to not-found rather than emit { type: 'card', card: undefined }.
+    const entry = makeEntry({ type: 'card' });
+    expect(entry.card).toBeUndefined();
+    vaultState.entries = [entry];
+
+    const result = await handleRpcRequest({
+      requestId: 'u6',
+      method: 'fill-entry',
+      params: { entryId: entry.id },
+    });
+
+    expect(result).toEqual({ code: 'not-found' });
+  });
+
+  it('fill-entry for an identity-typed entry with a missing identity sub-object returns { code: "not-found" } (D-03 guard, never { identity: undefined })', async () => {
+    const entry = makeEntry({ type: 'identity' });
+    expect(entry.identity).toBeUndefined();
+    vaultState.entries = [entry];
+
+    const result = await handleRpcRequest({
+      requestId: 'u7',
+      method: 'fill-entry',
+      params: { entryId: entry.id },
+    });
+
+    expect(result).toEqual({ code: 'not-found' });
+  });
+
   it('GATE (D-05a): the actual match-origin wire object never serializes the PAN, CVV, or identity name/phone/address, but DOES carry type and email', async () => {
     const card = {
       cardholderName: 'Carol Cardholder',

@@ -50,8 +50,9 @@ import { registrableHost } from './originMatch';
  * Phase 24 (RPC-02, D-01/D-02/D-02a): `type` and `email` are the ONLY two NEW
  * non-secret fields permitted on the metadata-only `match-origin`/picker
  * channel. `type` is always present (`Entry['type']`); `email` is optional —
- * `Entry.email` for `login` entries, `EntryIdentity.email` for `identity`
- * entries, omitted entirely when the source entry has none. The deliberate
+ * `EntryIdentity.email` for `identity` entries, `Entry.email` for any other
+ * (non-identity) type, omitted entirely when the source entry has none. The
+ * deliberate
  * ABSENCE of `card`/`identity`/`cvv`/`number`/`name`/`phone`/`address` is the
  * STRUCTURAL half of the Phase-24 wire-minimization GATE (D-05a) — this type
  * simply has no such field, exactly mirroring the existing no-`password`
@@ -67,10 +68,10 @@ export interface EntryMatchMetadata {
   /** Entry type discriminator (Phase 24, RPC-02). Always present. */
   type: Entry['type'];
   /**
-   * Non-secret email identifier (Phase 24, RPC-02/D-01/D-02). `Entry.email`
-   * for `login` entries, `EntryIdentity.email` for `identity` entries. Optional
-   * — omitted (never `email: undefined`) when the source entry has none
-   * (D-02a, `exactOptionalPropertyTypes`).
+   * Non-secret email identifier (Phase 24, RPC-02/D-01/D-02).
+   * `EntryIdentity.email` for `identity` entries, `Entry.email` for any other
+   * (non-identity) type. Optional — omitted (never `email: undefined`) when the
+   * source entry has none (D-02a, `exactOptionalPropertyTypes`).
    */
   email?: string;
 }
