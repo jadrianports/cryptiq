@@ -38,8 +38,14 @@
   import { openInBrowser } from '../util/openUrl';
   import { invoke } from '@tauri-apps/api/core';
   import { tick } from 'svelte';
-  import { generateFromOptions, estimateEntropyBits, getVaultSettings } from '@cryptiq/core';
+  import {
+    generateFromOptions,
+    estimateEntropyBits,
+    getVaultSettings,
+    registrableHost,
+  } from '@cryptiq/core';
   import type { GeneratorOptions, Entry } from '@cryptiq/core';
+  import { TYPE_ICON } from './typeIcons';
 
   /**
    * Cast the opaque vault.entries (typed as `object` at the vault-format layer)
@@ -79,19 +85,33 @@
   // than the field-edit session and are never deep-proxied.
   let title = $state('');
   let username = $state('');
+  let email = $state('');
   let password = $state('');
   let url = $state('');
+  let equivalentUrls = $state<string[]>([]);
   let notes = $state('');
   let favorite = $state(false);
   let needsUpdate = $state(false);
+
+  // Equivalent-URL chip editor draft state (URLS-01, D-09/D-10).
+  let newUrlDraft = $state('');
+  let urlHint = $state<string | null>(null);
+
+  // Type-aware header identity (D-11): non-login entries show their type
+  // icon in place of the letter-gradient tile; login is unchanged.
+  const headerIcon = $derived(
+    entry !== null && entry.type !== 'login' ? TYPE_ICON[entry.type] : undefined,
+  );
 
   // Seed field mirrors whenever the entry identity changes.
   $effect(() => {
     if (entry !== null) {
       title = entry.title;
       username = entry.username ?? '';
+      email = entry.email ?? '';
       password = entry.password ?? '';
       url = entry.url ?? '';
+      equivalentUrls = entry.equivalentUrls ?? [];
       notes = entry.notes ?? '';
       favorite = entry.favorite ?? false;
       needsUpdate = entry.needsSiteUpdate ?? false;
@@ -99,12 +119,17 @@
       // Blank "+New" form (P4-14)
       title = '';
       username = '';
+      email = '';
       password = '';
       url = '';
+      equivalentUrls = [];
       notes = '';
       favorite = false;
       needsUpdate = false;
     }
+    // Reset the chip-editor draft state on every entry-identity change.
+    newUrlDraft = '';
+    urlHint = null;
   });
 
   // ── Jump-to-fix one-shot signals (AUDIT-06 / P6-07) ──────────────────
@@ -185,6 +210,13 @@
     scheduleSave();
   }
 
+  // Email is orthogonal to Username — never derived/split from it (IDENT-03).
+  function handleEmailBlur() {
+    if (entryId === null) return;
+    vaultSession.updateEntry(entryId, { email });
+    scheduleSave();
+  }
+
   function handlePasswordBlur() {
     if (entryId === null) return;
     // updateEntry pushes old password to history automatically (ENTRY-07 core change path).
@@ -196,6 +228,60 @@
     if (entryId === null) return;
     vaultSession.updateEntry(entryId, { url });
     scheduleSave();
+  }
+
+  // ── Equivalent-URL chip editor (D-09/D-10, URLS-01) ───────────────────
+  // Chips store the RAW user-entered string — no normalization/canonical-
+  // ization. Reduction to eTLD+1 happens only at match time in core's
+  // matchByOrigin. Validation here is only a UX guard against obvious
+  // garbage/duplicates, never a transformation of the stored value.
+  function persistEquivalentUrls() {
+    if (entryId === null) return; // blank form — held in the mirror until first save
+    vaultSession.updateEntry(entryId, { equivalentUrls: [...equivalentUrls] });
+    scheduleSave();
+  }
+
+  function addEquivalentUrl(raw: string) {
+    const value = raw.trim();
+    if (!value) return;
+    if (value === url || equivalentUrls.includes(value)) {
+      urlHint = 'Already added';
+      return;
+    }
+    if (registrableHost(value) === null) {
+      urlHint = 'Enter a valid URL';
+      return;
+    }
+    equivalentUrls = [...equivalentUrls, value];
+    newUrlDraft = '';
+    urlHint = null;
+    persistEquivalentUrls();
+  }
+
+  function removeEquivalentUrl(index: number) {
+    equivalentUrls = equivalentUrls.filter((_, i) => i !== index);
+    persistEquivalentUrls();
+  }
+
+  function handleUrlDraftKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addEquivalentUrl(newUrlDraft);
+    } else if (e.key === 'Escape') {
+      newUrlDraft = '';
+      urlHint = null;
+    }
+  }
+
+  function handleUrlDraftPaste(e: ClipboardEvent) {
+    const pasted = e.clipboardData?.getData('text');
+    if (!pasted) return;
+    e.preventDefault();
+    addEquivalentUrl(pasted);
+  }
+
+  function handleUrlDraftInput() {
+    urlHint = null;
   }
 
   function handleNotesBlur() {
@@ -349,7 +435,7 @@
 <section class="relative flex h-full flex-col bg-cryptiq-surface text-cryptiq-fg">
   <!-- Header -->
   <header class="flex items-center gap-3.5 border-b border-cryptiq-border px-6 py-4">
-    <VisualIdentity label={title} size={44} />
+    <VisualIdentity label={title} size={44} {...(headerIcon ? { icon: headerIcon } : {})} />
     <input
       bind:value={title}
       onblur={handleTitleBlur}
@@ -411,6 +497,22 @@
                  outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
         />
         {@render copyButton('username', username)}
+      </div>
+    </div>
+
+    <!-- Email (IDENT-01) — orthogonal to Username, never derived/split from it (IDENT-03) -->
+    <div>
+      <span class="mb-1 block text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">Email</span>
+      <div class="flex items-center gap-1">
+        <input
+          bind:value={email}
+          onblur={handleEmailBlur}
+          placeholder="—"
+          aria-label="Email"
+          class="min-w-0 flex-1 rounded-cryptiq bg-transparent px-2 py-1.5 text-body text-cryptiq-fg
+                 outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+        />
+        {@render copyButton('email', email)}
       </div>
     </div>
 
@@ -517,6 +619,41 @@
           <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>
         </button>
         {@render copyButton('url', url)}
+      </div>
+
+      <!-- Equivalent-URL chip editor (D-09/D-10, URLS-01) -->
+      <div class="mt-2">
+        {#if equivalentUrls.length > 0}
+          <div class="mb-1.5 flex flex-wrap gap-1.5">
+            {#each equivalentUrls as chip, i (chip + i)}
+              <span class="flex items-center gap-1 rounded bg-cryptiq-surface-2 px-1 text-xs text-cryptiq-fg">
+                {chip}
+                <button
+                  type="button"
+                  onclick={() => removeEquivalentUrl(i)}
+                  title="Remove"
+                  aria-label="Remove equivalent URL {chip}"
+                  class="grid size-3.5 place-items-center rounded-full text-cryptiq-fg-subtle hover:text-cryptiq-danger"
+                >
+                  <svg class="size-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                </button>
+              </span>
+            {/each}
+          </div>
+        {/if}
+        <input
+          bind:value={newUrlDraft}
+          onkeydown={handleUrlDraftKeydown}
+          onpaste={handleUrlDraftPaste}
+          oninput={handleUrlDraftInput}
+          placeholder="Add equivalent URL…"
+          aria-label="Add equivalent URL"
+          class="w-full min-w-0 rounded-cryptiq bg-transparent px-2 py-1 text-meta text-cryptiq-fg
+                 outline-none placeholder:text-cryptiq-fg-subtle focus:bg-cryptiq-surface-2 focus:ring-2 focus:ring-cryptiq-ring"
+        />
+        {#if urlHint}
+          <span class="mt-0.5 block text-meta text-cryptiq-danger">{urlHint}</span>
+        {/if}
       </div>
     </div>
 
