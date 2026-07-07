@@ -165,3 +165,71 @@ export function fillSelectField(element: HTMLSelectElement, value: string): Fill
   // 'submit' event.
   return { filled: true };
 }
+
+// ---------------------------------------------------------------------------
+// CFILL-03: per-field visibility gate. NET-NEW control -- no prior
+// visibility guard exists anywhere in this codebase. Write-time gate, run
+// immediately before every card/identity write, not part of detection
+// (detection stays pure/side-effect-free per fieldDetection.ts's own
+// convention). Guards against a malicious page placing a hidden decoy
+// field to harvest an auto-filled secret (T-25-04).
+//
+// MUST use getComputedStyle/checkVisibility only -- NEVER offsetWidth/
+// offsetHeight/offsetParent/getClientRects. happy-dom (this project's test
+// environment) hardcodes those layout-geometry properties to 0/empty
+// regardless of actual CSS state, which would make every test fixture
+// report "hidden" and make this control untestable.
+// Source: 25-RESEARCH.md Pattern 4, Pitfall 1.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns false if `el` (or any ancestor) is display:none, visibility:hidden,
+ * or opacity:0. Prefers the native `Element.checkVisibility()` (Chrome 98+;
+ * this extension is Chrome/MV3-only) and falls back to a `getComputedStyle`
+ * ancestor-walk when unavailable (e.g. under happy-dom in tests).
+ */
+export function isFieldVisible(el: Element): boolean {
+  const withCheckVisibility = el as Element & { checkVisibility?: (opts?: object) => boolean };
+  if (typeof withCheckVisibility.checkVisibility === 'function') {
+    return withCheckVisibility.checkVisibility({
+      opacityProperty: true,
+      visibilityProperty: true,
+    });
+  }
+  let node: Element | null = el;
+  while (node) {
+    const style = getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+      return false;
+    }
+    node = node.parentElement;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// D-02: combined single `cc-exp` text field formatting. Routes through the
+// existing text `fillField` path (no <select> to match against, so this is
+// a formatting judgment call within the D-03 fail-safe boundary, not a hard
+// match/no-match gate -- Claude's Discretion per 25-CONTEXT.md).
+// ---------------------------------------------------------------------------
+
+/**
+ * Formats a stored month/year pair for a combined `cc-exp` text field.
+ * Defaults to `MM/YY` (the most common vendor default); switches to
+ * `MM/YYYY` when the field's `maxlength` or `placeholder` hints at a
+ * 4-digit year.
+ */
+export function formatExpiryForField(el: HTMLInputElement, month: string, year: string): string {
+  const mm = month.trim().padStart(2, '0');
+  const maxLength = el.maxLength;
+  const placeholder = (el.getAttribute('placeholder') ?? '').toUpperCase();
+  const wantsFourDigitYear = (maxLength >= 7 && maxLength <= 9) || placeholder.includes('YYYY');
+
+  if (wantsFourDigitYear) {
+    const yyyy = year.trim().length === 2 ? `20${year.trim()}` : year.trim();
+    return `${mm}/${yyyy}`;
+  }
+  const yy = year.trim().length === 4 ? year.trim().slice(2) : year.trim().padStart(2, '0');
+  return `${mm}/${yy}`;
+}

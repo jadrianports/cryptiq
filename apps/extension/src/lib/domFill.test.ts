@@ -10,7 +10,7 @@
 // assertions.
 
 import { describe, expect, it, vi } from 'vitest';
-import { fillField, fillSelectField, resolveSelectOption } from './domFill';
+import { fillField, fillSelectField, formatExpiryForField, isFieldVisible, resolveSelectOption } from './domFill';
 
 function makeInput(type = 'text'): HTMLInputElement {
   const input = document.createElement('input');
@@ -161,6 +161,68 @@ describe('domFill', () => {
       submitSpy.mockRestore();
       requestSubmitSpy.mockRestore();
       document.body.removeChild(form);
+    });
+  });
+
+  describe('isFieldVisible (CFILL-03) -- getComputedStyle only, never layout geometry (happy-dom landmine)', () => {
+    it('returns true for a plain visible input', () => {
+      const input = makeInput();
+      document.body.appendChild(input);
+      expect(isFieldVisible(input)).toBe(true);
+      document.body.removeChild(input);
+    });
+
+    it('returns false when the element has inline style display:none', () => {
+      const input = makeInput();
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      expect(isFieldVisible(input)).toBe(false);
+      document.body.removeChild(input);
+    });
+
+    it('returns false when the element has inline style visibility:hidden', () => {
+      const input = makeInput();
+      input.style.visibility = 'hidden';
+      document.body.appendChild(input);
+      expect(isFieldVisible(input)).toBe(false);
+      document.body.removeChild(input);
+    });
+
+    it('returns false when the element has inline style opacity:0', () => {
+      const input = makeInput();
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      expect(isFieldVisible(input)).toBe(false);
+      document.body.removeChild(input);
+    });
+
+    it('returns false when an ANCESTOR has display:none (ancestor-walk)', () => {
+      const wrapper = document.createElement('div');
+      wrapper.style.display = 'none';
+      const input = makeInput();
+      wrapper.appendChild(input);
+      document.body.appendChild(wrapper);
+      expect(isFieldVisible(input)).toBe(false);
+      document.body.removeChild(wrapper);
+    });
+  });
+
+  describe('formatExpiryForField (D-02)', () => {
+    it('defaults to an MM/YY form when no 4-digit-year hint is present', () => {
+      const input = makeInput();
+      expect(formatExpiryForField(input, '3', '2027')).toBe('03/27');
+    });
+
+    it('switches to MM/YYYY when maxlength hints a 4-digit year', () => {
+      const input = makeInput();
+      input.maxLength = 7;
+      expect(formatExpiryForField(input, '03', '27')).toBe('03/2027');
+    });
+
+    it('switches to MM/YYYY when the placeholder hints a 4-digit year', () => {
+      const input = makeInput();
+      input.setAttribute('placeholder', 'MM/YYYY');
+      expect(formatExpiryForField(input, '03', '27')).toBe('03/2027');
     });
   });
 });
