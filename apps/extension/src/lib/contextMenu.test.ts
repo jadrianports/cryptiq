@@ -23,7 +23,7 @@ describe('shouldRefuseFrame (T-18-07, XSEC-01 consistency)', () => {
 
 describe('pickTopCandidate (Open Question 1 rec (a), best-effort)', () => {
   function makeCandidate(id: string, username: string): EntryMatchMetadata {
-    return { id, title: 'Example', username, domainHint: 'example.com' };
+    return { id, title: 'Example', username, domainHint: 'example.com', type: 'login' };
   }
 
   it('returns null for an empty candidate list', () => {

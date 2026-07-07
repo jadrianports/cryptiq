@@ -97,14 +97,29 @@ export type FillFocusedResult = { ok: true } | { ok: false; reason: 'origin-mism
  * Deliberately mirrors `@cryptiq/core`'s `EntryMatchMetadata`
  * (packages/core/src/entries/matchByOrigin.ts) field-for-field WITHOUT
  * importing it — apps/extension holds no workspace dependency on
- * `@cryptiq/core` (thin-client boundary, CLAUDE.md). Structurally has no
- * `password`/`secret` field.
+ * `@cryptiq/core` (thin-client boundary, CLAUDE.md).
+ *
+ * Phase 24 (RPC-02, D-01/D-02/D-02a): `type` and `email` mirror core's
+ * widening field-for-field WITHOUT importing it. `type` is spelled out
+ * inline (never `Entry['type']` — the extension does not import core's
+ * `Entry` type) and is always present; `email` is optional, present only
+ * when the source entry has one. Structurally has NO `password`/`secret`/
+ * `card`/`identity`/`cvv`/`number`/`name`/`phone`/`address` field — this
+ * type simply cannot carry a secret, mirroring the existing no-`password`
+ * guarantee.
  */
 export interface EntryMatchMetadata {
   id: string;
   title: string;
   username: string;
   domainHint: string;
+  /** Entry type discriminator (Phase 24, RPC-02). Always present. Spelled
+   * out inline — mirrors core's `Entry['type']` without importing it. */
+  type: 'login' | 'card' | 'identity' | 'secure-note';
+  /** Non-secret email identifier (Phase 24, RPC-02/D-01/D-02). Optional —
+   * omitted entirely (never `email: undefined`) when the source entry has
+   * none. */
+  email?: string;
   /** HEALTH-02: true when this entry's password scores below the `core`
    * audit engine's weak threshold. Computed app-side (rpcDispatch.ts),
    * never in the extension. */

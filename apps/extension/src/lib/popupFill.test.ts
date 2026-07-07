@@ -41,6 +41,7 @@ function makeCandidate(overrides: Partial<EntryMatchMetadata> = {}): EntryMatchM
     title: 'Example',
     username: 'me@example.com',
     domainHint: 'example.com',
+    type: 'login',
     ...overrides,
   };
 }
