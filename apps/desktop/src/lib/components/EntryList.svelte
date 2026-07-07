@@ -82,6 +82,7 @@
           username={row.username}
           favorite={row.favorite}
           needsUpdate={row.needsSiteUpdate}
+          type={row.type}
           selected={row.id === ui.selectedEntryId}
           onSelect={() => { ui.selectedEntryId = row.id; }}
         />

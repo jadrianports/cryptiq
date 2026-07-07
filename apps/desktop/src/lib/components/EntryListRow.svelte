@@ -11,7 +11,9 @@
   truncate; the row never reflows. Density target: ~56px tall.
 -->
 <script lang="ts">
+  import type { Entry } from '@cryptiq/core';
   import VisualIdentity from './VisualIdentity.svelte';
+  import { TYPE_ICON } from './typeIcons';
 
   type Props = {
     title: string;
@@ -21,6 +23,8 @@
     /** UI-09 — site changed its password rules; surfaced as the attention dot. */
     needsUpdate?: boolean;
     selected?: boolean;
+    /** Entry type — drives the per-type icon (D-11); login keeps the letter tile. */
+    type?: Entry['type'];
     onSelect?: () => void;
   };
   let {
@@ -29,8 +33,12 @@
     favorite = false,
     needsUpdate = false,
     selected = false,
+    type = 'login',
     onSelect,
   }: Props = $props();
+
+  /** Login entries keep the letter/gradient tile; all other types show TYPE_ICON. */
+  const icon = $derived(type === 'login' ? undefined : TYPE_ICON[type]);
 </script>
 
 <button
@@ -48,7 +56,7 @@
     ></span>
   {/if}
 
-  <VisualIdentity label={title} size={36} />
+  <VisualIdentity label={title} size={36} {...(icon ? { icon } : {})} />
 
   <span class="min-w-0 flex-1">
     <span class="flex items-center gap-1.5">
