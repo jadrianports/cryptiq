@@ -46,6 +46,17 @@ import { registrableHost } from './originMatch';
  * Metadata-only match result. Deliberately has NO `password` field — this is
  * a structural guarantee (SC-1 / BRIDGE-08), not a convention: the secret for
  * a specific `id` only ever crosses on the separate `fill-entry` RPC path.
+ *
+ * Phase 24 (RPC-02, D-01/D-02/D-02a): `type` and `email` are the ONLY two NEW
+ * non-secret fields permitted on the metadata-only `match-origin`/picker
+ * channel. `type` is always present (`Entry['type']`); `email` is optional —
+ * `Entry.email` for `login` entries, `EntryIdentity.email` for `identity`
+ * entries, omitted entirely when the source entry has none. The deliberate
+ * ABSENCE of `card`/`identity`/`cvv`/`number`/`name`/`phone`/`address` is the
+ * STRUCTURAL half of the Phase-24 wire-minimization GATE (D-05a) — this type
+ * simply has no such field, exactly mirroring the existing no-`password`
+ * guarantee, so no dispatch path can leak a card/identity secret onto this
+ * channel.
  */
 export interface EntryMatchMetadata {
   id: string;
@@ -53,6 +64,15 @@ export interface EntryMatchMetadata {
   username: string;
   /** The eTLD+1 registrable domain both this entry and the page origin share. */
   domainHint: string;
+  /** Entry type discriminator (Phase 24, RPC-02). Always present. */
+  type: Entry['type'];
+  /**
+   * Non-secret email identifier (Phase 24, RPC-02/D-01/D-02). `Entry.email`
+   * for `login` entries, `EntryIdentity.email` for `identity` entries. Optional
+   * — omitted (never `email: undefined`) when the source entry has none
+   * (D-02a, `exactOptionalPropertyTypes`).
+   */
+  email?: string;
 }
 
 /**
@@ -112,12 +132,21 @@ export function matchByOrigin(
       if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; // D-08: favorites first
       return b.modifiedAt.localeCompare(a.modifiedAt); // D-08: modifiedAt descending
     })
-    .map((e) => ({
-      id: e.id,
-      title: e.title,
-      username: e.username,
-      domainHint: targetHost,
-    }));
+    .map((e) => {
+      // Phase 24 (D-01/D-02): the sole non-secret email identifier, sourced
+      // per entry type. NEVER read identity.name/phone/address (secrets).
+      const email = e.type === 'identity' ? e.identity?.email : e.email;
+      return {
+        id: e.id,
+        title: e.title,
+        username: e.username,
+        domainHint: targetHost,
+        type: e.type,
+        // D-02a: conditional-spread — omit the key entirely rather than emit
+        // `email: undefined`.
+        ...(email !== undefined ? { email } : {}),
+      };
+    });
 
   return { registrableDomain: targetHost, candidates };
 }
