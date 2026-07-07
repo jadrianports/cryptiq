@@ -6,7 +6,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { lastMeaningfulToken, scanForCardFields, scanForLoginFields } from './fieldDetection';
+import { lastMeaningfulToken, scanForCardFields, scanForIdentityFields, scanForLoginFields } from './fieldDetection';
 
 /** Builds a detached-then-attached container from an HTML string, mirroring
  * matchByOrigin.test.ts's makeEntry(overrides) fixture-builder convention. */
@@ -379,5 +379,104 @@ describe('fieldDetection — scanForCardFields (CFILL-01, D-04/D-05)', () => {
 
     const secondScan = scanForCardFields(container);
     expect(secondScan.number?.id).toBe('late-num');
+  });
+});
+
+describe('fieldDetection — scanForIdentityFields (CFILL-01, D-04/D-05)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('resolves "email" / "tel" / "street-address" to result.email / result.tel / result.address', () => {
+    const container = makeFormFixture(`
+      <input autocomplete="email" id="e" />
+      <input autocomplete="tel" id="t" />
+      <input autocomplete="street-address" id="a" />
+    `);
+
+    const result = scanForIdentityFields(container);
+
+    expect(result.email?.id).toBe('e');
+    expect(result.tel?.id).toBe('t');
+    expect(result.address?.id).toBe('a');
+  });
+
+  it('resolves "address-line1" to result.address when no street-address is present', () => {
+    const container = makeFormFixture(`<input autocomplete="address-line1" id="line1" />`);
+
+    const result = scanForIdentityFields(container);
+
+    expect(result.address?.id).toBe('line1');
+  });
+
+  it('prefers street-address over address-line1 when both are present, regardless of DOM order', () => {
+    const container = makeFormFixture(`
+      <input autocomplete="address-line1" id="line1" />
+      <input autocomplete="street-address" id="street" />
+    `);
+
+    const result = scanForIdentityFields(container);
+
+    expect(result.address?.id).toBe('street');
+  });
+
+  it('skips address-line2 / address-level1 / postal-code / country — no EntryIdentity sub-field exists', () => {
+    const container = makeFormFixture(`
+      <input autocomplete="address-line2" id="line2" />
+      <input autocomplete="address-level1" id="level1" />
+      <input autocomplete="postal-code" id="pc" />
+      <input autocomplete="country" id="country" />
+    `);
+
+    const result = scanForIdentityFields(container);
+
+    expect(result.address).toBeUndefined();
+    expect(result).toEqual({});
+  });
+
+  it('skips tel-country-code / tel-national / tel-area-code — phone is one flat string', () => {
+    const container = makeFormFixture(`
+      <input autocomplete="tel-country-code" id="cc" />
+      <input autocomplete="tel-national" id="national" />
+      <input autocomplete="tel-area-code" id="area" />
+    `);
+
+    const result = scanForIdentityFields(container);
+
+    expect(result.tel).toBeUndefined();
+    expect(result).toEqual({});
+  });
+});
+
+describe('fieldDetection — login/identity reconciliation (CFILL-01, D-05, T-25-02)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('reddit "username webauthn" + password still resolves via the EXISTING membership-test login path (no regression)', () => {
+    const container = makeFormFixture(`
+      <form>
+        <input type="text" name="username" autocomplete="username webauthn" id="u" />
+        <input type="password" autocomplete="current-password" id="p" />
+      </form>
+    `);
+
+    const result = scanForLoginFields(container);
+
+    expect(result.user?.id).toBe('u');
+    expect(result.pass?.id).toBe('p');
+  });
+
+  it('"section-x billing postal-code" resolves on the last token (postal-code) and is skipped by scanForIdentityFields (never mis-routed to billing)', () => {
+    const container = makeFormFixture(`<input autocomplete="section-x billing postal-code" id="pc" />`);
+    const el = container.querySelector('#pc')!;
+
+    expect(lastMeaningfulToken(el)).toBe('postal-code');
+
+    const identityResult = scanForIdentityFields(container);
+    expect(identityResult).toEqual({});
+
+    const cardResult = scanForCardFields(container);
+    expect(cardResult).toEqual({});
   });
 });

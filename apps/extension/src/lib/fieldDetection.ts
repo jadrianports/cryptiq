@@ -361,3 +361,58 @@ export function scanForLoginFields(root: ParentNode): FieldDetectionResult {
     pass: byAutocomplete.pass ?? heuristic.pass,
   };
 }
+
+/**
+ * Identity-field detection result (CFILL-01, D-05). Elements only, never
+ * values. `EntryIdentity` is a flat shape (`name, email, phone, address` —
+ * Phase 21 LOCKED); there is deliberately no `tel-country-code`/
+ * `address-line2`-style sub-field here — those tokens have no corresponding
+ * flat-address/flat-phone sub-field and are skipped silently at scan time
+ * (D-04), never split/inferred.
+ */
+export interface IdentityFieldDetectionResult {
+  email?: HTMLInputElement;
+  tel?: HTMLInputElement;
+  address?: HTMLInputElement;
+}
+
+/**
+ * Scans `root` for `email`/`tel`/address identity-token fields (CFILL-01).
+ * Reuses `collectInputs` + `lastMeaningfulToken` exactly like
+ * `scanForCardFields`. Do NOT reuse this for login `email` fill — that is
+ * `scanForLoginFields`'s separate job on a separate request, disambiguated
+ * upstream by `FillRequest.kind`, never by DOM inference (Pitfall 4).
+ *
+ * Every address/tel SUB-token (`address-line2`, `tel-country-code`, etc.) has
+ * no corresponding flat `EntryIdentity` field and is skipped silently (D-04)
+ * — this is a direct consequence of the Phase-21-LOCKED flat-string shape,
+ * not a detection limitation; no splitting/inference heuristic is added here
+ * (that is the deferred "split address components" item).
+ */
+export function scanForIdentityFields(root: ParentNode): IdentityFieldDetectionResult {
+  const result: IdentityFieldDetectionResult = {};
+  const inputs = collectInputs(root);
+
+  for (const el of inputs) {
+    const token = lastMeaningfulToken(el);
+    if (!token) continue;
+
+    if (token === 'email') {
+      if (!result.email) result.email = el;
+    } else if (token === 'tel') {
+      if (!result.tel) result.tel = el;
+    } else if (token === 'street-address') {
+      // street-address wins over address-line1 even if address-line1 was
+      // seen first — prefer the more direct token (D-04 Pattern 2).
+      result.address = el;
+    } else if (token === 'address-line1') {
+      if (!result.address) result.address = el;
+    }
+    // Every other token (address-line2/3, address-level1..4, postal-code,
+    // country, country-name, tel-country-code, tel-national, tel-area-code,
+    // tel-local*, tel-extension) has no EntryIdentity sub-field — skip
+    // silently (D-04).
+  }
+
+  return result;
+}
