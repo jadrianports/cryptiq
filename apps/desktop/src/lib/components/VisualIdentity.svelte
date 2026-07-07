@@ -39,8 +39,14 @@
     label?: string;
     /** Edge length in px. 36 = list row, 44 = detail header. */
     size?: number;
+    /**
+     * Optional SVG path `d` (viewBox="0 0 24 24") to render centered in place
+     * of the letter initial — used for non-login entry types (D-11/D-12).
+     * When omitted, the existing letter/gradient tile renders unchanged.
+     */
+    icon?: string;
   };
-  let { label = '', size = 36 }: Props = $props();
+  let { label = '', size = 36, icon }: Props = $props();
 
   const hue = $derived(hueFromLabel(label));
   const initial = $derived(initialFromLabel(label));
@@ -56,5 +62,16 @@
   style="width:{size}px; height:{size}px; background:{background}; font-size:{Math.round(size * 0.42)}px;"
   aria-hidden="true"
 >
-  {initial}
+  {#if icon}
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      style="width:{Math.round(size * 0.5)}px; height:{Math.round(size * 0.5)}px;"
+    >
+      <path d={icon} />
+    </svg>
+  {:else}
+    {initial}
+  {/if}
 </span>
