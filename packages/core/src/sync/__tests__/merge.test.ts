@@ -811,3 +811,308 @@ describe('counts non-negative (D-16)', () => {
     expect(Number.isInteger(result.counts.unchanged)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Describe: v3 field-parity (SYNCP-01, Phase 22)
+//
+// Phase 21 widened Entry with email/equivalentUrls/card/identity (schemaVersion 3).
+// merge.ts hand-enumerates fields in deepCopyEntry/contentEqual/canonicalEntry/
+// validateEntry — these fixtures prove all four sites recognize the new fields
+// (no silent drop, no false-equal), while snapshotOf/meaningfulContentDiffers
+// deliberately stay narrow (D-02/D-02a).
+// ---------------------------------------------------------------------------
+
+describe('v3 field-parity (SYNCP-01, Phase 22)', () => {
+  it('one-sided-populate: remote-only entry with card/identity/email/equivalentUrls survives merge intact', () => {
+    const remoteEntry = makeEntry({
+      id: 'entry-v3-onesided-001',
+      email: 'user@example.com',
+      equivalentUrls: ['https://alt.example.com'],
+      card: {
+        cardholderName: 'Jane Doe',
+        number: '4111111111111111',
+        expiryMonth: '03',
+        expiryYear: '2027',
+        cvv: '123',
+      },
+      identity: {
+        name: 'Jane Doe',
+        email: 'jane@example.com',
+        phone: '555-1234',
+        address: '1 Example St',
+      },
+    });
+    const local = makeInnerDoc({ schemaVersion: 3, entries: [] });
+    const remote = makeInnerDoc({ schemaVersion: 3, entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === 'entry-v3-onesided-001');
+    expect(merged).toBeDefined();
+    expect(merged!.email).toBe('user@example.com');
+    expect(merged!.equivalentUrls).toEqual(['https://alt.example.com']);
+    expect(merged!.card).toEqual(remoteEntry.card);
+    expect(merged!.identity).toEqual(remoteEntry.identity);
+  });
+
+  it('one-sided-populate: local-only entry with new fields survives merge intact', () => {
+    const localEntry = makeEntry({
+      id: 'entry-v3-onesided-002',
+      email: 'local@example.com',
+      equivalentUrls: ['https://alt2.example.com'],
+      card: {
+        cardholderName: 'Local Card',
+        number: '5500000000000004',
+        expiryMonth: '11',
+        expiryYear: '2028',
+        cvv: '999',
+      },
+    });
+    const local = makeInnerDoc({ schemaVersion: 3, entries: [localEntry] });
+    const remote = makeInnerDoc({ schemaVersion: 3, entries: [] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === 'entry-v3-onesided-002');
+    expect(merged).toBeDefined();
+    expect(merged!.email).toBe('local@example.com');
+    expect(merged!.equivalentUrls).toEqual(['https://alt2.example.com']);
+    expect(merged!.card).toEqual(localEntry.card);
+  });
+
+  it('no false-equal: two v3 entries identical except card.number, equal deviceId + modifiedAt, converge deterministically (not silently no-opped)', () => {
+    const sharedId = 'entry-v3-diffcard-001';
+    const tiedModifiedAt = new Date(EPOCH_BASE).toISOString();
+    const localEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: tiedModifiedAt,
+      card: {
+        cardholderName: 'Same Name',
+        number: '4111111111111111',
+        expiryMonth: '01',
+        expiryYear: '2030',
+        cvv: '111',
+      },
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: tiedModifiedAt,
+      card: {
+        cardholderName: 'Same Name',
+        number: '4222222222222222', // DIFFERS only here
+        expiryMonth: '01',
+        expiryYear: '2030',
+        cvv: '111',
+      },
+    });
+    const local = makeInnerDoc({ schemaVersion: 3, entries: [localEntry] });
+    const remote = makeInnerDoc({ schemaVersion: 3, entries: [remoteEntry] });
+
+    // Same deviceId on both sides forces the equal-modifiedAt path, which checks
+    // contentEqual first (D-14 shortcut) — a false-equal here would silently
+    // no-op the merge and drop one side's card number.
+    const ctx = makeCtx({ localDeviceId: 'device-same', remoteDeviceId: 'device-same' });
+    const result = mergeInnerDocs(local, remote, ctx);
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    const cardNumbers = [localEntry.card!.number, remoteEntry.card!.number];
+    expect(cardNumbers).toContain(merged!.card!.number);
+
+    // Determinism: repeated merges of the same inputs converge to the SAME winner.
+    const result2 = mergeInnerDocs(local, remote, ctx);
+    expect(result2.merged.entries.find((e) => e.id === sharedId)!.card!.number).toBe(
+      merged!.card!.number,
+    );
+  });
+
+  it('deep-copy-not-alias: mutating merged card/identity does not mutate the input entries', () => {
+    const sharedId = 'entry-v3-deepcopy-001';
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      card: {
+        cardholderName: 'Original',
+        number: '4111111111111111',
+        expiryMonth: '05',
+        expiryYear: '2029',
+        cvv: '321',
+      },
+      identity: {
+        name: 'Original Name',
+        email: 'orig@example.com',
+        phone: '000',
+        address: 'Somewhere',
+      },
+    });
+    const local = makeInnerDoc({ schemaVersion: 3, entries: [] });
+    const remote = makeInnerDoc({ schemaVersion: 3, entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+    const merged = result.merged.entries.find((e) => e.id === sharedId)!;
+
+    merged.card!.number = 'MUTATED';
+    merged.identity!.name = 'MUTATED';
+
+    expect(remoteEntry.card!.number).toBe('4111111111111111');
+    expect(remoteEntry.identity!.name).toBe('Original Name');
+  });
+
+  it('canonicalEntry tiebreak: equal-deviceId, equal-modifiedAt entries differing ONLY in a new field resolve deterministically', () => {
+    const sharedId = 'entry-v3-canon-001';
+    const tiedModifiedAt = new Date(EPOCH_BASE).toISOString();
+    const localEntry = makeEntry({ id: sharedId, modifiedAt: tiedModifiedAt, email: 'aaa@example.com' });
+    const remoteEntry = makeEntry({ id: sharedId, modifiedAt: tiedModifiedAt, email: 'zzz@example.com' });
+    const local = makeInnerDoc({ schemaVersion: 3, entries: [localEntry] });
+    const remote = makeInnerDoc({ schemaVersion: 3, entries: [remoteEntry] });
+    const ctx = makeCtx({ localDeviceId: 'device-same', remoteDeviceId: 'device-same' });
+
+    const result1 = mergeInnerDocs(local, remote, ctx);
+    const result2 = mergeInnerDocs(local, remote, ctx);
+
+    const merged1 = result1.merged.entries.find((e) => e.id === sharedId)!;
+    const merged2 = result2.merged.entries.find((e) => e.id === sharedId)!;
+
+    expect(merged1.email).toBe(merged2.email);
+    expect(['aaa@example.com', 'zzz@example.com']).toContain(merged1.email);
+  });
+
+  it('validateEntry strictness: rejects malformed card/identity/equivalentUrls; accepts valid/absent', () => {
+    const badCardShape = makeEntry({
+      id: 'entry-bad-card-001',
+      card: 'not an object' as unknown as Entry['card'],
+    });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 3, entries: [badCardShape] }),
+        makeInnerDoc({ schemaVersion: 3, entries: [] }),
+        makeCtx(),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }));
+
+    const badCardField = makeEntry({
+      id: 'entry-bad-card-002',
+      card: {
+        cardholderName: 'X',
+        number: 123 as unknown as string,
+        expiryMonth: '01',
+        expiryYear: '2030',
+        cvv: '1',
+      },
+    });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 3, entries: [badCardField] }),
+        makeInnerDoc({ schemaVersion: 3, entries: [] }),
+        makeCtx(),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }));
+
+    const badIdentity = makeEntry({
+      id: 'entry-bad-identity-001',
+      identity: 'nope' as unknown as Entry['identity'],
+    });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 3, entries: [badIdentity] }),
+        makeInnerDoc({ schemaVersion: 3, entries: [] }),
+        makeCtx(),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }));
+
+    const badUrls = makeEntry({
+      id: 'entry-bad-urls-001',
+      equivalentUrls: [42] as unknown as string[],
+    });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 3, entries: [badUrls] }),
+        makeInnerDoc({ schemaVersion: 3, entries: [] }),
+        makeCtx(),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }));
+
+    // Valid card/identity + absent card/identity/email/equivalentUrls are BOTH accepted.
+    const validEntry = makeEntry({
+      id: 'entry-valid-001',
+      card: { cardholderName: 'X', number: '1', expiryMonth: '01', expiryYear: '2030', cvv: '1' },
+      identity: { name: 'X', email: 'x@x.com', phone: '1', address: 'x' },
+    });
+    const absentEntry = makeEntry({ id: 'entry-absent-fields-001' });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 3, entries: [validEntry, absentEntry] }),
+        makeInnerDoc({ schemaVersion: 3, entries: [] }),
+        makeCtx(),
+      ),
+    ).not.toThrow();
+  });
+
+  it('D-02a consistency: new-field-only diff does NOT produce a ConflictRecord (meaningfulContentDiffers stays narrow)', () => {
+    const sharedId = 'entry-v3-d02a-001';
+    const localEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: new Date(EPOCH_PLUS_1H).toISOString(),
+      email: 'local@example.com',
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: new Date(EPOCH_BASE).toISOString(), // older — local wins LWW
+      email: 'remote@example.com', // differs ONLY in this new field vs local
+    });
+    const local = makeInnerDoc({ schemaVersion: 3, entries: [localEntry] });
+    const remote = makeInnerDoc({ schemaVersion: 3, entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    // All old meaningful fields (password/username/url/notes/title/tags) are identical
+    // between local/remote here — only `email` differs. Per D-02a option (a), this
+    // must NOT produce a conflict record (the snapshot cannot recover email anyway).
+    const conflict = result.conflicts.find((c) => c.entryId === sharedId);
+    expect(conflict).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: schemaVersion ceiling guard (SYNCP-02, Phase 22)
+//
+// D-03: a KNOWN_SCHEMA_VERSIONS ceiling inside merge.ts, additive to (not a
+// replacement of) the existing exact-equality gate (D-01).
+// ---------------------------------------------------------------------------
+
+describe('schemaVersion ceiling guard (SYNCP-02, Phase 22)', () => {
+  it('mixed-version peer (D-01): local=2, remote=3 -> MergeSchemaMismatchError (exact-equality gate still fires)', () => {
+    const local = makeInnerDoc({ schemaVersion: 2, entries: [] });
+    const remote = makeInnerDoc({ schemaVersion: 3, entries: [] });
+
+    expect(() => mergeInnerDocs(local, remote, makeCtx())).toThrow(
+      expect.objectContaining({ code: 'MERGE_SCHEMA_MISMATCH' }),
+    );
+  });
+
+  it('unknown-version ceiling: local=99 AND remote=99 (equal — would pass the OLD exact-equality gate) -> MergeSchemaMismatchError', () => {
+    const local = makeInnerDoc({ schemaVersion: 99 as unknown as 1 | 2 | 3, entries: [] });
+    const remote = makeInnerDoc({ schemaVersion: 99 as unknown as 1 | 2 | 3, entries: [] });
+
+    expect(() => mergeInnerDocs(local, remote, makeCtx())).toThrow(
+      expect.objectContaining({ code: 'MERGE_SCHEMA_MISMATCH' }),
+    );
+  });
+
+  it('guard ordering: unknown schemaVersion 99 with a malformed entry throws the SCHEMA error, not invalid-input', () => {
+    const malformedEntry = makeEntry({ id: '' }); // would throw MERGE_INVALID_INPUT if validated
+    const local = makeInnerDoc({
+      schemaVersion: 99 as unknown as 1 | 2 | 3,
+      entries: [malformedEntry],
+    });
+    const remote = makeInnerDoc({ schemaVersion: 99 as unknown as 1 | 2 | 3, entries: [] });
+
+    let thrown: unknown;
+    try {
+      mergeInnerDocs(local, remote, makeCtx());
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeDefined();
+    expect((thrown as { code?: string }).code).toBe('MERGE_SCHEMA_MISMATCH');
+  });
+});

@@ -35,7 +35,7 @@
 
 import { describe, it } from 'vitest';
 import fc from 'fast-check';
-import type { InnerDoc, Entry, PasswordHistoryItem } from '../../entries/types';
+import type { InnerDoc, Entry, EntryCard, EntryIdentity, PasswordHistoryItem } from '../../entries/types';
 import type { MergeContext, EntrySnapshot } from '../types';
 import { DEFAULT_RANDOM_OPTIONS } from '../../generator/types';
 import { mergeInnerDocs } from '../merge';
@@ -141,6 +141,80 @@ const innerDocArb: fc.Arbitrary<InnerDoc> = fc.record({
 });
 
 // ---------------------------------------------------------------------------
+// v3 arbitraries (Phase 22, SYNCP-01) — extend the base entry with the four
+// new optional fields (email/equivalentUrls/card/identity), each independently
+// present-or-absent via fc.option. Key is OMITTED when absent (conditional
+// spread), never assigned `undefined` (exactOptionalPropertyTypes), mirroring
+// the existing lostVersions handling above.
+// ---------------------------------------------------------------------------
+
+const cardArb: fc.Arbitrary<EntryCard> = fc.record({
+  cardholderName: fc.string({ minLength: 1, maxLength: 32 }),
+  number: fc.string({ minLength: 1, maxLength: 20 }),
+  expiryMonth: fc.string({ minLength: 2, maxLength: 2 }),
+  expiryYear: fc.string({ minLength: 4, maxLength: 4 }),
+  cvv: fc.string({ minLength: 3, maxLength: 4 }),
+});
+
+const identityArb: fc.Arbitrary<EntryIdentity> = fc.record({
+  name: fc.string({ minLength: 1, maxLength: 32 }),
+  email: fc.string({ minLength: 1, maxLength: 32 }),
+  phone: fc.string({ minLength: 1, maxLength: 16 }),
+  address: fc.string({ minLength: 1, maxLength: 64 }),
+});
+
+// Full v3 Entry arbitrary: base entry + concrete lostVersions: [] + conditionally
+// present new fields.
+const v3EntryArb: fc.Arbitrary<Entry> = fc
+  .tuple(
+    baseEntryArb,
+    fc.option(fc.string({ minLength: 1, maxLength: 32 }), { nil: undefined }),
+    fc.option(fc.array(fc.string({ minLength: 1, maxLength: 32 }), { maxLength: 3 }), {
+      nil: undefined,
+    }),
+    fc.option(cardArb, { nil: undefined }),
+    fc.option(identityArb, { nil: undefined }),
+  )
+  .map(([base, email, equivalentUrls, card, identity]) => ({
+    ...base,
+    lostVersions: [] as EntrySnapshot[],
+    ...(email !== undefined ? { email } : {}),
+    ...(equivalentUrls !== undefined ? { equivalentUrls } : {}),
+    ...(card !== undefined ? { card } : {}),
+    ...(identity !== undefined ? { identity } : {}),
+  }));
+
+// v3 InnerDoc arbitrary — schemaVersion fixed at 3; entries may populate the new fields.
+const v3InnerDocArb: fc.Arbitrary<InnerDoc> = fc.record({
+  schemaVersion: fc.constant(3 as const),
+  entries: fc.array(v3EntryArb, { maxLength: 8 }),
+  settings: fc.constant({ generator: DEFAULT_RANDOM_OPTIONS }),
+});
+
+/**
+ * Compare the new-field content (email/equivalentUrls/card/identity) of two entries.
+ * Strengthens commutativity/idempotency beyond id-set equality (Phase 22) — a
+ * false-equal or dropped-field bug on these fields would NOT be caught by an
+ * id-set-only comparison.
+ */
+function newFieldContentEqual(a: Entry, b: Entry): boolean {
+  if (a.email !== b.email) return false;
+  const au = a.equivalentUrls;
+  const bu = b.equivalentUrls;
+  if (au === undefined || bu === undefined) {
+    if (au !== bu) return false;
+  } else {
+    if (au.length !== bu.length) return false;
+    for (let i = 0; i < au.length; i++) {
+      if (au[i] !== bu[i]) return false;
+    }
+  }
+  if (JSON.stringify(a.card ?? null) !== JSON.stringify(b.card ?? null)) return false;
+  if (JSON.stringify(a.identity ?? null) !== JSON.stringify(b.identity ?? null)) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
 
@@ -223,6 +297,74 @@ describe('sync/property — commutativity + idempotency (D-18/MERGE-08)', () => 
         return true;
       }),
       // numRuns: 200 — pure TS, no Argon2id tax.
+      { numRuns: 200 },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v3 field-parity properties (Phase 22, SYNCP-01)
+//
+// Strengthen commutativity + idempotency for v3 entries carrying the four new
+// optional fields — the ORIGINAL Property 1/2 above only assert entry-id-set
+// equality, which would NOT catch a dropped-field or false-equal bug on
+// email/equivalentUrls/card/identity. These new properties add a per-entry
+// new-field content equality assertion via newFieldContentEqual.
+// ---------------------------------------------------------------------------
+
+describe('sync/property — v3 field-parity (Phase 22, SYNCP-01)', () => {
+  it('Property 2 (v3): merge(A,A) is a no-op AND preserves new-field content per entry', () => {
+    const ctx = makePropertyCtx();
+
+    fc.assert(
+      fc.property(v3InnerDocArb, (docA) => {
+        const result1 = mergeInnerDocs(docA, docA, ctx);
+
+        if (result1.counts.updated !== 0) return false;
+        if (result1.counts.added !== 0) return false;
+        if (result1.counts.deleted !== 0) return false;
+
+        const originalIds = new Set(docA.entries.map((e) => e.id));
+        const mergedIds = new Set(result1.merged.entries.map((e) => e.id));
+        if (!setsEqual(originalIds, mergedIds)) return false;
+
+        // New-field content must be preserved (no silent drop / false-equal).
+        for (const original of docA.entries) {
+          const merged = result1.merged.entries.find((e) => e.id === original.id);
+          if (merged === undefined) return false;
+          if (!newFieldContentEqual(original, merged)) return false;
+        }
+
+        return true;
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('Property 1 (v3): merge(A,B) === merge(B,A) — new-field content per entry, not just id-set', () => {
+    const ctx = makePropertyCtx();
+    const swappedCtx = makeSwappedCtx(ctx);
+
+    fc.assert(
+      fc.property(v3InnerDocArb, v3InnerDocArb, (docA, docB) => {
+        const resultAB = mergeInnerDocs(docA, docB, ctx);
+        const resultBA = mergeInnerDocs(docB, docA, swappedCtx);
+
+        const idsAB = new Set(resultAB.merged.entries.map((e) => e.id));
+        const idsBA = new Set(resultBA.merged.entries.map((e) => e.id));
+        if (!setsEqual(idsAB, idsBA)) return false;
+
+        // Strengthened: per shared id, new-field content must also match.
+        const mapAB = new Map(resultAB.merged.entries.map((e) => [e.id, e]));
+        const mapBA = new Map(resultBA.merged.entries.map((e) => [e.id, e]));
+        for (const id of idsAB) {
+          const eAB = mapAB.get(id)!;
+          const eBA = mapBA.get(id)!;
+          if (!newFieldContentEqual(eAB, eBA)) return false;
+        }
+
+        return true;
+      }),
       { numRuns: 200 },
     );
   });
