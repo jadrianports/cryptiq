@@ -103,7 +103,7 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
     ]);
   });
 
-  it('returns metadata with id/title/username/domainHint and structurally no password field (SC-1/BRIDGE-08)', () => {
+  it('returns metadata with id/title/username/domainHint/type and structurally no password field (SC-1/BRIDGE-08)', () => {
     const entries = [makeEntry({ url: 'example.com', title: 'Example', username: 'alice' })];
     const result = matchByOrigin(entries, 'https://example.com');
     expect(result.candidates).toHaveLength(1);
@@ -113,6 +113,7 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
       title: 'Example',
       username: 'alice',
       domainHint: 'example.com',
+      type: 'login',
     });
     expect(Object.keys(match)).not.toContain('password');
     expect('password' in match).toBe(false);
@@ -199,5 +200,98 @@ describe('entries/matchByOrigin — origin-based metadata matcher (FILL-03, BRID
     const entries = [makeEntry({ url: 'example.com', type: 'login' })];
     const result = matchByOrigin(entries, 'https://example.com');
     expect(result.candidates).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 24 Task 2 (RPC-02, D-01/D-02/D-02a/D-05): type + email population and
+  // the structural secret-exclusion GATE (core-level half; wire-level runtime
+  // scan lives in Plan 03's rpcDispatch.test.ts).
+  // ---------------------------------------------------------------------------
+
+  describe('type/email population + structural secret exclusion (RPC-02)', () => {
+    it('populates type + email for a matching login entry with email set (D-01/D-02)', () => {
+      const entries = [makeEntry({ url: 'example.com', type: 'login', email: 'alice@example.com' })];
+      const result = matchByOrigin(entries, 'https://example.com');
+      expect(result.candidates).toHaveLength(1);
+      const match = result.candidates[0]!;
+      expect(match.type).toBe('login');
+      expect(match.email).toBe('alice@example.com');
+    });
+
+    it('populates type but OMITS email for a matching login entry with no email (D-02a)', () => {
+      const entries = [makeEntry({ url: 'example.com', type: 'login' })];
+      const result = matchByOrigin(entries, 'https://example.com');
+      expect(result.candidates).toHaveLength(1);
+      const match = result.candidates[0]!;
+      expect(match.type).toBe('login');
+      expect(match).not.toHaveProperty('email');
+    });
+
+    it('populates type + email from EntryIdentity.email for a matching identity entry (D-01/D-02)', () => {
+      const entries = [
+        makeEntry({
+          url: 'example.com',
+          type: 'identity',
+          identity: {
+            name: 'Alice Example',
+            email: 'identity-alice@example.com',
+            phone: '555-0100',
+            address: '1 Example St',
+          },
+        }),
+      ];
+      const result = matchByOrigin(entries, 'https://example.com');
+      expect(result.candidates).toHaveLength(1);
+      const match = result.candidates[0]!;
+      expect(match.type).toBe('identity');
+      expect(match.email).toBe('identity-alice@example.com');
+      expect(match).not.toHaveProperty('name');
+      expect(match).not.toHaveProperty('phone');
+      expect(match).not.toHaveProperty('address');
+    });
+
+    it('structurally excludes card/identity/cvv/number/name/phone/address/password on a card candidate', () => {
+      const entries = [
+        makeEntry({
+          url: 'example.com',
+          type: 'card',
+          card: {
+            cardholderName: 'Alice Example',
+            number: '4111111111111111',
+            expiryMonth: '03',
+            expiryYear: '2030',
+            cvv: '123',
+          },
+        }),
+      ];
+      const result = matchByOrigin(entries, 'https://example.com');
+      expect(result.candidates).toHaveLength(1);
+      const match = result.candidates[0]!;
+      expect(match.type).toBe('card');
+      for (const field of ['card', 'identity', 'cvv', 'number', 'name', 'phone', 'address', 'password']) {
+        expect(match).not.toHaveProperty(field);
+      }
+    });
+
+    it('structurally excludes card/identity/cvv/number/name/phone/address/password on an identity candidate', () => {
+      const entries = [
+        makeEntry({
+          url: 'example.com',
+          type: 'identity',
+          identity: {
+            name: 'Alice Example',
+            email: 'identity-alice@example.com',
+            phone: '555-0100',
+            address: '1 Example St',
+          },
+        }),
+      ];
+      const result = matchByOrigin(entries, 'https://example.com');
+      expect(result.candidates).toHaveLength(1);
+      const match = result.candidates[0]!;
+      for (const field of ['card', 'identity', 'cvv', 'number', 'name', 'phone', 'address', 'password']) {
+        expect(match).not.toHaveProperty(field);
+      }
+    });
   });
 });
