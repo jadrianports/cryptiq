@@ -414,6 +414,68 @@ describe('updateEntry (ENTRY-03/ENTRY-07)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 23 Task 2: updateEntry field parity — email/equivalentUrls/card/identity
+// ---------------------------------------------------------------------------
+
+describe('updateEntry — v3.1 field parity (Phase 23 Task 2)', () => {
+  it('persists email when present', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput());
+    updateEntry(vault, entry.id, { email: 'a@b.c' });
+    expect(getEntry(vault, entry.id)!.email).toBe('a@b.c');
+  });
+
+  it('persists equivalentUrls when present (deep-equal)', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput());
+    updateEntry(vault, entry.id, { equivalentUrls: ['x.com', 'y.com'] });
+    expect(getEntry(vault, entry.id)!.equivalentUrls).toEqual(['x.com', 'y.com']);
+  });
+
+  it('persists card wholesale-replace when present', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput({ type: 'card' }));
+    const card = {
+      cardholderName: 'A',
+      number: '4',
+      expiryMonth: '03',
+      expiryYear: '2027',
+      cvv: '123',
+    };
+    updateEntry(vault, entry.id, { card });
+    expect(getEntry(vault, entry.id)!.card).toEqual(card);
+    expect(getEntry(vault, entry.id)!.card!.number).toBe('4');
+  });
+
+  it('persists identity when present', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput({ type: 'identity' }));
+    const identity = { name: 'A', email: 'a@b.c', phone: '555', address: 'Somewhere' };
+    updateEntry(vault, entry.id, { identity });
+    expect(getEntry(vault, entry.id)!.identity).toEqual(identity);
+  });
+
+  it('leaves existing v3.1 fields untouched when omitted from the update (no accidental clobber)', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput({ email: 'keep@me.com' }));
+    updateEntry(vault, entry.id, { title: 'New title only' });
+    expect(getEntry(vault, entry.id)!.email).toBe('keep@me.com');
+  });
+
+  it('still bumps modifiedAt when only v3.1 fields change', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, minimalInput());
+    const originalModifiedAt = entry.modifiedAt;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    updateEntry(vault, entry.id, { email: 'a@b.c' });
+    const updated = getEntry(vault, entry.id)!;
+    expect(new Date(updated.modifiedAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(originalModifiedAt).getTime(),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // softDeleteEntry (ENTRY-03/ENTRY-04)
 // ---------------------------------------------------------------------------
 

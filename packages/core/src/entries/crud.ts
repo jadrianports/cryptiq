@@ -247,6 +247,11 @@ export function updateEntry(vault: UnlockedVault, id: string, update: EntryUpdat
     entry.modifiedAt = nowIso();
   }
   if (update.deletedAt !== undefined) entry.deletedAt = update.deletedAt;
+  // Phase 23 (Task 2): v3.1 field parity — wholesale-replace, no deep-merge.
+  if (update.email !== undefined) entry.email = update.email;
+  if (update.equivalentUrls !== undefined) entry.equivalentUrls = update.equivalentUrls;
+  if (update.card !== undefined) entry.card = update.card;
+  if (update.identity !== undefined) entry.identity = update.identity;
 
   return entry;
 }
