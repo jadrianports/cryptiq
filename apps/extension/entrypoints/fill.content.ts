@@ -72,13 +72,16 @@ function isKnownMessage(value: unknown): value is IncomingMessage {
  * `expiryYear` route through `fillSelectField` when the matched element is a
  * `<select>` (else `fillField`); `ccExpCombined` routes through
  * `formatExpiryForField` then `fillField`; every other field routes through
- * `fillField`. Returns the count of fields actually written -- the caller
- * decides ok/no-field-found from that count (D-04: >=1 write is success).
- * NEVER calls submit()/requestSubmit() -- same never-auto-submit discipline
- * as `fillField`/`fillSelectField` themselves.
+ * `fillField`. Returns `{ filled, total }` (Phase 27, D-07/D-08): `total` is
+ * the count of card slots DETECTED on the page (independent of whether a
+ * value was written); `filled` is the count of fields actually written --
+ * the caller decides ok/no-field-found from `filled` (D-04: >=1 write is
+ * success). NEVER calls submit()/requestSubmit() -- same never-auto-submit
+ * discipline as `fillField`/`fillSelectField` themselves.
  */
-function fillCardFields(card: Extract<FillRequest, { kind: 'card' }>['card']): number {
+function fillCardFields(card: Extract<FillRequest, { kind: 'card' }>['card']): { filled: number; total: number } {
   const fields = scanForCardFields(document);
+  const total = Object.values(fields).filter((el) => el !== undefined).length;
   let written = 0;
 
   const fillText = (el: HTMLInputElement | HTMLSelectElement | undefined, value: string | undefined): void => {
@@ -114,17 +117,20 @@ function fillCardFields(card: Extract<FillRequest, { kind: 'card' }>['card']): n
     written += 1;
   }
 
-  return written;
+  return { filled: written, total };
 }
 
 /**
  * Phase 25 (CFILL-03, D-04 forgiving fill): fills the identity branch of
  * `handleFill`. Same matched+visible+valued gate as `fillCardFields`; no
  * `<select>` path for identity fields -- always routes through `fillField`.
- * Returns the count of fields actually written.
+ * Returns `{ filled, total }` (Phase 27, D-07/D-08) -- `total` is the count
+ * of identity slots DETECTED on the page; `filled` is the count actually
+ * written.
  */
-function fillIdentityFields(identity: Extract<FillRequest, { kind: 'identity' }>['identity']): number {
+function fillIdentityFields(identity: Extract<FillRequest, { kind: 'identity' }>['identity']): { filled: number; total: number } {
   const fields = scanForIdentityFields(document);
+  const total = Object.values(fields).filter((el) => el !== undefined).length;
   let written = 0;
 
   const fillText = (el: HTMLInputElement | undefined, value: string | undefined): void => {
@@ -138,7 +144,7 @@ function fillIdentityFields(identity: Extract<FillRequest, { kind: 'identity' }>
   fillText(fields.tel, identity.phone);
   fillText(fields.address, identity.address);
 
-  return written;
+  return { filled: written, total };
 }
 
 /**
@@ -170,6 +176,13 @@ function isEmailSlot(el: HTMLInputElement): boolean {
  * field written -> ok:true, else no-field-found). Drops all local references
  * to the incoming secret on return by simply not retaining them past this
  * call's stack frame.
+ *
+ * Phase 27 (XUI-02, D-07/D-08): every ok:true branch now reports non-secret
+ * `filled`/`total` integer counts alongside `ok:true` -- `total` is the count
+ * of fillable slots DETECTED for the dispatched kind (independent of whether
+ * a value was written); `filled` is the count of slots actually written. The
+ * login branch computes `total` from the resolved `user`/`pass` detection
+ * (0/1/2).
  */
 function handleFill(msg: FillRequest): FillResult {
   if (location.origin !== msg.expectedOrigin) {
@@ -177,19 +190,22 @@ function handleFill(msg: FillRequest): FillResult {
   }
 
   if (msg.kind === 'card') {
-    const written = fillCardFields(msg.card);
-    return written > 0 ? { ok: true } : { ok: false, reason: 'no-field-found' };
+    const { filled, total } = fillCardFields(msg.card);
+    return filled > 0 ? { ok: true, filled, total } : { ok: false, reason: 'no-field-found' };
   }
 
   if (msg.kind === 'identity') {
-    const written = fillIdentityFields(msg.identity);
-    return written > 0 ? { ok: true } : { ok: false, reason: 'no-field-found' };
+    const { filled, total } = fillIdentityFields(msg.identity);
+    return filled > 0 ? { ok: true, filled, total } : { ok: false, reason: 'no-field-found' };
   }
 
   const { user, pass } = scanForLoginFields(document);
   if (!user && !pass) {
     return { ok: false, reason: 'no-field-found' };
   }
+
+  const total = (user ? 1 : 0) + (pass ? 1 : 0);
+  let filled = 0;
 
   if (user) {
     // Phase 26 (IDENT-02, D-01/D-02): per-field email-vs-username precedence
@@ -203,11 +219,17 @@ function handleFill(msg: FillRequest): FillResult {
     // written to the identifier field -- still correct, not a failure (the
     // password field may still write).
     const value = isEmailSlot(user) ? msg.email || msg.username : msg.username || msg.email;
-    if (value) fillField(user, value);
+    if (value) {
+      fillField(user, value);
+      filled += 1;
+    }
   }
-  if (pass) fillField(pass, msg.secret);
+  if (pass) {
+    fillField(pass, msg.secret);
+    filled += 1;
+  }
 
-  return { ok: true };
+  return { ok: true, filled, total };
 }
 
 /**

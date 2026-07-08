@@ -84,8 +84,18 @@ export type FillRequest =
 
 /** Result of a `cryptiq-fill` message. Fail-closed: any refusal reason is
  * explicit and typed, never a bare boolean. No field ever echoes the secret
- * back. */
-export type FillResult = { ok: true } | { ok: false; reason: 'origin-mismatch' | 'no-field-found' };
+ * back.
+ *
+ * Phase 27 (XUI-02, D-07/D-08): the `ok:true` variant carries `filled`/`total`
+ * -- non-secret integer counts only, NEVER a field value (D-08a, enforced by
+ * a serialization-level test in fill.content.test.ts). `total` is the count
+ * of fillable slots DETECTED on the page for the dispatched `kind`
+ * (independent of whether a value was written); `filled` is the count of
+ * slots actually written. The `ok:false` reason union is UNCHANGED -- per-
+ * type miss messaging stays popup-side (D-08, Plan 04), not a wire change. */
+export type FillResult =
+  | { ok: true; filled: number; total: number }
+  | { ok: false; reason: 'origin-mismatch' | 'no-field-found' };
 
 /**
  * Plan 19-02: the content-script -> background capture signal (CAP-01/CAP-04).
