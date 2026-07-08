@@ -120,12 +120,16 @@ export function buildPickerViewModel(candidates: EntryMatchMetadata[]): PickerRo
  * -- structurally carries no password field (BRIDGE-08 wire minimization).
  * Phase 26 (D-06/D-04): optional `email` -- the desktop `search-entries`
  * handler now sources it per-type (26-02), mirroring `match-origin`'s
- * `EntryMatchMetadata.email?` discipline. */
+ * `EntryMatchMetadata.email?` discipline. Phase 27 (D-04 gap-closure, 27-05):
+ * required `type` (mirroring `PickerRow.type` exactly), threaded from the
+ * real vault entry -- lets the search rows render entry-type iconography at
+ * parity with the picker rows. */
 export interface SearchEntryResult {
   id: string;
   title: string;
   username: string;
   currentTab: boolean;
+  type: EntryMatchMetadata['type'];
   email?: string;
 }
 
@@ -133,12 +137,15 @@ export interface SearchEntryResult {
  * as its own type (mirroring `PickerRow`'s separation from
  * `EntryMatchMetadata`) so the render layer depends on a view-model type, not
  * the wire type, even though the shapes currently match exactly. Phase 26
- * (D-04): optional `email`, threaded from `SearchEntryResult.email`. */
+ * (D-04): optional `email`, threaded from `SearchEntryResult.email`. Phase 27
+ * (D-04 gap-closure, 27-05): required `type`, threaded unconditionally
+ * (a discriminant, not an optional field) from `SearchEntryResult.type`. */
 export interface SearchRow {
   id: string;
   title: string;
   username: string;
   currentTab: boolean;
+  type: EntryMatchMetadata['type'];
   email?: string;
 }
 
@@ -150,6 +157,9 @@ export interface SearchRow {
  * shaping. An empty `results` array maps to an empty `rows` array (drives the
  * "No matches"/"No saved logins yet." empty states in Popup.svelte). Phase 26
  * (D-04): `email` threaded via conditional spread (exactOptionalPropertyTypes).
+ * Phase 27 (D-04 gap-closure, 27-05): `type` threaded unconditionally (always
+ * present, mirroring `buildPickerViewModel`'s `type: c.type` -- never
+ * defaulted, never conditional-spread).
  */
 export function buildSearchViewModel(results: SearchEntryResult[]): SearchRow[] {
   return results.map((r) => {
@@ -159,6 +169,7 @@ export function buildSearchViewModel(results: SearchEntryResult[]): SearchRow[] 
       title: r.title,
       username: r.username,
       currentTab: r.currentTab,
+      type: r.type,
       ...(email !== undefined ? { email } : {}),
     };
   });

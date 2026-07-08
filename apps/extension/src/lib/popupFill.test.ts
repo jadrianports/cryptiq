@@ -32,6 +32,7 @@ function makeSearchResult(overrides: Partial<SearchEntryResult> = {}): SearchEnt
     title: 'Example',
     username: 'me@example.com',
     currentTab: false,
+    type: 'login',
     ...overrides,
   };
 }
@@ -224,9 +225,9 @@ describe('popupFill', () => {
       const rows = buildSearchViewModel(results);
 
       expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c']);
-      expect(rows[0]).toEqual({ id: 'a', title: 'First', username: 'me@example.com', currentTab: true });
-      expect(rows[1]).toEqual({ id: 'b', title: 'Second', username: 'me@example.com', currentTab: false });
-      expect(rows[2]).toEqual({ id: 'c', title: 'Third', username: 'me@example.com', currentTab: false });
+      expect(rows[0]).toEqual({ id: 'a', title: 'First', username: 'me@example.com', currentTab: true, type: 'login' });
+      expect(rows[1]).toEqual({ id: 'b', title: 'Second', username: 'me@example.com', currentTab: false, type: 'login' });
+      expect(rows[2]).toEqual({ id: 'c', title: 'Third', username: 'me@example.com', currentTab: false, type: 'login' });
     });
 
     it('never carries a password field on any row', () => {
@@ -249,6 +250,16 @@ describe('popupFill', () => {
 
       expect(rows[0]!.email).toBe('a@example.com');
       expect('email' in rows[1]!).toBe(false);
+    });
+
+    it('threads the real type discriminant unconditionally (D-04, 27-05 gap-closure)', () => {
+      const rows = buildSearchViewModel([
+        makeSearchResult({ id: 'a', type: 'card' }),
+        makeSearchResult({ id: 'b', type: 'secure-note' }),
+      ]);
+
+      expect(rows[0]!.type).toBe('card');
+      expect(rows[1]!.type).toBe('secure-note');
     });
   });
 
