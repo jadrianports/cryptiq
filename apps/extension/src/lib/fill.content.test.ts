@@ -202,12 +202,31 @@ describe('fill.content', () => {
       expectedOrigin: location.origin,
     });
 
-    expect(result).toEqual({ ok: true } satisfies FillResult);
+    expect(result).toEqual({ ok: true, filled: 2, total: 2 } satisfies FillResult);
     expect(user.value).toBe('alice');
     expect(pass.value).toBe('super-secret');
     // A fresh re-scan is used, not a cached reference from an earlier
     // cryptiq-detect call.
     expect(scanForLoginFieldsSpy).toHaveBeenCalled();
+  });
+
+  it('login fill with only a password field detected fills the password and resolves { ok:true, filled:1, total:1 } (D-07/D-08)', async () => {
+    const form = document.createElement('form');
+    const pass = document.createElement('input');
+    pass.setAttribute('type', 'password');
+    pass.setAttribute('autocomplete', 'current-password');
+    form.appendChild(pass);
+    document.body.appendChild(form);
+
+    const result = await emitMessage({
+      type: 'cryptiq-fill',
+      secret: 'super-secret',
+      username: 'alice',
+      expectedOrigin: location.origin,
+    });
+
+    expect(result).toEqual({ ok: true, filled: 1, total: 1 } satisfies FillResult);
+    expect(pass.value).toBe('super-secret');
   });
 
   it('cryptiq-fill with matching origin but no detectable field resolves no-field-found', async () => {
@@ -376,12 +395,27 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 5, total: 5 } satisfies FillResult);
       expect(cardholderName.value).toBe('Alice Example');
       expect(number.value).toBe('4111111111111111');
       expect(expiryMonth.value).toBe('03');
       expect(expiryYear.value).toBe('2027');
       expect(cvv.value).toBe('123');
+    });
+
+    it('kind:card partial fill: N of M detected slots written when some values are empty (D-07/D-08 partial-count)', async () => {
+      const { cardholderName, number } = buildCardForm(); // 5 detected slots: cardholderName, number, expiryMonth, expiryYear, cvv
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: { cardholderName: 'Alice Example', number: '4111111111111111', expiryMonth: '', expiryYear: '', cvv: '' },
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true, filled: 2, total: 5 } satisfies FillResult);
+      expect(cardholderName.value).toBe('Alice Example');
+      expect(number.value).toBe('4111111111111111');
     });
 
     it('kind:card does NOT write a field that is display:none (CFILL-03 visibility gate)', async () => {
@@ -401,7 +435,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 4, total: 5 } satisfies FillResult);
       expect(cardholderName.value).toBe('Alice Example');
       expect(number.value).toBe('4111111111111111');
       expect(cvv.value).toBe('');
@@ -421,7 +455,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 1, total: 1 } satisfies FillResult);
       expect(cardholderName.value).toBe('Alice Example');
     });
 
@@ -482,10 +516,25 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 3, total: 3 } satisfies FillResult);
       expect(email.value).toBe('alice@example.com');
       expect(tel.value).toBe('555-0100');
       expect(address.value).toBe('123 Main St');
+    });
+
+    it('kind:identity partial fill: N of M detected slots written when some values are empty (D-07/D-08 partial-count)', async () => {
+      const { email, tel } = buildIdentityForm(); // 3 detected slots: email, tel, address
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'identity',
+        identity: { email: 'alice@example.com', phone: '555-0100', address: '' },
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true, filled: 2, total: 3 } satisfies FillResult);
+      expect(email.value).toBe('alice@example.com');
+      expect(tel.value).toBe('555-0100');
     });
 
     it('kind:identity refuses on origin mismatch and writes NOTHING to the DOM (XSEC-03)', async () => {
@@ -550,7 +599,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 2, total: 2 } satisfies FillResult);
       expect(user.value).toBe('alice@example.com');
       expect(pass.value).toBe('super-secret');
     });
@@ -567,7 +616,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 2, total: 2 } satisfies FillResult);
       expect(user.value).toBe('alice@example.com');
       expect(pass.value).toBe('super-secret');
     });
@@ -583,7 +632,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 2, total: 2 } satisfies FillResult);
       expect(user.value).toBe('alice');
       expect(pass.value).toBe('super-secret');
     });
@@ -600,7 +649,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 2, total: 2 } satisfies FillResult);
       expect(user.value).toBe('alice');
       expect(pass.value).toBe('super-secret');
     });
@@ -617,7 +666,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 2, total: 2 } satisfies FillResult);
       expect(user.value).toBe('alice@example.com');
       expect(pass.value).toBe('super-secret');
     });
@@ -633,7 +682,7 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 1, total: 2 } satisfies FillResult);
       expect(user.value).toBe('');
       expect(pass.value).toBe('super-secret');
     });
@@ -649,9 +698,47 @@ describe('fill.content', () => {
         expectedOrigin: location.origin,
       });
 
-      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(result).toEqual({ ok: true, filled: 1, total: 2 } satisfies FillResult);
       expect(user.value).toBe('');
       expect(pass.value).toBe('super-secret');
+    });
+  });
+
+  // Task 1 (Plan 27-02, D-08a): serialization-level guard proving no ok:true
+  // FillResult across login/card/identity kinds ever carries a secret-shaped
+  // field (password/secret/cvv/pan) -- filled/total are non-secret integers
+  // only. Enforced by test (Phase-24 RPC-02 precedent), not review.
+  describe('cryptiq-fill D-08a no-secret serialization guard', () => {
+    it('JSON.stringify of every ok:true FillResult (login/card/identity) never matches /password|secret|cvv|pan/i', async () => {
+      buildLoginForm();
+      const loginResult = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: 'alice',
+        expectedOrigin: location.origin,
+      });
+
+      buildCardForm();
+      const cardResult = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'card',
+        card: { cardholderName: 'Alice Example', number: '4111111111111111', expiryMonth: '03', expiryYear: '2027', cvv: '123' },
+        expectedOrigin: location.origin,
+      });
+
+      buildIdentityForm();
+      const identityResult = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'identity',
+        identity: { email: 'alice@example.com', phone: '555-0100', address: '123 Main St' },
+        expectedOrigin: location.origin,
+      });
+
+      for (const result of [loginResult, cardResult, identityResult]) {
+        expect((result as FillResult).ok).toBe(true);
+        expect(JSON.stringify(result)).not.toMatch(/password|secret|cvv|pan/i);
+      }
     });
   });
 
