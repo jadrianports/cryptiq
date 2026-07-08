@@ -975,9 +975,15 @@
     {:else}
       <ul class="m-0 list-none p-0">
         {#each searchRows as row (row.id)}
+          {@const icon = iconForType(row.type)}
           <li class="mb-1.5 flex items-center justify-between gap-1">
-            <span class="overflow-hidden text-ellipsis whitespace-nowrap text-body text-cryptiq-fg">
-              {row.title}{row.currentTab ? ' 📌' : ''}
+            <span class="flex min-w-0 items-center gap-1.5">
+              {#if icon}
+                <span class="shrink-0 text-cryptiq-fg-muted">{@html icon}</span>
+              {/if}
+              <span class="overflow-hidden text-ellipsis whitespace-nowrap text-body text-cryptiq-fg">
+                {row.title}{row.currentTab ? ' 📌' : ''}
+              </span>
             </span>
             <span class="flex flex-shrink-0 gap-1">
               <!-- WR-03 (anti-phishing): a full-vault search lets any entry be
