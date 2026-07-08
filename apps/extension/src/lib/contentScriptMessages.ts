@@ -47,7 +47,21 @@ export interface DetectResult {
  * variants carry decrypted-upstream secrets crossing on this sole
  * click-gated fill message — never on the metadata wire. */
 export type FillRequest =
-  | { type: 'cryptiq-fill'; kind: 'login'; secret: string; username: string; expectedOrigin: string }
+  | {
+      type: 'cryptiq-fill';
+      kind: 'login';
+      secret: string;
+      username: string;
+      /** Phase 26 (IDENT-02, D-01 consequence): non-secret login-entry email,
+       * distinct from the `identity` variant's nested `identity.email` below
+       * (a different entry kind's field entirely — never conflate the two).
+       * Optional — omitted entirely (never `email: undefined`) when the
+       * source entry has none, mirroring `EntryMatchMetadata.email?`'s
+       * discipline. `handleFill`'s login branch (fill.content.ts) picks
+       * between this and `username` per-field via D-01/D-02 precedence. */
+      email?: string;
+      expectedOrigin: string;
+    }
   | {
       type: 'cryptiq-fill';
       kind: 'card';

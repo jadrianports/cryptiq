@@ -142,6 +142,24 @@ function fillIdentityFields(identity: Extract<FillRequest, { kind: 'identity' }>
 }
 
 /**
+ * Phase 26 (IDENT-02, D-02): classifies an already-detected login identifier
+ * element as an email slot -- `type="email"` OR an `autocomplete` token list
+ * (whitespace-split, lowercased) that includes `'email'`. Deliberately a
+ * small dedicated local helper, NOT a reuse of `fieldDetection.ts`'s
+ * `USERNAME_AUTOCOMPLETE_TOKENS` -- that set answers a different, broader
+ * question ("is this candidate a username field AT ALL", used during
+ * detection scoring) than this one ("is this ALREADY-RESOLVED field
+ * specifically an email type"). Applied to the `user` element `handleFill`
+ * already has post-BUG-17-01-completion (Discretion path B) -- never
+ * re-derives or duplicates fieldDetection.ts's own detection logic.
+ */
+function isEmailSlot(el: HTMLInputElement): boolean {
+  if (el.type === 'email') return true;
+  const tokens = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return tokens.includes('email');
+}
+
+/**
  * cryptiq-fill: exact-origin refusal FIRST (XSEC-03), unconditionally for
  * every `kind` -- do NOT move this check inside a branch. Then dispatches on
  * `msg.kind` (Phase 25, CFILL-03/D-01): `login` is the pre-Phase-25 behavior
@@ -173,7 +191,16 @@ function handleFill(msg: FillRequest): FillResult {
     return { ok: false, reason: 'no-field-found' };
   }
 
-  if (user) fillField(user, msg.username);
+  if (user) {
+    // Phase 26 (IDENT-02, D-01/D-02): per-field email-vs-username precedence
+    // with fallback, computed on the already-resolved `user` element. An
+    // email-typed slot prefers `email`, falling back to `username`; a
+    // plain-text slot prefers `username`, falling back to `email`. When
+    // neither value is present, nothing is written to the identifier field
+    // -- still correct, not a failure (the password field may still write).
+    const value = isEmailSlot(user) ? (msg.email ?? msg.username) : (msg.username ?? msg.email);
+    if (value) fillField(user, value);
+  }
   if (pass) fillField(pass, msg.secret);
 
   return { ok: true };
