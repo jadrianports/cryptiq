@@ -1,0 +1,14 @@
+/* apps/extension/entrypoints/popup/style.css */
+
+/*
+ * Phase 27 (XUI-01/D-09): the popup consumes the desktop's LOCKED cryptiq-*
+ * @theme tokens via a relative-path @import of the shared single-source-of-
+ * truth file — never a copy, never a second CSS framework. Tailwind v4's own
+ * documented "sharing across projects" pattern (tailwindcss.com/docs/theme).
+ * Do NOT re-import the full apps/desktop/src/app.css (would double-import
+ * "tailwindcss" and drag in desktop-only base rules irrelevant to a 320px
+ * popup body) and do NOT copy token values by hand (defeats D-09's single
+ * source of truth).
+ */
+@import 'tailwindcss';
+@import '../../../desktop/src/theme.css';

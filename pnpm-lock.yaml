@@ -128,6 +128,9 @@ importers:
         specifier: ^1.0.3
         version: 1.0.3
     devDependencies:
+      '@tailwindcss/vite':
+        specifier: ^4.1.7
+        version: 4.3.0(vite@6.4.2(@types/node@20.19.41)(jiti@2.7.0)(lightningcss@1.32.0))
       '@types/chrome':
         specifier: ^0.2.2
         version: 0.2.2
@@ -140,6 +143,12 @@ importers:
       svelte:
         specifier: ^5.55.9
         version: 5.55.9(@typescript-eslint/types@8.59.4)
+      svelte-check:
+        specifier: ^4.4.8
+        version: 4.4.8(picomatch@4.0.4)(svelte@5.55.9(@typescript-eslint/types@8.59.4))(typescript@5.9.3)
+      tailwindcss:
+        specifier: ^4.1.7
+        version: 4.3.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3

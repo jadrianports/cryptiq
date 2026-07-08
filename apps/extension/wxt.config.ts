@@ -1,4 +1,5 @@
 import { defineConfig } from 'wxt';
+import tailwindcss from '@tailwindcss/vite';
 
 // apps/extension/wxt.config.ts
 //
@@ -57,6 +58,14 @@ import { defineConfig } from 'wxt';
 // extension's binding).
 export default defineConfig({
   modules: ['@wxt-dev/module-svelte'],
+  // Phase 27 (XUI-01/D-09): wires the SAME @tailwindcss/vite plugin the
+  // desktop already runs (apps/desktop/vite.config.ts) into WXT's Vite
+  // config, via WXT's documented `vite: () => ({...})` override. No
+  // postcss.config.* / tailwind.config.* — v4 is CSS-first and the Vite
+  // plugin replaces the PostCSS pipeline entirely (Pitfall 3).
+  vite: () => ({
+    plugins: [tailwindcss()],
+  }),
   manifest: {
     name: 'Cryptiq',
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19vhX8XkzAUXKFy9ULbh3THq+EUESqEnurUFmD/qlyZNerlM0gxQeuXk61QW/MG9aTBTXnlUQ86+KPbBlORunAs6ST0Nn+AU1sX/UnfCZBlrPQVMY1Y57MRaRviLLwpwpa5W0LKafR0iZHkK4o/WwQzRexsbBlqnR4zu/1b+92d6vYnfEiXIqxYLuB3TF5fy4iGBbuE8CtG7gUD209c+jvJUwcJCBOtGNXAZ65Q8iv25gXBB2BE7Q68BQN7IBsVzt0shzid+PcjNx0zIpMzkyEjwCB29UrucOdJqGazhAfZaFp2AvKpIYHmb+FP1jJ/1duIPifxXyrAhfnQZj2gbdwIDAQAB',
