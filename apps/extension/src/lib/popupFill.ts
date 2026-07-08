@@ -72,11 +72,18 @@ export async function recheckTabUnchanged(expectedTabId: number, expectedOrigin:
 }
 
 /** One picker row: order-preserving, structurally carries no password/secret
- * field (BRIDGE-08 wire-minimization carried through to the render layer). */
+ * field (BRIDGE-08 wire-minimization carried through to the render layer).
+ * Phase 26 (D-04): widened with the metadata's always-present `type` (the
+ * row's `type` is NEVER the fill dispatch authority -- D-03 -- it only lets
+ * `handleFillClick` thread the login identifiers; forward-compat for Phase
+ * 27's entry-type iconography) and an optional `email` (login identifier,
+ * IDENT-02). */
 export interface PickerRow {
   id: string;
   title: string;
   username: string;
+  type: EntryMatchMetadata['type'];
+  email?: string;
   weak: boolean;
   reused: boolean;
 }
@@ -90,35 +97,46 @@ export interface PickerRow {
  * (17-RESEARCH.md "Picker Ordering"), so this function does no reordering or
  * filtering of its own, only shaping. `weak`/`reused` default to `false`
  * when the candidate omits them (optional booleans on the wire type).
+ * Phase 26 (D-04): `type` threads through as required; `email` via
+ * conditional spread (exactOptionalPropertyTypes -- never `email: c.email`,
+ * which would assign the literal `undefined`).
  */
 export function buildPickerViewModel(candidates: EntryMatchMetadata[]): PickerRow[] {
   return candidates.map((c) => ({
     id: c.id,
     title: c.title,
     username: c.username,
+    type: c.type,
+    ...(c.email !== undefined ? { email: c.email } : {}),
     weak: c.weak ?? false,
     reused: c.reused ?? false,
   }));
 }
 
 /** One `search-entries` result row exactly as the RPC returns it (Plan 18-01)
- * -- structurally carries no password field (BRIDGE-08 wire minimization). */
+ * -- structurally carries no password field (BRIDGE-08 wire minimization).
+ * Phase 26 (D-06/D-04): optional `email` -- the desktop `search-entries`
+ * handler now sources it per-type (26-02), mirroring `match-origin`'s
+ * `EntryMatchMetadata.email?` discipline. */
 export interface SearchEntryResult {
   id: string;
   title: string;
   username: string;
   currentTab: boolean;
+  email?: string;
 }
 
 /** One search-result display row -- 1:1 with `SearchEntryResult` today, kept
  * as its own type (mirroring `PickerRow`'s separation from
  * `EntryMatchMetadata`) so the render layer depends on a view-model type, not
- * the wire type, even though the shapes currently match exactly. */
+ * the wire type, even though the shapes currently match exactly. Phase 26
+ * (D-04): optional `email`, threaded from `SearchEntryResult.email`. */
 export interface SearchRow {
   id: string;
   title: string;
   username: string;
   currentTab: boolean;
+  email?: string;
 }
 
 /**
@@ -127,10 +145,17 @@ export interface SearchRow {
  * discipline -- the RPC already ordered current-tab-first (18-01's stable
  * sort), so this function does no reordering or filtering of its own, only
  * shaping. An empty `results` array maps to an empty `rows` array (drives the
- * "No matches"/"No saved logins yet." empty states in Popup.svelte).
+ * "No matches"/"No saved logins yet." empty states in Popup.svelte). Phase 26
+ * (D-04): `email` threaded via conditional spread (exactOptionalPropertyTypes).
  */
 export function buildSearchViewModel(results: SearchEntryResult[]): SearchRow[] {
-  return results.map((r) => ({ id: r.id, title: r.title, username: r.username, currentTab: r.currentTab }));
+  return results.map((r) => ({
+    id: r.id,
+    title: r.title,
+    username: r.username,
+    currentTab: r.currentTab,
+    ...(r.email !== undefined ? { email: r.email } : {}),
+  }));
 }
 
 export interface FillFlowInput {

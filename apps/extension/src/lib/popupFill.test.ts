@@ -165,9 +165,30 @@ describe('popupFill', () => {
       const rows = buildPickerViewModel(candidates);
 
       expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c']);
-      expect(rows[0]).toEqual({ id: 'a', title: 'First', username: 'me@example.com', weak: true, reused: false });
-      expect(rows[1]).toEqual({ id: 'b', title: 'Second', username: 'me@example.com', weak: false, reused: true });
-      expect(rows[2]).toEqual({ id: 'c', title: 'Third', username: 'me@example.com', weak: false, reused: false });
+      expect(rows[0]).toEqual({
+        id: 'a',
+        title: 'First',
+        username: 'me@example.com',
+        type: 'login',
+        weak: true,
+        reused: false,
+      });
+      expect(rows[1]).toEqual({
+        id: 'b',
+        title: 'Second',
+        username: 'me@example.com',
+        type: 'login',
+        weak: false,
+        reused: true,
+      });
+      expect(rows[2]).toEqual({
+        id: 'c',
+        title: 'Third',
+        username: 'me@example.com',
+        type: 'login',
+        weak: false,
+        reused: false,
+      });
     });
 
     it('never carries a password field on any row', () => {
@@ -176,6 +197,18 @@ describe('popupFill', () => {
         expect(Object.prototype.hasOwnProperty.call(row, 'password')).toBe(false);
         expect(Object.prototype.hasOwnProperty.call(row, 'secret')).toBe(false);
       }
+    });
+
+    it('threads type and, via conditional spread, an optional email (D-04)', () => {
+      const rows = buildPickerViewModel([
+        makeCandidate({ id: 'a', type: 'identity', email: 'a@example.com' }),
+        makeCandidate({ id: 'b', type: 'login' }),
+      ]);
+
+      expect(rows[0]!.type).toBe('identity');
+      expect(rows[0]!.email).toBe('a@example.com');
+      expect(rows[1]!.type).toBe('login');
+      expect('email' in rows[1]!).toBe(false);
     });
   });
 
@@ -205,6 +238,16 @@ describe('popupFill', () => {
 
     it('maps an empty results array to an empty rows array', () => {
       expect(buildSearchViewModel([])).toEqual([]);
+    });
+
+    it('threads an optional email via conditional spread (D-04/D-06)', () => {
+      const rows = buildSearchViewModel([
+        makeSearchResult({ id: 'a', email: 'a@example.com' }),
+        makeSearchResult({ id: 'b' }),
+      ]);
+
+      expect(rows[0]!.email).toBe('a@example.com');
+      expect('email' in rows[1]!).toBe(false);
     });
   });
 
