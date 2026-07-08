@@ -157,3 +157,41 @@ describe('crypto/recovery — Crockford Base32 + check char + version byte (DC-7
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 28 (TOTP-07, SC-5): RFC 4648 Base32 vs Crockford Base32 confusion guard.
+//
+// NEGATIVE PROOF that a real-world RFC 4648 TOTP secret (whose alphabet INCLUDES
+// I/L/O/U) can never silently route through Cryptiq's Crockford recovery codec
+// (whose ENCODE_ALPHABET deliberately EXCLUDES I/L/O/U and has NO look-alike
+// normalization). This guards against a FUTURE developer wiring decodeCrockfordBase32
+// into a TOTP path — it would REJECT or corrupt real seeds. TOTP secrets must always
+// go through otpauth's own Secret.fromBase32 (Phase 29), never this module. No
+// dependency is added; this positively exercises the EXISTING codec (Pitfall 4).
+// ---------------------------------------------------------------------------
+describe('crypto/recovery — RFC 4648 vs Crockford confusion guard (TOTP-07, SC-5)', () => {
+  it('rejects a realistic RFC 4648 TOTP secret containing all four Crockford-excluded letters (I,L,O,U)', () => {
+    // Contains I, L, O, and U — all valid RFC 4648 Base32, all invalid Crockford.
+    const rfc4648SecretWithILOU = 'JBSWY3DPEHPK3PXPILOU2FA';
+    expect(rfc4648SecretWithILOU).toMatch(/I/);
+    expect(rfc4648SecretWithILOU).toMatch(/L/);
+    expect(rfc4648SecretWithILOU).toMatch(/O/);
+    expect(rfc4648SecretWithILOU).toMatch(/U/);
+    expect(() => decodeCrockfordBase32(rfc4648SecretWithILOU)).toThrow(WrongRecoveryKeyError);
+  });
+
+  it('per-letter rigor: each of I, L, O, U is individually rejected (not short-circuited by only the first)', () => {
+    for (const badChar of ['I', 'L', 'O', 'U']) {
+      // Otherwise-valid Crockford chars surround the single confusable letter, so the
+      // throw is provably triggered by THIS letter — not an incidental other-char reject.
+      const s = `ABC${badChar}DEF`;
+      expect(() => decodeCrockfordBase32(s)).toThrow(WrongRecoveryKeyError);
+    }
+  });
+
+  it('sanity contrast: a Crockford-valid string (no I/L/O/U) does NOT throw', () => {
+    // Only ENCODE_ALPHABET chars (0-9 A-Z minus I/L/O/U) — must decode without throwing,
+    // proving the negative assertions above are meaningful (not a codec that rejects all).
+    expect(() => decodeCrockfordBase32('0123456789ABCDEFGHJKMNPQRSTVWXYZ')).not.toThrow();
+  });
+});
