@@ -63,7 +63,7 @@
   // picker/single fill rows -- iconForType(row.type) returns undefined for
   // secure-note (D-04) and is always rendered in a fg-muted wrapper, never
   // text-cryptiq-accent (D-05).
-  import { iconForType } from '../../src/lib/icons';
+  import { iconForType, isFillableType } from '../../src/lib/icons';
 
   let DevEchoComponent: Component | null = $state(null);
 
@@ -986,29 +986,35 @@
               </span>
             </span>
             <span class="flex flex-shrink-0 gap-1">
-              <!-- WR-03 (anti-phishing): a full-vault search lets any entry be
-                   filled into the CURRENT tab, even one saved for a different
-                   site. The origin guards only prove the secret reaches the
-                   page the popup opened on — not that the entry's domain
-                   matches it. When `currentTab` is false, surface a visible
-                   caution (color + ⚠ + tooltip) so a cross-domain Fill never
-                   has the same affordance as a same-domain Fill. -->
-              <button
-                onclick={() => handleFillClick(row.id, row.username, row.email)}
-                disabled={fillState.kind === 'pending'}
-                title={row.currentTab
-                  ? undefined
-                  : 'This login is saved for a different site than the page you are on — only fill it if you trust this page.'}
-                class="rounded-cryptiq border border-cryptiq-border-strong px-2 py-1 text-meta hover:bg-cryptiq-hover disabled:opacity-60 {row.currentTab
-                  ? 'text-cryptiq-fg'
-                  : 'text-cryptiq-attention'}"
-              >
-                {fillState.kind === 'pending' && fillState.entryId === row.id
-                  ? 'Filling…'
-                  : row.currentTab
-                    ? 'Fill'
-                    : 'Fill ⚠'}
-              </button>
+              <!-- WR-01 (27-05 follow-up): only render Fill for fillable types.
+                   A secure-note's `fill-entry` returns `not-found` (D-04), so an
+                   ungated Fill button on those rows always errors — gate it out
+                   (Copy user/pass remain: those succeed app-side regardless). -->
+              {#if isFillableType(row.type)}
+                <!-- WR-03 (anti-phishing): a full-vault search lets any entry be
+                     filled into the CURRENT tab, even one saved for a different
+                     site. The origin guards only prove the secret reaches the
+                     page the popup opened on — not that the entry's domain
+                     matches it. When `currentTab` is false, surface a visible
+                     caution (color + ⚠ + tooltip) so a cross-domain Fill never
+                     has the same affordance as a same-domain Fill. -->
+                <button
+                  onclick={() => handleFillClick(row.id, row.username, row.email)}
+                  disabled={fillState.kind === 'pending'}
+                  title={row.currentTab
+                    ? undefined
+                    : 'This login is saved for a different site than the page you are on — only fill it if you trust this page.'}
+                  class="rounded-cryptiq border border-cryptiq-border-strong px-2 py-1 text-meta hover:bg-cryptiq-hover disabled:opacity-60 {row.currentTab
+                    ? 'text-cryptiq-fg'
+                    : 'text-cryptiq-attention'}"
+                >
+                  {fillState.kind === 'pending' && fillState.entryId === row.id
+                    ? 'Filling…'
+                    : row.currentTab
+                      ? 'Fill'
+                      : 'Fill ⚠'}
+                </button>
+              {/if}
               <button
                 onclick={() => handleCopyClick(row.id, 'username')}
                 disabled={copyState.kind === 'pending'}

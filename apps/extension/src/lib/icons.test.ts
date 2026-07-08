@@ -5,7 +5,7 @@
 // `entrypoints/` -- a test file there breaks `wxt build` (CLAUDE.md).
 
 import { describe, expect, it } from 'vitest';
-import { iconForType } from './icons';
+import { iconForType, isFillableType } from './icons';
 
 describe('iconForType', () => {
   it('returns a non-empty key glyph for login', () => {
@@ -52,4 +52,25 @@ describe('iconForType', () => {
       expect(svg.toLowerCase()).not.toContain('accent');
     });
   }
+});
+
+describe('isFillableType (WR-01 -- gate the search-row Fill button)', () => {
+  // secure-note is the ONLY non-fillable type: fill-entry returns not-found
+  // for it (rpcDispatch.ts D-04), so its Fill button always errors. The popup
+  // gates the Fill button on this predicate; login/card/identity stay fillable.
+  it('returns true for login/card/identity', () => {
+    expect(isFillableType('login')).toBe(true);
+    expect(isFillableType('card')).toBe(true);
+    expect(isFillableType('identity')).toBe(true);
+  });
+
+  it('returns false for secure-note', () => {
+    expect(isFillableType('secure-note')).toBe(false);
+  });
+
+  it('agrees with iconForType exactly (fillable <=> has a glyph)', () => {
+    for (const type of ['login', 'card', 'identity', 'secure-note'] as const) {
+      expect(isFillableType(type)).toBe(iconForType(type) !== undefined);
+    }
+  });
 });

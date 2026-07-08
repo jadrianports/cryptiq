@@ -55,3 +55,16 @@ export function iconForType(type: 'login' | 'card' | 'identity' | 'secure-note')
   if (type === 'secure-note') return undefined;
   return TYPE_ICON[type];
 }
+
+/**
+ * WR-01 (27-05 follow-up): is this entry type fillable? True for
+ * login/card/identity, false for `secure-note`. The popup's full-vault search
+ * rows gate their Fill button on this -- a secure-note's `fill-entry` returns
+ * `not-found` (rpcDispatch.ts D-04), so an ungated Fill button on those rows
+ * always errors. Mirrors `iconForType`'s fillable/non-fillable split exactly
+ * (a type is fillable iff it has a bespoke glyph); the shared `FillableType`
+ * union keeps the two in lockstep if a future type is added.
+ */
+export function isFillableType(type: 'login' | 'card' | 'identity' | 'secure-note'): type is FillableType {
+  return type !== 'secure-note';
+}
