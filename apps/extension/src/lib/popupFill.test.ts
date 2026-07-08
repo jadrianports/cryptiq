@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import type { EntryMatchMetadata } from './contentScriptMessages';
 import {
+  buildFillRequest,
   buildPickerViewModel,
   buildSearchViewModel,
   decideFillFlow,
@@ -278,6 +279,80 @@ describe('popupFill', () => {
       expect(
         decideFillFlow({ candidates: [makeCandidate({ id: 'a' }), makeCandidate({ id: 'b' })], fieldsDetected: false }),
       ).toEqual({ kind: 'picker', fillAnyway: true });
+    });
+  });
+
+  describe('buildFillRequest (CFILL-04)', () => {
+    const origin = 'https://example.com';
+
+    it('builds a kind:login FillRequest carrying secret/username/expectedOrigin', () => {
+      const request = buildFillRequest({ type: 'login', secret: 's3cr3t' }, { username: 'me' }, origin);
+
+      expect(request).toEqual({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 's3cr3t',
+        username: 'me',
+        expectedOrigin: origin,
+      });
+    });
+
+    it('threads email onto a kind:login FillRequest when identifiers.email is present', () => {
+      const request = buildFillRequest(
+        { type: 'login', secret: 's3cr3t' },
+        { username: 'me', email: 'me@example.com' },
+        origin,
+      );
+
+      expect(request).toMatchObject({ kind: 'login', email: 'me@example.com' });
+    });
+
+    it('omits the email key on a kind:login FillRequest when identifiers.email is absent', () => {
+      const request = buildFillRequest({ type: 'login', secret: 's3cr3t' }, { username: 'me' }, origin);
+
+      expect('email' in request).toBe(false);
+    });
+
+    it('builds a kind:card FillRequest carrying the card payload', () => {
+      const card = {
+        cardholderName: 'Jane Doe',
+        number: '4111111111111111',
+        expiryMonth: '01',
+        expiryYear: '2030',
+        cvv: '123',
+      };
+      const request = buildFillRequest({ type: 'card', card }, { username: 'unused' }, origin);
+
+      expect(request).toEqual({ type: 'cryptiq-fill', kind: 'card', card, expectedOrigin: origin });
+    });
+
+    it('builds a kind:identity FillRequest carrying the identity payload', () => {
+      const identity = { email: 'id@example.com', phone: '555-1234', address: '1 Main St' };
+      const request = buildFillRequest({ type: 'identity', identity }, { username: 'unused' }, origin);
+
+      expect(request).toEqual({ type: 'cryptiq-fill', kind: 'identity', identity, expectedOrigin: origin });
+    });
+
+    it('every result carries type:cryptiq-fill and the passed expectedOrigin', () => {
+      const login = buildFillRequest({ type: 'login', secret: 's' }, { username: 'u' }, origin);
+      const card = buildFillRequest(
+        {
+          type: 'card',
+          card: { cardholderName: 'x', number: '1', expiryMonth: '1', expiryYear: '1', cvv: '1' },
+        },
+        { username: 'u' },
+        origin,
+      );
+      const identity = buildFillRequest(
+        { type: 'identity', identity: { email: 'e', phone: 'p', address: 'a' } },
+        { username: 'u' },
+        origin,
+      );
+
+      for (const request of [login, card, identity]) {
+        expect(request.type).toBe('cryptiq-fill');
+        expect(request.expectedOrigin).toBe(origin);
+      }
     });
   });
 });
