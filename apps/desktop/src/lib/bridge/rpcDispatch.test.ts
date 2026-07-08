@@ -716,6 +716,75 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       }
     });
 
+    it('D-06: login entry row carries Entry.email; identity entry row carries identity.email (per-type sourcing)', async () => {
+      const loginEntry = makeEntry({ type: 'login', title: 'Login With Email', email: 'login@example.com' });
+      const identityEntry = makeEntry({
+        type: 'identity',
+        title: 'Identity With Email',
+        identity: {
+          name: 'Jane Doe',
+          email: 'identity@example.com',
+          phone: '',
+          address: '',
+        },
+      });
+      vaultState.entries = [loginEntry, identityEntry];
+
+      const result = (await handleRpcRequest({
+        requestId: 'se-email-1',
+        method: 'search-entries',
+        params: { query: '' },
+      })) as { results: Array<Record<string, unknown>> };
+
+      const loginRow = result.results.find((r) => r.id === loginEntry.id);
+      const identityRow = result.results.find((r) => r.id === identityEntry.id);
+      expect(loginRow?.email).toBe('login@example.com');
+      expect(identityRow?.email).toBe('identity@example.com');
+    });
+
+    it('D-06: an entry with no email produces a row that omits the email key entirely', async () => {
+      const entry = makeEntry({ type: 'login', title: 'No Email' });
+      vaultState.entries = [entry];
+
+      const result = (await handleRpcRequest({
+        requestId: 'se-email-2',
+        method: 'search-entries',
+        params: { query: '' },
+      })) as { results: Array<Record<string, unknown>> };
+
+      expect(result.results).toHaveLength(1);
+      expect('email' in result.results[0]!).toBe(false);
+    });
+
+    it('D-06: search-entries rows never carry password/card/cvv fields (RPC-02 boundary)', async () => {
+      const login = makeEntry({ type: 'login', title: 'Login', password: 'super-secret', email: 'a@example.com' });
+      const card = makeEntry({
+        type: 'card',
+        title: 'Card',
+        card: {
+          cardholderName: 'Jane Doe',
+          number: '4111111111111111',
+          expiryMonth: '01',
+          expiryYear: '2030',
+          cvv: '123',
+        },
+      });
+      vaultState.entries = [login, card];
+
+      const result = (await handleRpcRequest({
+        requestId: 'se-email-3',
+        method: 'search-entries',
+        params: { query: '' },
+      })) as { results: Array<Record<string, unknown>> };
+
+      expect(result.results.length).toBeGreaterThan(0);
+      for (const row of result.results) {
+        expect('password' in row).toBe(false);
+        expect('card' in row).toBe(false);
+        expect('cvv' in row).toBe(false);
+      }
+    });
+
     it('excludes soft-deleted (tombstoned) entries from results', async () => {
       const deleted = makeEntry({
         title: 'Deleted Example',
