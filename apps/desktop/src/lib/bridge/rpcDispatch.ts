@@ -234,7 +234,10 @@ export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unkn
   // search-entries (UX-01): full-vault metadata-only search, current-tab matches pinned first.
   // Reuses matchByOrigin's registrableHost comparison rather than reimplementing eTLD+1
   // matching (18-PATTERNS.md Pitfall 5). Rows are structurally { id, title, username,
-  // currentTab } — no password field exists on the type (BRIDGE-08 wire minimization).
+  // currentTab, email? } — no password field exists on the type (BRIDGE-08 wire
+  // minimization). Phase 26 (D-06): rows also carry the entry's optional non-secret
+  // email, sourced per-type identically to match-origin's EntryMatchMetadata, so
+  // search-originated login fills can honor IDENT-02 precedence.
   if (method === 'search-entries') {
     const query = typeof params.query === 'string' ? params.query.trim().toLowerCase() : '';
     const currentOrigin = typeof params.currentOrigin === 'string' ? params.currentOrigin : '';
@@ -249,12 +252,20 @@ export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unkn
           e.username.toLowerCase().includes(query) ||
           e.url.toLowerCase().includes(query),
       )
-      .map((e) => ({
-        id: e.id,
-        title: e.title,
-        username: e.username,
-        currentTab: registrableDomain !== null && registrableHost(e.url) === registrableDomain,
-      }))
+      .map((e) => {
+        // D-06: sole non-secret email identifier, sourced per entry type (mirrors
+        // matchByOrigin.ts). NEVER read identity.name/phone/address (secrets).
+        const email = e.type === 'identity' ? e.identity?.email : e.email;
+        return {
+          id: e.id,
+          title: e.title,
+          username: e.username,
+          currentTab: registrableDomain !== null && registrableHost(e.url) === registrableDomain,
+          // D-02a: conditional-spread — omit the key entirely rather than emit
+          // `email: undefined`.
+          ...(email !== undefined ? { email } : {}),
+        };
+      })
       // Stable sort (Array.prototype.sort is stable per spec): currentTab-first, original
       // order preserved within each group.
       .sort((a, b) => (a.currentTab === b.currentTab ? 0 : a.currentTab ? -1 : 1))
