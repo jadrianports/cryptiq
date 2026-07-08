@@ -59,6 +59,11 @@
   import { readCapture, clearCaptureForTab } from '../../src/lib/captureBuffer';
   import { isNeverSave, markNeverSave } from '../../src/lib/neverSaveStore';
   import { buildSaveParams, decideCaptureFlow, shouldNudgeGenerate, type CaptureDecision } from '../../src/lib/captureFlow';
+  // Phase 27 (XUI-02, D-02/D-03/D-04/D-05): entry-type iconography for the
+  // picker/single fill rows -- iconForType(row.type) returns undefined for
+  // secure-note (D-04) and is always rendered in a fg-muted wrapper, never
+  // text-cryptiq-accent (D-05).
+  import { iconForType } from '../../src/lib/icons';
 
   let DevEchoComponent: Component | null = $state(null);
 
@@ -100,8 +105,17 @@
 
   /** UI state for the fill dispatch itself, separate from the page-load
    * `status` above -- tracks which entry (if any) is currently being filled
-   * and surfaces a refusal/failure message. Never carries the secret. */
-  type FillUiState = { kind: 'idle' } | { kind: 'pending'; entryId: string } | { kind: 'error'; message: string };
+   * and surfaces a refusal/failure message. Never carries the secret.
+   *
+   * Phase 27 (XUI-02, D-07): widened with a `success` variant carrying the
+   * non-secret `filled`/`total` counts from the widened `FillResult` (Plan
+   * 02) so the render layer can show "Filled N of M fields" for a partial
+   * fill instead of collapsing straight back to `idle`. */
+  type FillUiState =
+    | { kind: 'idle' }
+    | { kind: 'pending'; entryId: string }
+    | { kind: 'success'; entryId: string; filled: number; total: number }
+    | { kind: 'error'; message: string };
 
   let status: PopupStatus = $state({ kind: 'loading' });
   let unlockRequested = $state(false);
@@ -514,10 +528,31 @@
     try {
       const request = buildFillRequest(payload, { username, ...(email !== undefined ? { email } : {}) }, origin);
       const result = (await chrome.tabs.sendMessage(tabId, request)) as FillResult | undefined;
-      fillState = result?.ok ? { kind: 'idle' } : { kind: 'error', message: 'Could not fill this page.' };
+      if (result?.ok) {
+        // D-07/Open Question 1: the wire always carries both integers; the
+        // popup decides display -- "Filled N of M fields" only for a
+        // genuinely partial fill, otherwise a plain "Filled" (below).
+        fillState = { kind: 'success', entryId, filled: result.filled, total: result.total };
+      } else if (result && !result.ok && result.reason === 'no-field-found') {
+        // D-07/D-08: per-type miss copy, popup-side only (no wire change) --
+        // the popup already knows the dispatched `payload.type` from D-03.
+        fillState = { kind: 'error', message: noFieldFoundMessage(payload.type) };
+      } else {
+        fillState = { kind: 'error', message: 'Could not fill this page.' };
+      }
     } catch {
       fillState = { kind: 'error', message: 'Could not fill this page.' };
     }
+  }
+
+  /** D-07/D-08: type-specific "no matching fields" copy, derived from the
+   * dispatched `fill-entry` payload's OWN type (the dispatch authority,
+   * D-03) -- never the row's possibly-drifted `EntryMatchMetadata.type`.
+   * Popup-side only; requires no `FillResult` wire change. */
+  function noFieldFoundMessage(kind: 'login' | 'card' | 'identity'): string {
+    if (kind === 'card') return 'No matching card fields on this page.';
+    if (kind === 'identity') return 'No matching identity fields on this page.';
+    return 'Could not fill this page.';
   }
 
   /**
@@ -860,11 +895,15 @@
 
     {#if flow.kind === 'single'}
       {@const row = rows[0]}
+      {@const icon = iconForType(row.type)}
       <button
         onclick={() => handleFillClick(row.id, row.username, row.email)}
         disabled={fillState.kind === 'pending'}
-        class="rounded-cryptiq bg-cryptiq-accent px-3 py-1.5 text-body font-medium text-cryptiq-accent-fg disabled:opacity-60"
+        class="flex items-center gap-2 rounded-cryptiq bg-cryptiq-accent px-3 py-1.5 text-body font-medium text-cryptiq-accent-fg disabled:opacity-60"
       >
+        {#if icon}
+          <span class="text-cryptiq-fg-muted">{@html icon}</span>
+        {/if}
         {fillState.kind === 'pending' ? 'Filling…' : flow.fillAnyway ? 'Fill anyway' : 'Fill'}
       </button>
       {#if row.weak || row.reused}
@@ -875,17 +914,23 @@
     {:else if flow.kind === 'picker'}
       <ul class="m-0 list-none p-0">
         {#each rows as row (row.id)}
+          {@const icon = iconForType(row.type)}
           <li class="mb-1.5">
             <button
               onclick={() => handleFillClick(row.id, row.username, row.email)}
               disabled={fillState.kind === 'pending'}
-              class="w-full rounded-cryptiq px-2.5 py-2 text-left text-body text-cryptiq-fg hover:bg-cryptiq-hover"
+              class="flex w-full items-center gap-2 rounded-cryptiq px-2.5 py-2 text-left text-body text-cryptiq-fg hover:bg-cryptiq-hover"
             >
-              {fillState.kind === 'pending' && fillState.entryId === row.id
-                ? 'Filling…'
-                : flow.fillAnyway
-                  ? `Fill anyway — ${row.title}`
-                  : row.title}
+              {#if icon}
+                <span class="shrink-0 text-cryptiq-fg-muted">{@html icon}</span>
+              {/if}
+              <span class="truncate">
+                {fillState.kind === 'pending' && fillState.entryId === row.id
+                  ? 'Filling…'
+                  : flow.fillAnyway
+                    ? `Fill anyway — ${row.title}`
+                    : row.title}
+              </span>
             </button>
             {#if row.weak || row.reused}
               <span class="text-meta text-cryptiq-attention">
@@ -897,7 +942,11 @@
       </ul>
     {/if}
 
-    {#if fillState.kind === 'error'}
+    {#if fillState.kind === 'success'}
+      <p class="m-0 mt-1.5 text-meta text-cryptiq-fg-muted">
+        {fillState.filled < fillState.total ? `Filled ${fillState.filled} of ${fillState.total} fields` : 'Filled'}
+      </p>
+    {:else if fillState.kind === 'error'}
       <p class="m-0 mt-1.5 text-meta text-cryptiq-danger">{fillState.message}</p>
     {/if}
   {/if}
