@@ -100,10 +100,15 @@ import { loadConfig } from '../config/config-adapter';
 // allowlist alone, without those merge.ts fixes, would let a v3<->v3 merge
 // PROCEED while silently stripping the four new fields — converting a loud
 // MergeSchemaMismatchError fail-safe into a silent data-loss bug (Pitfall 1).
+//
+// Phase 28 (TOTP-07): widened 1,2,3 -> 1,2,3,4 in the SAME commit as merge.ts's
+// totp field-parity sites (totpEqual/contentEqual/deepCopyEntry/canonicalEntry/
+// validateEntry) + sync/types.ts isPermanentTombstone. v4 adds the opaque
+// Entry.totp seed; widen-alone would silently strip it on a v4<->v4 merge.
 // Kept in exact lockstep with merge.ts's KNOWN_SCHEMA_VERSIONS by discipline
 // (core has no import path to desktop — core purity forbids a shared import).
 // ---------------------------------------------------------------------------
-const KNOWN_INNER_DOC_SCHEMA_VERSIONS = new Set([1, 2, 3]);
+const KNOWN_INNER_DOC_SCHEMA_VERSIONS = new Set([1, 2, 3, 4]);
 
 // ---------------------------------------------------------------------------
 // Error-mapping convention (mirrors the comment in syncBridge.ts)

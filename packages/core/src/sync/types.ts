@@ -218,6 +218,11 @@ export interface PermanentTombstoneMarker {
  * permanent marker and D-07 would silently destroy the peer's live copy — the exact
  * failure this predicate exists to prevent, reintroduced by the widened Entry shape.
  * Must move in lockstep with the merge.ts field-parity sites.
+ *
+ * Phase 28 (TOTP-07/T-28-02): a live `totp` seed is likewise content-RICH — a deleted
+ * entry whose login fields are all empty BUT which still carries a 2FA seed must NOT be
+ * read as permanent, or D-07's sanctioned "peer content NOT preserved" exception would
+ * silently destroy a peer's still-live TOTP secret. `totp === undefined` joins the AND-chain.
  */
 export function isPermanentTombstone(entry: Entry): boolean {
   return (
@@ -234,6 +239,8 @@ export function isPermanentTombstone(entry: Entry): boolean {
     (entry.email === undefined || entry.email === '') &&
     (entry.equivalentUrls === undefined || entry.equivalentUrls.length === 0) &&
     entry.card === undefined &&
-    entry.identity === undefined
+    entry.identity === undefined &&
+    // Phase 28 (TOTP-07/T-28-02) v4 field: a live totp seed forces SOFT classification.
+    entry.totp === undefined
   );
 }

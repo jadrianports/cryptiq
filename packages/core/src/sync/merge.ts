@@ -44,6 +44,7 @@ import type {
   Entry,
   EntryCard,
   EntryIdentity,
+  EntryTotp,
   InnerDoc,
   PasswordHistoryItem,
 } from '../entries/types';
@@ -73,7 +74,11 @@ import { isPermanentTombstone } from './types';
 // invariant. Widen ONLY together with that constant (Pitfall 1 — widen-alone
 // converts a loud fail-safe into a silent field-strip).
 // ---------------------------------------------------------------------------
-const KNOWN_SCHEMA_VERSIONS = new Set([1, 2, 3]);
+// Phase 28 (TOTP-07): widened 1,2,3 -> 1,2,3,4 in the SAME commit as this file's
+// totp field-parity sites (totpEqual/contentEqual/deepCopyEntry/canonicalEntry/
+// validateEntry) + sync/types.ts isPermanentTombstone + syncOrchestration.ts's
+// KNOWN_INNER_DOC_SCHEMA_VERSIONS. Widen-alone = silent totp-strip (Pitfall 1).
+const KNOWN_SCHEMA_VERSIONS = new Set([1, 2, 3, 4]);
 
 // ---------------------------------------------------------------------------
 // Private helpers
@@ -274,6 +279,29 @@ function validateEntry(entry: Entry): number {
       }
     }
   }
+  // Phase 28 (T-28-01): the remote InnerDoc is attacker-influenceable — STRUCTURAL
+  // typeof checks only (no Base32-alphabet validation; secret is opaque this phase,
+  // RESEARCH Open Question 1). Whole object optional (undefined always valid).
+  if (entry.totp !== undefined) {
+    if (entry.totp === null || typeof entry.totp !== 'object' || Array.isArray(entry.totp)) {
+      throw new MergeInvalidInputError(`Entry ${entry.id}: totp must be an object when present`);
+    }
+    const totp = entry.totp as unknown as Record<string, unknown>;
+    for (const key of ['secret', 'algorithm', 'label', 'issuer'] as const) {
+      if (totp[key] !== undefined && typeof totp[key] !== 'string') {
+        throw new MergeInvalidInputError(
+          `Entry ${entry.id}: totp.${key} must be a string when present`,
+        );
+      }
+    }
+    for (const key of ['digits', 'period'] as const) {
+      if (totp[key] !== undefined && typeof totp[key] !== 'number') {
+        throw new MergeInvalidInputError(
+          `Entry ${entry.id}: totp.${key} must be a number when present`,
+        );
+      }
+    }
+  }
   return parseModifiedAt(entry.modifiedAt, entry.id);
 }
 
@@ -314,6 +342,23 @@ function identityEqual(a: EntryIdentity | undefined, b: EntryIdentity | undefine
 }
 
 /**
+ * Field-by-field EntryTotp comparison (Phase 28, house style — no deep-equal library).
+ * `undefined` vs `undefined` is equal; optional `label`/`issuer` compared with `===`
+ * so undefined-vs-undefined stays equal.
+ */
+function totpEqual(a: EntryTotp | undefined, b: EntryTotp | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.secret === b.secret &&
+    a.algorithm === b.algorithm &&
+    a.digits === b.digits &&
+    a.period === b.period &&
+    a.label === b.label &&
+    a.issuer === b.issuer
+  );
+}
+
+/**
  * Check if two active entries have identical content on all meaningful fields.
  *
  * Used to implement the D-14 / D-18 idempotency shortcut: when both sides are
@@ -336,6 +381,9 @@ function contentEqual(a: Entry, b: Entry): boolean {
   if (!equivalentUrlsEqual(a.equivalentUrls, b.equivalentUrls)) return false;
   if (!cardEqual(a.card, b.card)) return false;
   if (!identityEqual(a.identity, b.identity)) return false;
+  // Phase 28 (TOTP-07): totp joins contentEqual so merge(A,A) stays a no-op with
+  // totp present, and two entries differing ONLY in totp are never false-equalled.
+  if (!totpEqual(a.totp, b.totp)) return false;
   if (a.modifiedAt !== b.modifiedAt) return false;
   if (a.deletedAt !== b.deletedAt) return false;
   if (a.favorite !== b.favorite) return false;
@@ -378,6 +426,9 @@ function deepCopyEntry(entry: Entry): Entry {
       : {}),
     ...(entry.card !== undefined ? { card: { ...entry.card } } : {}),
     ...(entry.identity !== undefined ? { identity: { ...entry.identity } } : {}),
+    // Phase 28 (TOTP-07): totp is a flat all-scalar shape (entries/types.ts), so a
+    // shallow `{...}` IS a deep copy; key OMITTED when absent (exactOptionalPropertyTypes).
+    ...(entry.totp !== undefined ? { totp: { ...entry.totp } } : {}),
     favorite: entry.favorite,
     needsSiteUpdate: entry.needsSiteUpdate,
     // Deep-copy the preset object so the merged result never aliases an input doc
@@ -423,6 +474,18 @@ function deepCopyEntry(entry: Entry): Entry {
 // snapshot cannot deliver. A loser that differs from the winner ONLY in a new
 // field is therefore treated as "not meaningfully different": no conflict is
 // recorded, and no false promise of snapshot-recoverable content is made.
+//
+// Phase 28 (TOTP-07/SC-4 — DELIBERATE, do not "fix" by adding totp here). `totp` is
+// EXCLUDED from BOTH meaningfulContentDiffers AND snapshotOf, consistently (never split
+// them). A totp seed's loss profile is arguably MORE password-like than card/identity —
+// but snapshotOf is password-centric and structurally cannot carry a totp field, so
+// recording a ConflictRecord on a totp-only difference would push a loserSnapshot that
+// looks byte-identical to the winner on every field it stores, overclaiming a
+// recoverability the snapshot cannot deliver. Widening snapshotOf to carry totp is a
+// Phase-29 concern (with the plaintext-surface cap review that entails); until then the
+// honest choice is: a totp-only diff is "not meaningfully different" (no conflict), while
+// contentEqual/canonicalEntry still keep both sides' totp distinct so nothing is silently
+// dropped and a deterministic winner is chosen. Fixture-enforced by the SC-4 loss-sensitivity test.
 function meaningfulContentDiffers(a: Entry, b: Entry): boolean {
   if (a.password !== b.password) return true;
   if (a.username !== b.username) return true;
@@ -456,6 +519,9 @@ function canonicalEntry(e: Entry): string {
     e.equivalentUrls ?? null,
     e.card ?? null,
     e.identity ?? null,
+    // Phase 28 (TOTP-07): totp joins the canonical tuple so a totp-only diff is
+    // deterministically differentiated in the equal-deviceId + equal-modifiedAt tiebreak.
+    e.totp ?? null,
     e.modifiedAt,
     e.deletedAt,
     e.favorite,
