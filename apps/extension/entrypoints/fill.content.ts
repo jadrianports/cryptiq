@@ -195,10 +195,14 @@ function handleFill(msg: FillRequest): FillResult {
     // Phase 26 (IDENT-02, D-01/D-02): per-field email-vs-username precedence
     // with fallback, computed on the already-resolved `user` element. An
     // email-typed slot prefers `email`, falling back to `username`; a
-    // plain-text slot prefers `username`, falling back to `email`. When
-    // neither value is present, nothing is written to the identifier field
-    // -- still correct, not a failure (the password field may still write).
-    const value = isEmailSlot(user) ? (msg.email ?? msg.username) : (msg.username ?? msg.email);
+    // plain-text slot prefers `username`, falling back to `email`. `||` (not
+    // `??`) is deliberate: `username` is a required-but-possibly-empty-string
+    // wire field (an entry with no username sends `''`, not `undefined`), so
+    // an empty string must be treated as "absent" for fallback purposes, same
+    // as `email` being `undefined`. When neither value is present, nothing is
+    // written to the identifier field -- still correct, not a failure (the
+    // password field may still write).
+    const value = isEmailSlot(user) ? msg.email || msg.username : msg.username || msg.email;
     if (value) fillField(user, value);
   }
   if (pass) fillField(pass, msg.secret);

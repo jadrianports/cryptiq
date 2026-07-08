@@ -505,4 +505,154 @@ describe('fill.content', () => {
     });
   });
 
+  // Task 2 (Plan 26-01, IDENT-02): exhaustive email/username precedence
+  // matrix -- {email, username, both, neither} x {email-typed slot,
+  // plain-text slot}. Mirrors the kind:card/identity describe block above.
+  // Every case emits with expectedOrigin: location.origin (origin-first
+  // invariant exercised, not bypassed).
+  describe('cryptiq-fill kind:login email/username precedence (IDENT-02)', () => {
+    function buildEmailTypedLoginForm(): { form: HTMLFormElement; user: HTMLInputElement; pass: HTMLInputElement } {
+      const form = document.createElement('form');
+      const user = document.createElement('input');
+      user.setAttribute('type', 'email');
+      const pass = document.createElement('input');
+      pass.setAttribute('type', 'password');
+      pass.setAttribute('autocomplete', 'current-password');
+      form.appendChild(user);
+      form.appendChild(pass);
+      document.body.appendChild(form);
+      return { form, user, pass };
+    }
+
+    function buildAutocompleteEmailLoginForm(): { form: HTMLFormElement; user: HTMLInputElement; pass: HTMLInputElement } {
+      const form = document.createElement('form');
+      const user = document.createElement('input');
+      user.setAttribute('type', 'text');
+      user.setAttribute('autocomplete', 'email');
+      const pass = document.createElement('input');
+      pass.setAttribute('type', 'password');
+      pass.setAttribute('autocomplete', 'current-password');
+      form.appendChild(user);
+      form.appendChild(pass);
+      document.body.appendChild(form);
+      return { form, user, pass };
+    }
+
+    it('email-slot (type=email) + email present -> identifier field value is the email', async () => {
+      const { user, pass } = buildEmailTypedLoginForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: 'alice',
+        email: 'alice@example.com',
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(user.value).toBe('alice@example.com');
+      expect(pass.value).toBe('super-secret');
+    });
+
+    it('email-slot (type=text, autocomplete=email) + email present -> identifier field value is the email', async () => {
+      const { user, pass } = buildAutocompleteEmailLoginForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: 'alice',
+        email: 'alice@example.com',
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(user.value).toBe('alice@example.com');
+      expect(pass.value).toBe('super-secret');
+    });
+
+    it('email-slot + email ABSENT, username present -> identifier field value is the username (fallback)', async () => {
+      const { user, pass } = buildEmailTypedLoginForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: 'alice',
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(user.value).toBe('alice');
+      expect(pass.value).toBe('super-secret');
+    });
+
+    it('plain-text slot + username present -> identifier field value is the username', async () => {
+      const { user, pass } = buildLoginForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: 'alice',
+        email: 'alice@example.com',
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(user.value).toBe('alice');
+      expect(pass.value).toBe('super-secret');
+    });
+
+    it('plain-text slot + username ABSENT, email present -> identifier field value is the email (fallback)', async () => {
+      const { user, pass } = buildLoginForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: '',
+        email: 'alice@example.com',
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(user.value).toBe('alice@example.com');
+      expect(pass.value).toBe('super-secret');
+    });
+
+    it('email-slot + NEITHER email nor username present -> identifier field stays empty, ok:true (password written)', async () => {
+      const { user, pass } = buildEmailTypedLoginForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: '',
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(user.value).toBe('');
+      expect(pass.value).toBe('super-secret');
+    });
+
+    it('plain-text slot + NEITHER email nor username present -> identifier field stays empty, ok:true (password written)', async () => {
+      const { user, pass } = buildLoginForm();
+
+      const result = await emitMessage({
+        type: 'cryptiq-fill',
+        kind: 'login',
+        secret: 'super-secret',
+        username: '',
+        expectedOrigin: location.origin,
+      });
+
+      expect(result).toEqual({ ok: true } satisfies FillResult);
+      expect(user.value).toBe('');
+      expect(pass.value).toBe('super-secret');
+    });
+  });
+
 });
