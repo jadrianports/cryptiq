@@ -33,10 +33,11 @@
 //   - Conflict arrays sorted by entryId before asserting (RESEARCH Anti-Patterns).
 
 import { describe, it, expect } from 'vitest';
-import type { InnerDoc, Entry } from '../../entries/types';
+import type { InnerDoc, Entry, EntryTotp } from '../../entries/types';
 import type { MergeContext } from '../types';
 import { DEFAULT_RANDOM_OPTIONS } from '../../generator/types';
 import { mergeInnerDocs } from '../merge';
+import { isPermanentTombstone } from '../types';
 import { findPossibleDuplicates } from '../duplicate';
 
 // ---------------------------------------------------------------------------
@@ -1114,5 +1115,252 @@ describe('schemaVersion ceiling guard (SYNCP-02, Phase 22)', () => {
     }
     expect(thrown).toBeDefined();
     expect((thrown as { code?: string }).code).toBe('MERGE_SCHEMA_MISMATCH');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Describe: totp field-parity + loss-sensitivity (TOTP-07, Phase 28) — THE GATE
+//
+// Proves all six re-derived merge/tombstone field-parity sites recognize the new
+// `Entry.totp` field (no silent strip, no false-equal, deep-copy not alias), the
+// schemaVersion ceiling widened to {1,2,3,4}, and — DELIBERATELY — that
+// meaningfulContentDiffers/snapshotOf stay narrow (a totp-only diff → no conflict).
+// ---------------------------------------------------------------------------
+
+/** A non-default TOTP profile for fixtures. */
+function makeTotp(overrides?: Partial<EntryTotp>): EntryTotp {
+  return {
+    secret: 'JBSWY3DPEHPK3PXP',
+    algorithm: 'SHA256',
+    digits: 8,
+    period: 60,
+    label: 'user@example.com',
+    issuer: 'Example Corp',
+    ...overrides,
+  };
+}
+
+describe('totp field-parity + loss-sensitivity (TOTP-07, Phase 28)', () => {
+  it('winner-keeps-totp (SC-2): totp-carrying side wins LWW and keeps the full totp object', () => {
+    const sharedId = 'entry-totp-winner-001';
+    const localEntry = makeEntry({
+      id: sharedId,
+      title: 'Winner With TOTP',
+      totp: makeTotp(),
+      modifiedAt: new Date(EPOCH_PLUS_1H).toISOString(), // newer -> wins LWW
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      title: 'Loser No TOTP',
+      modifiedAt: new Date(EPOCH_BASE).toISOString(), // older -> loses
+    });
+    const local = makeInnerDoc({ schemaVersion: 4, entries: [localEntry] });
+    const remote = makeInnerDoc({ schemaVersion: 4, entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId);
+    expect(merged).toBeDefined();
+    expect(merged!.totp).toEqual(makeTotp());
+  });
+
+  it('one-sided-populate (SC-2): remote-only entry with totp survives the merge intact', () => {
+    const remoteEntry = makeEntry({ id: 'entry-totp-onesided-001', totp: makeTotp() });
+    const local = makeInnerDoc({ schemaVersion: 4, entries: [] });
+    const remote = makeInnerDoc({ schemaVersion: 4, entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+
+    const merged = result.merged.entries.find((e) => e.id === 'entry-totp-onesided-001');
+    expect(merged).toBeDefined();
+    expect(merged!.totp).toEqual(makeTotp());
+  });
+
+  it('no-false-equal (SC-2): two entries differing ONLY in totp.secret (equal modifiedAt) are not collapsed; winner keeps its totp', () => {
+    const sharedId = 'entry-totp-diff-001';
+    const tiedModifiedAt = new Date(EPOCH_BASE).toISOString();
+    const localEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: tiedModifiedAt,
+      totp: makeTotp({ secret: 'AAAAAAAAAAAAAAAA' }),
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: tiedModifiedAt,
+      totp: makeTotp({ secret: 'ZZZZZZZZZZZZZZZZ' }),
+    });
+    const local = makeInnerDoc({ schemaVersion: 4, entries: [localEntry] });
+    const remote = makeInnerDoc({ schemaVersion: 4, entries: [remoteEntry] });
+    // Same deviceId forces the equal-modifiedAt path through the contentEqual (D-14)
+    // shortcut — a false-equal there would silently drop one side's totp.secret.
+    const ctx = makeCtx({ localDeviceId: 'device-same', remoteDeviceId: 'device-same' });
+
+    const result = mergeInnerDocs(local, remote, ctx);
+
+    const merged = result.merged.entries.find((e) => e.id === sharedId)!;
+    expect(['AAAAAAAAAAAAAAAA', 'ZZZZZZZZZZZZZZZZ']).toContain(merged.totp!.secret);
+    // Determinism: repeated merges converge to the same winner.
+    const result2 = mergeInnerDocs(local, remote, ctx);
+    expect(result2.merged.entries.find((e) => e.id === sharedId)!.totp!.secret).toBe(
+      merged.totp!.secret,
+    );
+  });
+
+  it('deep-copy-not-alias: mutating merged.totp.secret does not mutate the input entry', () => {
+    const sharedId = 'entry-totp-deepcopy-001';
+    const remoteEntry = makeEntry({ id: sharedId, totp: makeTotp({ secret: 'ORIGINAL12345678' }) });
+    const local = makeInnerDoc({ schemaVersion: 4, entries: [] });
+    const remote = makeInnerDoc({ schemaVersion: 4, entries: [remoteEntry] });
+
+    const result = mergeInnerDocs(local, remote, makeCtx());
+    const merged = result.merged.entries.find((e) => e.id === sharedId)!;
+    merged.totp!.secret = 'MUTATED';
+
+    expect(remoteEntry.totp!.secret).toBe('ORIGINAL12345678');
+  });
+
+  it('validateEntry strictness (T-28-01): rejects malformed totp; accepts valid/absent', () => {
+    const badTotpShape = makeEntry({
+      id: 'entry-bad-totp-001',
+      totp: 'not an object' as unknown as EntryTotp,
+    });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 4, entries: [badTotpShape] }),
+        makeInnerDoc({ schemaVersion: 4, entries: [] }),
+        makeCtx(),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }));
+
+    const badSecret = makeEntry({
+      id: 'entry-bad-totp-002',
+      totp: { secret: 123 as unknown as string, algorithm: 'SHA1', digits: 6, period: 30 },
+    });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 4, entries: [badSecret] }),
+        makeInnerDoc({ schemaVersion: 4, entries: [] }),
+        makeCtx(),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }));
+
+    const badDigits = makeEntry({
+      id: 'entry-bad-totp-003',
+      totp: {
+        secret: 'X',
+        algorithm: 'SHA1',
+        digits: 'six' as unknown as number,
+        period: 30,
+      },
+    });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 4, entries: [badDigits] }),
+        makeInnerDoc({ schemaVersion: 4, entries: [] }),
+        makeCtx(),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MERGE_INVALID_INPUT' }));
+
+    // Valid totp + absent totp are BOTH accepted.
+    const validEntry = makeEntry({ id: 'entry-totp-valid-001', totp: makeTotp() });
+    const absentEntry = makeEntry({ id: 'entry-totp-absent-001' });
+    expect(() =>
+      mergeInnerDocs(
+        makeInnerDoc({ schemaVersion: 4, entries: [validEntry, absentEntry] }),
+        makeInnerDoc({ schemaVersion: 4, entries: [] }),
+        makeCtx(),
+      ),
+    ).not.toThrow();
+  });
+
+  it('isPermanentTombstone (T-28-02): a deleted entry with all login fields empty BUT a live totp is NOT permanent', () => {
+    const softWithTotp = makeEntry({
+      id: 'entry-totp-tombstone-001',
+      title: '',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      passwordHistory: [],
+      lostVersions: [],
+      deletedAt: new Date(EPOCH_PLUS_30M).toISOString(),
+      totp: makeTotp(),
+    });
+    expect(isPermanentTombstone(softWithTotp)).toBe(false);
+
+    // Sanity: the same content-wiped entry WITHOUT totp IS a permanent marker.
+    const permNoTotp = makeEntry({
+      id: 'entry-totp-tombstone-002',
+      title: '',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      passwordHistory: [],
+      lostVersions: [],
+      deletedAt: new Date(EPOCH_PLUS_30M).toISOString(),
+    });
+    expect(isPermanentTombstone(permNoTotp)).toBe(true);
+  });
+
+  it('v4-accepted (SC-2): a v4<->v4 merge proceeds (allowlist widened)', () => {
+    const local = makeInnerDoc({ schemaVersion: 4, entries: [makeEntry({ id: 'e-v4-1' })] });
+    const remote = makeInnerDoc({ schemaVersion: 4, entries: [] });
+    expect(() => mergeInnerDocs(local, remote, makeCtx())).not.toThrow();
+  });
+
+  it('unknown-version ceiling (T-28-03): local=99 AND remote=99 -> MergeSchemaMismatchError', () => {
+    const local = makeInnerDoc({ schemaVersion: 99 as unknown as InnerDoc['schemaVersion'], entries: [] });
+    const remote = makeInnerDoc({ schemaVersion: 99 as unknown as InnerDoc['schemaVersion'], entries: [] });
+    expect(() => mergeInnerDocs(local, remote, makeCtx())).toThrow(
+      expect.objectContaining({ code: 'MERGE_SCHEMA_MISMATCH' }),
+    );
+  });
+
+  it('guard ordering (T-28-03): unknown schemaVersion 99 with a malformed entry throws SCHEMA, not INVALID_INPUT', () => {
+    const malformedEntry = makeEntry({ id: '' });
+    const local = makeInnerDoc({
+      schemaVersion: 99 as unknown as InnerDoc['schemaVersion'],
+      entries: [malformedEntry],
+    });
+    const remote = makeInnerDoc({ schemaVersion: 99 as unknown as InnerDoc['schemaVersion'], entries: [] });
+
+    let thrown: unknown;
+    try {
+      mergeInnerDocs(local, remote, makeCtx());
+    } catch (e) {
+      thrown = e;
+    }
+    expect((thrown as { code?: string }).code).toBe('MERGE_SCHEMA_MISMATCH');
+  });
+
+  it('loss-sensitivity (SC-4): a totp-only equal-modifiedAt diff produces NO ConflictRecord; winner keeps totp', () => {
+    const sharedId = 'entry-totp-losssens-001';
+    const tiedModifiedAt = new Date(EPOCH_BASE).toISOString();
+    // Identical on ALL six meaningful old fields (password/username/url/notes/title/tags);
+    // differ ONLY in totp. Per the deliberate D-02a/SC-4 exclusion, no conflict is recorded.
+    const localEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: tiedModifiedAt,
+      totp: makeTotp({ secret: 'AAAAAAAAAAAAAAAA' }),
+    });
+    const remoteEntry = makeEntry({
+      id: sharedId,
+      modifiedAt: tiedModifiedAt,
+      totp: makeTotp({ secret: 'ZZZZZZZZZZZZZZZZ' }),
+    });
+    const local = makeInnerDoc({ schemaVersion: 4, entries: [localEntry] });
+    const remote = makeInnerDoc({ schemaVersion: 4, entries: [remoteEntry] });
+    const ctx = makeCtx({ localDeviceId: 'device-same', remoteDeviceId: 'device-same' });
+
+    const result = mergeInnerDocs(local, remote, ctx);
+
+    // No conflict — totp is excluded from meaningfulContentDiffers/snapshotOf (SC-4).
+    expect(result.conflicts.find((c) => c.entryId === sharedId)).toBeUndefined();
+    // The deterministic winner still carries a totp (canonicalEntry-decided, not lost).
+    const merged = result.merged.entries.find((e) => e.id === sharedId)!;
+    expect(['AAAAAAAAAAAAAAAA', 'ZZZZZZZZZZZZZZZZ']).toContain(merged.totp!.secret);
   });
 });
