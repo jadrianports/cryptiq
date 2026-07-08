@@ -49,6 +49,39 @@ export interface EntryIdentity {
 }
 
 /**
+ * TOTP (time-based one-time password) sub-shape (Phase 28, TOTP-07). A flat all-scalar
+ * sub-shape mirroring EntryCard/EntryIdentity.
+ *
+ * `secret` is stored VERBATIM as a raw RFC 4648 Base32 string (the standard TOTP
+ * alphabet, which INCLUDES I/L/O/U) — NEVER Cryptiq's Crockford recovery alphabet
+ * (`crypto/recovery.ts`, which deliberately EXCLUDES I/L/O/U). This phase treats
+ * `secret` as OPAQUE: no Base32 decode, no HMAC, no code generation, no alphabet
+ * validation. Phase 29 generates codes from it via `otpauth`'s own `Secret.fromBase32`.
+ *
+ * `algorithm` is the HMAC hash name (e.g. `'SHA1'`/`'SHA256'`/`'SHA512'`) stored as a
+ * free string this phase; `digits` (e.g. 6 or 8) and `period` (seconds, e.g. 30 or 60)
+ * are numbers. `label`/`issuer` are optional display metadata from the otpauth URI.
+ *
+ * Loss-sensitivity: `totp` is deliberately EXCLUDED from the merge engine's
+ * `meaningfulContentDiffers`/`snapshotOf` (documented at those call sites in
+ * `sync/merge.ts`) — see TOTP-07/SC-4.
+ */
+export interface EntryTotp {
+  /** RFC 4648 Base32 secret, stored verbatim + opaque this phase (never Crockford). */
+  secret: string;
+  /** HMAC hash name (e.g. `'SHA1'`/`'SHA256'`/`'SHA512'`). */
+  algorithm: string;
+  /** Number of digits in the generated code (e.g. 6 or 8). */
+  digits: number;
+  /** Time-step period in seconds (e.g. 30 or 60). */
+  period: number;
+  /** Optional account label from the otpauth URI. */
+  label?: string;
+  /** Optional issuer name from the otpauth URI. */
+  issuer?: string;
+}
+
+/**
  * A single vault entry.
  *
  * Field invariants (ENTRY-01):
@@ -106,6 +139,14 @@ export interface Entry {
    * practice; optional at the type level since the 2→3 migration never backfills it.
    */
   identity?: EntryIdentity;
+  /**
+   * TOTP 2FA seed + parameters (Phase 28, TOTP-07). Optional — absent on pre-Phase-28
+   * entries; the 3→4 migration never backfills it (the key stays OMITTED until the user
+   * adds a TOTP, per `exactOptionalPropertyTypes`). `secret` is a verbatim opaque RFC
+   * 4648 Base32 string this phase. Loss-sensitivity is documented at the merge.ts call
+   * sites (excluded from `meaningfulContentDiffers`/`snapshotOf` — SC-4).
+   */
+  totp?: EntryTotp;
 
   // -- Metadata --
   /** Pinned / starred by the user. */
@@ -169,10 +210,11 @@ export interface Entry {
 export interface InnerDoc {
   /**
    * Inner schema version. 1 in v1; 2 after the Phase 8 additive bump (D-02/D-10);
-   * 3 after the Phase 21 additive bump (D-01/D-03) — pure version-number flip, no
-   * new field is backfilled onto existing entries.
+   * 3 after the Phase 21 additive bump (D-01/D-03); 4 after the Phase 28 additive bump
+   * (TOTP-07, `Entry.totp`) — each a pure version-number flip, no new field is
+   * backfilled onto existing entries.
    */
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   /** All entries (active + tombstones). */
   entries: Entry[];
   /** Vault-level settings. */

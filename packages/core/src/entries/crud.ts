@@ -125,6 +125,16 @@ function asInnerDoc(vault: UnlockedVault): InnerDoc {
   if (raw['schemaVersion'] === 2) {
     raw['schemaVersion'] = 3;
   }
+  // Phase 28 (TOTP-07): additive schemaVersion 3→4 bump — a PURE version-number flip,
+  // strictly narrower than the 1→2 block above (which backfills lostVersions). NO
+  // per-entry backfill of `totp`: the field stays absent on every pre-existing entry
+  // until the user adds a TOTP (mirrors the 2→3 zero-backfill guarantee exactly).
+  // The LOCKED sync path's allowlists (merge.ts KNOWN_SCHEMA_VERSIONS +
+  // syncOrchestration.ts KNOWN_INNER_DOC_SCHEMA_VERSIONS) recognize {1,2,3,4} in
+  // lockstep with the merge field-parity sites (Phase 28 Task 2 — the atomic GATE unit).
+  if (raw['schemaVersion'] === 3) {
+    raw['schemaVersion'] = 4;
+  }
 
   return vault.entries as InnerDoc;
 }

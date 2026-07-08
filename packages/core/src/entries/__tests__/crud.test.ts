@@ -1132,7 +1132,7 @@ describe('Phase 21: schemaVersion 2->3 migration (SCHEMA-01/02, IDENT-03)', () =
 
   // -- Fixture 1: v3.0-vintage vault opens unchanged, bumps to 3 (SCHEMA-01) --
 
-  it('Fixture 1 (v3.0-vintage vault): opens unchanged, bumps schemaVersion 2->3, new fields stay absent', () => {
+  it('Fixture 1 (v3.0-vintage vault): opens unchanged, cascades schemaVersion 2->4, new fields stay absent', () => {
     const legacy1 = v2Entry({ title: 'Legacy One' });
     const legacy2 = v2Entry({ title: 'Legacy Two', username: 'seconduser' });
     const vault = makeV2Vault([legacy1, legacy2]);
@@ -1143,10 +1143,10 @@ describe('Phase 21: schemaVersion 2->3 migration (SCHEMA-01/02, IDENT-03)', () =
     const before1 = structuredClone(legacy1);
     const before2 = structuredClone(legacy2);
 
-    // Any CRUD call triggers asInnerDoc()'s 2->3 bump.
+    // Any CRUD call triggers asInnerDoc()'s 2->3->4 cascade (Phase 28 added the 3->4 leg).
     const entries = listEntries(vault);
 
-    expect((vault.entries as unknown as InnerDoc).schemaVersion).toBe(3);
+    expect((vault.entries as unknown as InnerDoc).schemaVersion).toBe(4);
     expect(entries.length).toBe(2);
 
     for (const [entry, before] of [
@@ -1208,8 +1208,8 @@ describe('Phase 21: schemaVersion 2->3 migration (SCHEMA-01/02, IDENT-03)', () =
     const afterSecond = structuredClone(vault.entries);
 
     expect(afterSecond).toEqual(afterFirst);
-    expect((afterFirst as unknown as InnerDoc).schemaVersion).toBe(3);
-    expect((afterSecond as unknown as InnerDoc).schemaVersion).toBe(3);
+    expect((afterFirst as unknown as InnerDoc).schemaVersion).toBe(4);
+    expect((afterSecond as unknown as InnerDoc).schemaVersion).toBe(4);
   });
 
   // -- Fixture 3: email-shaped-username corpus proves no auto-split (IDENT-03) --
