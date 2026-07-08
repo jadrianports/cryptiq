@@ -98,19 +98,22 @@ export interface PickerRow {
  * filtering of its own, only shaping. `weak`/`reused` default to `false`
  * when the candidate omits them (optional booleans on the wire type).
  * Phase 26 (D-04): `type` threads through as required; `email` via
- * conditional spread (exactOptionalPropertyTypes -- never `email: c.email`,
- * which would assign the literal `undefined`).
+ * conditional spread (exactOptionalPropertyTypes -- never a literal
+ * candidate-to-key assignment, which would assign `undefined` itself).
  */
 export function buildPickerViewModel(candidates: EntryMatchMetadata[]): PickerRow[] {
-  return candidates.map((c) => ({
-    id: c.id,
-    title: c.title,
-    username: c.username,
-    type: c.type,
-    ...(c.email !== undefined ? { email: c.email } : {}),
-    weak: c.weak ?? false,
-    reused: c.reused ?? false,
-  }));
+  return candidates.map((c) => {
+    const email = c.email;
+    return {
+      id: c.id,
+      title: c.title,
+      username: c.username,
+      type: c.type,
+      ...(email !== undefined ? { email } : {}),
+      weak: c.weak ?? false,
+      reused: c.reused ?? false,
+    };
+  });
 }
 
 /** One `search-entries` result row exactly as the RPC returns it (Plan 18-01)
@@ -149,13 +152,16 @@ export interface SearchRow {
  * (D-04): `email` threaded via conditional spread (exactOptionalPropertyTypes).
  */
 export function buildSearchViewModel(results: SearchEntryResult[]): SearchRow[] {
-  return results.map((r) => ({
-    id: r.id,
-    title: r.title,
-    username: r.username,
-    currentTab: r.currentTab,
-    ...(r.email !== undefined ? { email: r.email } : {}),
-  }));
+  return results.map((r) => {
+    const email = r.email;
+    return {
+      id: r.id,
+      title: r.title,
+      username: r.username,
+      currentTab: r.currentTab,
+      ...(email !== undefined ? { email } : {}),
+    };
+  });
 }
 
 export interface FillFlowInput {

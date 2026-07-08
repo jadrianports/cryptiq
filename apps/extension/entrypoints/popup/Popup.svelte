@@ -42,11 +42,13 @@
   import type { BridgeErrorCode } from '../../src/lib/bridgeRpc';
   import type { DetectResult, EntryMatchMetadata, FillResult } from '../../src/lib/contentScriptMessages';
   import {
+    buildFillRequest,
     buildPickerViewModel,
     buildSearchViewModel,
     decideFillFlow,
     ensureContentScript,
     recheckTabUnchanged,
+    type FillEntryPayload,
     type SearchEntryResult,
     type SearchRow,
   } from '../../src/lib/popupFill';
@@ -439,9 +441,18 @@
    * uses); (2) recheckTabUnchanged — ABORT on any tab id/origin mismatch
    * (XSEC-03 TOCTOU); (3) send the secret DIRECTLY to the content script via
    * chrome.tabs.sendMessage — never re-entering background.ts/the native
-   * port. `entryId`/`username` are the only identifiers threaded through;
-   * the secret itself is a plain local (`secret`), never retained past this
-   * call and never assigned to a `$state` variable (XSEC-06).
+   * port. `entryId`/`username`/`email` are the only identifiers threaded
+   * through; the secret/card/identity payload itself is a plain local,
+   * never retained past this call and never assigned to a `$state` variable
+   * (XSEC-06).
+   *
+   * Phase 26 (CFILL-04, D-03): dispatches on the freshly-decrypted
+   * `fill-entry` RPC response's OWN `type` discriminant — never the clicked
+   * row's `EntryMatchMetadata.type` (fetched earlier, could have drifted) —
+   * and builds the matching `kind`-tagged `FillRequest` via the pure
+   * `buildFillRequest` helper (popupFill.ts). `email` is threaded from the
+   * widened `PickerRow`/`SearchRow` (D-04) for the login branch's IDENT-02
+   * precedence.
    *
    * Reads tab id/origin from `currentTabInfo` (Plan 18-03) rather than
    * `status`, so search-result rows can Fill even from `connected-no-matches`
@@ -449,7 +460,7 @@
    * didn't match for the current tab) — the picker's own Fill call site is
    * unchanged (still calls this exact function).
    */
-  async function handleFillClick(entryId: string, username: string): Promise<void> {
+  async function handleFillClick(entryId: string, username: string, email?: string): Promise<void> {
     if (currentTabInfo === null) return;
     const { tabId, origin } = currentTabInfo;
 
@@ -470,11 +481,23 @@
     }
 
     const outcome = await sendRpcViaBackground({ method: 'fill-entry', params: { entryId } });
-    const secret =
+    // T-26-07 (Tampering): runtime-guard the discriminated payload BEFORE
+    // trusting any field — extends the existing typeof==='object'&&!==null
+    // guard shape (unchanged) with an explicit type-literal + matching-field
+    // check per variant. Never a bare `as` cast on the raw payload.
+    const raw =
       outcome.ok && typeof outcome.payload === 'object' && outcome.payload !== null
-        ? (outcome.payload as { secret?: unknown }).secret
-        : undefined;
-    if (typeof secret !== 'string') {
+        ? (outcome.payload as { type?: unknown; secret?: unknown; card?: unknown; identity?: unknown })
+        : null;
+    let payload: FillEntryPayload | null = null;
+    if (raw !== null && raw.type === 'login' && typeof raw.secret === 'string') {
+      payload = { type: 'login', secret: raw.secret };
+    } else if (raw !== null && raw.type === 'card' && typeof raw.card === 'object' && raw.card !== null) {
+      payload = { type: 'card', card: raw.card as Extract<FillEntryPayload, { type: 'card' }>['card'] };
+    } else if (raw !== null && raw.type === 'identity' && typeof raw.identity === 'object' && raw.identity !== null) {
+      payload = { type: 'identity', identity: raw.identity as Extract<FillEntryPayload, { type: 'identity' }>['identity'] };
+    }
+    if (payload === null) {
       fillState = { kind: 'error', message: 'Could not retrieve the password.' };
       return;
     }
@@ -483,17 +506,14 @@
     if (!unchanged) {
       // The tab navigated between the match list being fetched and this
       // click — refuse rather than fill a possibly-different page (XSEC-03).
+      // Runs for EVERY kind (T-26-09), not just login.
       fillState = { kind: 'error', message: 'The page changed — reopen the popup to fill.' };
       return;
     }
 
     try {
-      const result = (await chrome.tabs.sendMessage(tabId, {
-        type: 'cryptiq-fill',
-        secret,
-        username,
-        expectedOrigin: origin,
-      })) as FillResult | undefined;
+      const request = buildFillRequest(payload, { username, ...(email !== undefined ? { email } : {}) }, origin);
+      const result = (await chrome.tabs.sendMessage(tabId, request)) as FillResult | undefined;
       fillState = result?.ok ? { kind: 'idle' } : { kind: 'error', message: 'Could not fill this page.' };
     } catch {
       fillState = { kind: 'error', message: 'Could not fill this page.' };
@@ -816,7 +836,7 @@
 
     {#if flow.kind === 'single'}
       {@const row = rows[0]}
-      <button onclick={() => handleFillClick(row.id, row.username)} disabled={fillState.kind === 'pending'}>
+      <button onclick={() => handleFillClick(row.id, row.username, row.email)} disabled={fillState.kind === 'pending'}>
         {fillState.kind === 'pending' ? 'Filling…' : flow.fillAnyway ? 'Fill anyway' : 'Fill'}
       </button>
       {#if row.weak || row.reused}
@@ -829,7 +849,7 @@
         {#each rows as row (row.id)}
           <li style="margin: 0 0 6px;">
             <button
-              onclick={() => handleFillClick(row.id, row.username)}
+              onclick={() => handleFillClick(row.id, row.username, row.email)}
               disabled={fillState.kind === 'pending'}
               style="width: 100%; text-align: left;"
             >
@@ -891,7 +911,7 @@
                    caution (color + ⚠ + tooltip) so a cross-domain Fill never
                    has the same affordance as a same-domain Fill. -->
               <button
-                onclick={() => handleFillClick(row.id, row.username)}
+                onclick={() => handleFillClick(row.id, row.username, row.email)}
                 disabled={fillState.kind === 'pending'}
                 title={row.currentTab
                   ? undefined
