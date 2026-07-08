@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
-    "compile": "tsc --noEmit",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
     "postinstall": "wxt prepare",
     "test": "vitest run"
   },
