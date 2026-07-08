@@ -709,10 +709,11 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
         title: 'Example Site',
         username: 'alice',
         currentTab: false,
+        type: match.type,
       });
       for (const row of result.results) {
         expect('password' in row).toBe(false);
-        expect(Object.keys(row).sort()).toEqual(['currentTab', 'id', 'title', 'username']);
+        expect(Object.keys(row).sort()).toEqual(['currentTab', 'id', 'title', 'type', 'username']);
       }
     });
 
@@ -850,6 +851,7 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
             title: 'Example',
             username: (vaultState.entries[0] as Entry).username,
             currentTab: false,
+            type: (vaultState.entries[0] as Entry).type,
           },
         ],
       });

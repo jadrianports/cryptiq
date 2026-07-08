@@ -234,10 +234,13 @@ export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unkn
   // search-entries (UX-01): full-vault metadata-only search, current-tab matches pinned first.
   // Reuses matchByOrigin's registrableHost comparison rather than reimplementing eTLD+1
   // matching (18-PATTERNS.md Pitfall 5). Rows are structurally { id, title, username,
-  // currentTab, email? } — no password field exists on the type (BRIDGE-08 wire
+  // currentTab, type, email? } — no password field exists on the type (BRIDGE-08 wire
   // minimization). Phase 26 (D-06): rows also carry the entry's optional non-secret
   // email, sourced per-type identically to match-origin's EntryMatchMetadata, so
-  // search-originated login fills can honor IDENT-02 precedence.
+  // search-originated login fills can honor IDENT-02 precedence. Phase 27 (D-04
+  // gap-closure, 27-05): rows now also carry the entry's REAL, non-secret `type`
+  // discriminant (mirrors match-origin's EntryMatchMetadata.type) so the popup's
+  // search rows can render entry-type iconography at parity with the picker rows.
   if (method === 'search-entries') {
     const query = typeof params.query === 'string' ? params.query.trim().toLowerCase() : '';
     const currentOrigin = typeof params.currentOrigin === 'string' ? params.currentOrigin : '';
@@ -261,6 +264,9 @@ export async function handleRpcRequest(payload: RpcRequestPayload): Promise<unkn
           title: e.title,
           username: e.username,
           currentTab: registrableDomain !== null && registrableHost(e.url) === registrableDomain,
+          // Phase 27 (D-04 gap-closure): the entry's REAL type discriminant
+          // (never a default) — non-secret, already surfaced by match-origin.
+          type: e.type,
           // D-02a: conditional-spread — omit the key entirely rather than emit
           // `email: undefined`.
           ...(email !== undefined ? { email } : {}),
