@@ -197,14 +197,14 @@
     strengthScore = typeof score === 'number' ? score : 0;
   }
 
-  /** Score → color mapping mirroring StrengthMeter.svelte's semantic bands,
-   * expressed as literal hex (this file has no Tailwind design system to draw
-   * tokens from -- apps/extension carries zero UI dependencies, see this
-   * file's own pre-existing `#a15c00`/`#b00020` inline colors). */
-  function scoreColor(score: number): string {
-    if (score >= 3) return '#1a7f37'; // fair/excellent
-    if (score === 2) return '#a15c00'; // weak (existing file color)
-    return '#b00020'; // very weak (existing file color)
+  /** Score → semantic token mapping mirroring StrengthMeter.svelte's bands.
+   * Phase 27 (XUI-02): now expressed as `cryptiq-*` token utility classes
+   * (bg-cryptiq-success/attention/danger) instead of literal hex -- the
+   * popup shares the desktop's design system, never invents its own colors. */
+  function scoreColorClass(score: number): string {
+    if (score >= 3) return 'bg-cryptiq-success'; // fair/excellent
+    if (score === 2) return 'bg-cryptiq-attention'; // weak
+    return 'bg-cryptiq-danger'; // very weak
   }
 
   /** Svelte action: sets the input's DOM value ONCE at mount, reading
@@ -714,35 +714,42 @@
   }
 </script>
 
-<main>
-  <h1 style="font-size: 14px; margin: 0 0 8px;">Cryptiq</h1>
+<main class="bg-cryptiq-bg font-sans text-cryptiq-fg">
+  <h1 class="m-0 mb-3 text-emphasis font-semibold text-cryptiq-fg">Cryptiq</h1>
 
   {#if status.kind === 'loading'}
-    <p style="font-size: 12px; color: #666; margin: 0;">Checking status…</p>
+    <p class="m-0 text-meta text-cryptiq-fg-subtle">Checking status…</p>
   {:else if status.kind === 'not-paired'}
-    <p style="font-size: 12px; margin: 0;">Open Cryptiq to approve</p>
+    <p class="m-0 text-body text-cryptiq-fg-muted">Open Cryptiq to approve</p>
   {:else if status.kind === 'disconnected'}
-    <p style="font-size: 12px; margin: 0;">Cryptiq isn't running</p>
+    <p class="m-0 text-body text-cryptiq-fg-muted">Cryptiq isn't running</p>
   {:else if status.kind === 'locked'}
-    <p style="font-size: 12px; margin: 0 0 8px;">Cryptiq is locked — unlock it to fill</p>
-    <button onclick={handleUnlockClick} disabled={unlockRequested}>
+    <p class="m-0 mb-3 text-body text-cryptiq-fg-muted">Cryptiq is locked — unlock it to fill</p>
+    <button
+      onclick={handleUnlockClick}
+      disabled={unlockRequested}
+      class="rounded-cryptiq bg-cryptiq-accent px-3 py-1.5 text-body font-medium text-cryptiq-accent-fg disabled:opacity-60"
+    >
       {unlockRequested ? 'Unlock requested' : 'Unlock Cryptiq'}
     </button>
   {:else if status.kind === 'connected-no-matches'}
-    <p style="font-size: 12px; margin: 0;">No saved logins for this site</p>
+    <p class="m-0 text-body text-cryptiq-fg-muted">No saved logins for this site</p>
   {:else if status.kind === 'capture'}
     {#if status.decision.kind === 'picker' && pickedEntryId === null}
       <!-- D-06: reuses the connected-matches picker list idiom (below) to let
            the user choose which existing entry this capture updates. -->
-      <p style="font-size: 12px; margin: 0 0 6px;">Which login is this for?</p>
-      <ul style="list-style: none; margin: 0; padding: 0;">
+      <p class="m-0 mb-2 text-body text-cryptiq-fg-muted">Which login is this for?</p>
+      <ul class="m-0 list-none p-0">
         {#each status.decision.candidates as row (row.id)}
-          <li style="margin: 0 0 6px;">
-            <button onclick={() => (pickedEntryId = row.id)} style="width: 100%; text-align: left;">
+          <li class="mb-1.5">
+            <button
+              onclick={() => (pickedEntryId = row.id)}
+              class="w-full rounded-cryptiq px-2.5 py-2 text-left text-body text-cryptiq-fg hover:bg-cryptiq-hover"
+            >
               {row.title}
             </button>
             {#if row.weak || row.reused}
-              <span style="font-size: 11px; color: #a15c00;">
+              <span class="text-meta text-cryptiq-attention">
                 {row.weak ? 'Weak' : ''}{row.weak && row.reused ? ' · ' : ''}{row.reused ? 'Reused' : ''}
               </span>
             {/if}
@@ -755,75 +762,92 @@
       {@const existingTitle =
         entryId !== undefined ? (status.allCandidates.find((c) => c.id === entryId)?.title ?? status.registrableDomain) : status.registrableDomain}
 
-      <p style="font-size: 12px; margin: 0 0 4px;">
+      <p class="m-0 mb-1 text-body text-cryptiq-fg">
         {mode === 'new' ? `Save password for ${existingTitle}?` : `Update password for ${existingTitle}?`}
       </p>
-      <p style="font-size: 11px; color: #666; margin: 0 0 8px;">{status.origin}</p>
+      <p class="m-0 mb-3 text-meta text-cryptiq-fg-subtle">{status.origin}</p>
 
       {#if mode === 'new'}
-        <label for="capture-title" style="display: block; font-size: 11px; color: #666; margin: 0 0 2px;">Title</label>
+        <label for="capture-title" class="mb-0.5 block text-meta text-cryptiq-fg-subtle">Title</label>
         <input
           id="capture-title"
           type="text"
           bind:value={captureTitle}
-          style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+          class="mb-2.5 box-border w-full rounded-cryptiq border border-cryptiq-border-strong bg-cryptiq-surface-2 px-2.5 py-1.5 text-body text-cryptiq-fg focus:outline-none focus:ring-2 focus:ring-cryptiq-ring"
         />
       {/if}
 
-      <label for="capture-username" style="display: block; font-size: 11px; color: #666; margin: 0 0 2px;">Username</label>
+      <label for="capture-username" class="mb-0.5 block text-meta text-cryptiq-fg-subtle">Username</label>
       <input
         id="capture-username"
         type="text"
         bind:value={captureUsername}
-        style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+        class="mb-2.5 box-border w-full rounded-cryptiq border border-cryptiq-border-strong bg-cryptiq-surface-2 px-2.5 py-1.5 text-body text-cryptiq-fg focus:outline-none focus:ring-2 focus:ring-cryptiq-ring"
       />
 
-      <label for="capture-password" style="display: block; font-size: 11px; color: #666; margin: 0 0 2px;">Password</label>
+      <label for="capture-password" class="mb-0.5 block text-meta text-cryptiq-fg-subtle">Password</label>
       <input
         id="capture-password"
         type="password"
         use:seedPasswordValue
         bind:this={capturePasswordEl}
         oninput={handlePasswordInput}
-        style="width: 100%; box-sizing: border-box; margin: 0 0 4px; font-size: 12px;"
+        class="mb-2 box-border w-full rounded-cryptiq border border-cryptiq-border-strong bg-cryptiq-surface-2 px-2.5 py-1.5 font-mono text-body text-cryptiq-fg focus:outline-none focus:ring-2 focus:ring-cryptiq-ring"
       />
 
       <!-- HEALTH-01/03: live debounced strength meter -- only the numeric
            score is reactive display state, never the password itself. -->
-      <div style="display: flex; gap: 2px; margin: 0 0 6px;" aria-hidden="true">
+      <div class="mb-2.5 flex gap-0.5" aria-hidden="true">
         {#each [0, 1, 2, 3] as i (i)}
           <div
-            style="height: 4px; flex: 1; border-radius: 2px; background: {strengthScore >= i + 1 ? scoreColor(strengthScore) : '#ddd'};"
+            class="h-1 flex-1 rounded-cryptiq {strengthScore >= i + 1 ? scoreColorClass(strengthScore) : 'bg-cryptiq-border-strong'}"
           ></div>
         {/each}
       </div>
 
       {#if shouldNudgeGenerate(strengthScore)}
-        <p style="font-size: 11px; color: #a15c00; margin: 0 0 8px;">
+        <p class="m-0 mb-3 text-meta text-cryptiq-attention">
           Weak password —
-          <button onclick={handleGenerateClick} disabled={generating} style="font-size: 11px;">
+          <button onclick={handleGenerateClick} disabled={generating} class="text-meta font-medium text-cryptiq-accent underline disabled:opacity-60">
             {generating ? 'Generating…' : 'Generate a strong one instead'}
           </button>
         </p>
       {:else}
-        <button onclick={handleGenerateClick} disabled={generating} style="font-size: 11px; margin: 0 0 8px;">
+        <button
+          onclick={handleGenerateClick}
+          disabled={generating}
+          class="mb-3 rounded-cryptiq border border-cryptiq-border-strong px-2.5 py-1 text-meta text-cryptiq-fg hover:bg-cryptiq-hover disabled:opacity-60"
+        >
           {generating ? 'Generating…' : 'Generate strong password'}
         </button>
       {/if}
 
-      <div style="display: flex; gap: 6px;">
+      <div class="flex gap-1.5">
         <button
           onclick={() => handleCaptureSaveClick(mode, entryId)}
           disabled={captureSaveState.kind === 'pending'}
+          class="rounded-cryptiq bg-cryptiq-accent px-3 py-1.5 text-body font-medium text-cryptiq-accent-fg disabled:opacity-60"
         >
           {captureSaveState.kind === 'pending' ? 'Saving…' : mode === 'new' ? 'Save' : 'Update'}
         </button>
-        <button onclick={handleCaptureDismissClick} disabled={captureSaveState.kind === 'pending'}>Dismiss</button>
-        <button onclick={handleNeverSaveClick} disabled={captureSaveState.kind === 'pending'}>Never save this site</button>
+        <button
+          onclick={handleCaptureDismissClick}
+          disabled={captureSaveState.kind === 'pending'}
+          class="rounded-cryptiq border border-cryptiq-border-strong px-2.5 py-1.5 text-body text-cryptiq-fg hover:bg-cryptiq-hover disabled:opacity-60"
+        >
+          Dismiss
+        </button>
+        <button
+          onclick={handleNeverSaveClick}
+          disabled={captureSaveState.kind === 'pending'}
+          class="rounded-cryptiq border border-cryptiq-border-strong px-2.5 py-1.5 text-meta text-cryptiq-fg-muted hover:bg-cryptiq-hover disabled:opacity-60"
+        >
+          Never save this site
+        </button>
       </div>
 
       {#if captureSaveState.kind === 'error'}
-        <p style="font-size: 11px; color: #b00020; margin: 6px 0 0;">{captureSaveState.message}</p>
+        <p class="m-0 mt-1.5 text-meta text-cryptiq-danger">{captureSaveState.message}</p>
       {/if}
     {/if}
   {:else if status.kind === 'connected-matches'}
@@ -831,27 +855,31 @@
     {@const rows = buildPickerViewModel(status.candidates)}
 
     {#if !status.fieldsDetected}
-      <p style="font-size: 11px; color: #666; margin: 0 0 6px;">No login field detected on this page.</p>
+      <p class="m-0 mb-2 text-meta text-cryptiq-fg-subtle">No login field detected on this page.</p>
     {/if}
 
     {#if flow.kind === 'single'}
       {@const row = rows[0]}
-      <button onclick={() => handleFillClick(row.id, row.username, row.email)} disabled={fillState.kind === 'pending'}>
+      <button
+        onclick={() => handleFillClick(row.id, row.username, row.email)}
+        disabled={fillState.kind === 'pending'}
+        class="rounded-cryptiq bg-cryptiq-accent px-3 py-1.5 text-body font-medium text-cryptiq-accent-fg disabled:opacity-60"
+      >
         {fillState.kind === 'pending' ? 'Filling…' : flow.fillAnyway ? 'Fill anyway' : 'Fill'}
       </button>
       {#if row.weak || row.reused}
-        <p style="font-size: 11px; color: #a15c00; margin: 4px 0 0;">
+        <p class="m-0 mt-1 text-meta text-cryptiq-attention">
           {row.weak ? 'Weak password' : ''}{row.weak && row.reused ? ' · ' : ''}{row.reused ? 'Reused password' : ''}
         </p>
       {/if}
     {:else if flow.kind === 'picker'}
-      <ul style="list-style: none; margin: 0; padding: 0;">
+      <ul class="m-0 list-none p-0">
         {#each rows as row (row.id)}
-          <li style="margin: 0 0 6px;">
+          <li class="mb-1.5">
             <button
               onclick={() => handleFillClick(row.id, row.username, row.email)}
               disabled={fillState.kind === 'pending'}
-              style="width: 100%; text-align: left;"
+              class="w-full rounded-cryptiq px-2.5 py-2 text-left text-body text-cryptiq-fg hover:bg-cryptiq-hover"
             >
               {fillState.kind === 'pending' && fillState.entryId === row.id
                 ? 'Filling…'
@@ -860,7 +888,7 @@
                   : row.title}
             </button>
             {#if row.weak || row.reused}
-              <span style="font-size: 11px; color: #a15c00;">
+              <span class="text-meta text-cryptiq-attention">
                 {row.weak ? 'Weak' : ''}{row.weak && row.reused ? ' · ' : ''}{row.reused ? 'Reused' : ''}
               </span>
             {/if}
@@ -870,7 +898,7 @@
     {/if}
 
     {#if fillState.kind === 'error'}
-      <p style="font-size: 11px; color: #b00020; margin: 6px 0 0;">{fillState.message}</p>
+      <p class="m-0 mt-1.5 text-meta text-cryptiq-danger">{fillState.message}</p>
     {/if}
   {/if}
 
@@ -880,29 +908,29 @@
          does not replace or gate that surface. Hidden during loading/
          not-paired/disconnected/locked/capture (no readable vault or a
          full-takeover form already occupying the popup). -->
-    <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;" />
+    <hr class="my-2.5 border-0 border-t border-cryptiq-border" />
     <input
       type="text"
       placeholder="Search vault…"
       bind:value={searchQuery}
       oninput={handleSearchInput}
-      style="width: 100%; box-sizing: border-box; margin: 0 0 6px; font-size: 12px;"
+      class="mb-2.5 box-border w-full rounded-cryptiq border border-cryptiq-border-strong bg-cryptiq-surface-2 px-2.5 py-1.5 text-body text-cryptiq-fg focus:outline-none focus:ring-2 focus:ring-cryptiq-ring"
     />
 
     {#if searchState.kind === 'error'}
-      <p style="font-size: 11px; color: #b00020; margin: 0 0 6px;">{searchState.message}</p>
+      <p class="m-0 mb-2 text-meta text-cryptiq-danger">{searchState.message}</p>
     {:else if searchRows.length === 0}
-      <p style="font-size: 12px; color: #666; margin: 0;">
+      <p class="m-0 text-body text-cryptiq-fg-subtle">
         {searchQuery === '' ? 'No saved logins yet.' : 'No matches for that search.'}
       </p>
     {:else}
-      <ul style="list-style: none; margin: 0; padding: 0;">
+      <ul class="m-0 list-none p-0">
         {#each searchRows as row (row.id)}
-          <li style="margin: 0 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 4px;">
-            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;">
+          <li class="mb-1.5 flex items-center justify-between gap-1">
+            <span class="overflow-hidden text-ellipsis whitespace-nowrap text-body text-cryptiq-fg">
               {row.title}{row.currentTab ? ' 📌' : ''}
             </span>
-            <span style="display: flex; gap: 4px; flex-shrink: 0;">
+            <span class="flex flex-shrink-0 gap-1">
               <!-- WR-03 (anti-phishing): a full-vault search lets any entry be
                    filled into the CURRENT tab, even one saved for a different
                    site. The origin guards only prove the secret reaches the
@@ -916,7 +944,9 @@
                 title={row.currentTab
                   ? undefined
                   : 'This login is saved for a different site than the page you are on — only fill it if you trust this page.'}
-                style="font-size: 11px;{row.currentTab ? '' : ' color: #a15c00;'}"
+                class="rounded-cryptiq border border-cryptiq-border-strong px-2 py-1 text-meta hover:bg-cryptiq-hover disabled:opacity-60 {row.currentTab
+                  ? 'text-cryptiq-fg'
+                  : 'text-cryptiq-attention'}"
               >
                 {fillState.kind === 'pending' && fillState.entryId === row.id
                   ? 'Filling…'
@@ -927,7 +957,7 @@
               <button
                 onclick={() => handleCopyClick(row.id, 'username')}
                 disabled={copyState.kind === 'pending'}
-                style="font-size: 11px;"
+                class="rounded-cryptiq border border-cryptiq-border-strong px-2 py-1 text-meta text-cryptiq-fg hover:bg-cryptiq-hover disabled:opacity-60"
               >
                 {copyState.kind === 'pending' && copyState.entryId === row.id && copyState.field === 'username'
                   ? 'Copying…'
@@ -938,7 +968,7 @@
               <button
                 onclick={() => handleCopyClick(row.id, 'password')}
                 disabled={copyState.kind === 'pending'}
-                style="font-size: 11px;"
+                class="rounded-cryptiq border border-cryptiq-border-strong px-2 py-1 text-meta text-cryptiq-fg hover:bg-cryptiq-hover disabled:opacity-60"
               >
                 {copyState.kind === 'pending' && copyState.entryId === row.id && copyState.field === 'password'
                   ? 'Copying…'
@@ -953,7 +983,7 @@
     {/if}
 
     {#if copyState.kind === 'error'}
-      <p style="font-size: 11px; color: #b00020; margin: 6px 0 0;">{copyState.message}</p>
+      <p class="m-0 mt-1.5 text-meta text-cryptiq-danger">{copyState.message}</p>
     {/if}
   {/if}
 
