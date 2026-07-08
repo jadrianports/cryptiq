@@ -19,7 +19,7 @@
 // §Common Pitfalls ("re-injecting a duplicate content script"),
 // §iframe/Origin Refusal checkpoint 3; 17-CONTEXT.md D-01/D-02/D-04.
 
-import type { EntryMatchMetadata } from './contentScriptMessages';
+import type { EntryMatchMetadata, FillRequest } from './contentScriptMessages';
 
 /**
  * XSEC-01, Pitfall "re-injecting a duplicate content script": idempotent
@@ -182,4 +182,54 @@ export function decideFillFlow({ candidates, fieldsDetected }: FillFlowInput): F
   if (candidates.length === 0) return { kind: 'no-matches', fillAnyway: false };
   if (candidates.length === 1) return { kind: 'single', fillAnyway };
   return { kind: 'picker', fillAnyway };
+}
+
+/** The `fill-entry` RPC's decrypted, discriminated response shape (Phase 24,
+ * LOCKED). Redeclared here (not imported from core -- thin-client boundary)
+ * as the input `buildFillRequest` consumes -- mirrors `FillRequest`'s own
+ * `card`/`identity` field shapes field-for-field. */
+export type FillEntryPayload =
+  | { type: 'login'; secret: string }
+  | {
+      type: 'card';
+      card: {
+        cardholderName: string;
+        number: string;
+        expiryMonth: string;
+        expiryYear: string;
+        cvv: string;
+        brand?: string;
+      };
+    }
+  | { type: 'identity'; identity: { email: string; phone: string; address: string } };
+
+/**
+ * CFILL-04/D-03: pure dispatch seam -- given the fresh, decrypted `fill-entry`
+ * RPC payload (the dispatch AUTHORITY per D-03, never a row's possibly-drifted
+ * `EntryMatchMetadata.type`) and the login identifiers threaded from the
+ * clicked row (D-04), builds the matching `kind`-tagged `FillRequest`. No
+ * Svelte import, no `chrome.*` call, no `$state` -- unit-testable without
+ * standing up Popup.svelte's browser-mode infra (17-RESEARCH.md precedent).
+ * `email` is conditionally spread (omit-key-when-absent, exactOptionalPropertyTypes)
+ * -- never `email: identifiers.email`.
+ */
+export function buildFillRequest(
+  payload: FillEntryPayload,
+  identifiers: { username: string; email?: string },
+  expectedOrigin: string,
+): FillRequest {
+  if (payload.type === 'login') {
+    return {
+      type: 'cryptiq-fill',
+      kind: 'login',
+      secret: payload.secret,
+      username: identifiers.username,
+      ...(identifiers.email !== undefined ? { email: identifiers.email } : {}),
+      expectedOrigin,
+    };
+  }
+  if (payload.type === 'card') {
+    return { type: 'cryptiq-fill', kind: 'card', card: payload.card, expectedOrigin };
+  }
+  return { type: 'cryptiq-fill', kind: 'identity', identity: payload.identity, expectedOrigin };
 }
