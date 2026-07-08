@@ -1288,6 +1288,151 @@ describe('Phase 21: schemaVersion 2->3 migration (SCHEMA-01/02, IDENT-03)', () =
 });
 
 // ---------------------------------------------------------------------------
+// Phase 28: schemaVersion 3->4 migration + Entry.totp round-trip
+// (TOTP-07, SC-1) — additive-only pure version-flip, NO per-entry backfill.
+// ---------------------------------------------------------------------------
+
+describe('Phase 28: schemaVersion 3->4 + Entry.totp round-trip (TOTP-07, SC-1)', () => {
+  /** Build a v3.1-vintage UnlockedVault (schemaVersion: 3) with a plain-object InnerDoc. */
+  function makeV3Vault(entries: Array<Record<string, unknown>>): UnlockedVault {
+    const inner = {
+      schemaVersion: 3,
+      entries,
+      settings: { generator: DEFAULT_RANDOM_OPTIONS },
+    };
+    return {
+      doc: {
+        format: 'cryptiq-vault',
+        version: 1,
+        wrappedKeys: {
+          master: {
+            ciphertext: '',
+            nonce: '',
+            kdf: { algorithm: 2, opsLimit: 3, memLimit: 268_435_456, salt: '' },
+          },
+        },
+        data: { ciphertext: '', nonce: '' },
+        meta: { createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString() },
+      },
+      entries: inner as unknown as object,
+    };
+  }
+
+  /** Monotonic fixture-id counter — CLAUDE.md bans `Math.random` in `packages/core`. */
+  let v3EntryCounter = 0;
+
+  /** A schemaVersion-3 entry — totp is ABSENT (key omitted) unless overridden. */
+  function v3Entry(overrides?: Record<string, unknown>): Record<string, unknown> {
+    v3EntryCounter += 1;
+    return {
+      id: `v3-entry-${v3EntryCounter}`,
+      type: 'login',
+      title: 'Login Entry',
+      username: 'user',
+      password: 'pass',
+      url: 'https://example.com',
+      notes: '',
+      tags: [],
+      favorite: false,
+      needsSiteUpdate: false,
+      generatorPreset: null,
+      passwordHistory: [],
+      lostVersions: [],
+      createdAt: new Date(1_000_000).toISOString(),
+      modifiedAt: new Date(1_000_000).toISOString(),
+      deletedAt: null,
+      ...overrides,
+    };
+  }
+
+  it('round-trip: a totp-carrying entry (non-default params) survives asInnerDoc 3->4 byte-for-byte', () => {
+    const totp = {
+      secret: 'JBSWY3DPEHPK3PXP',
+      algorithm: 'SHA256',
+      digits: 8,
+      period: 60,
+      label: 'user@example.com',
+      issuer: 'Example Corp',
+    };
+    const entry = v3Entry({ title: 'Has TOTP', totp });
+    const before = structuredClone(totp);
+    const vault = makeV3Vault([entry]);
+
+    // Any CRUD call triggers asInnerDoc()'s 3->4 bump.
+    const entries = listEntries(vault);
+
+    expect((vault.entries as unknown as InnerDoc).schemaVersion).toBe(4);
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.totp).toEqual(before);
+    // Non-default params intact (never coerced to defaults).
+    expect(entries[0]!.totp!.algorithm).toBe('SHA256');
+    expect(entries[0]!.totp!.digits).toBe(8);
+    expect(entries[0]!.totp!.period).toBe(60);
+  });
+
+  it('no backfill: a totp-less entry has no `totp` key after 3->4 (key OMITTED, not undefined)', () => {
+    const entry = v3Entry({ title: 'No TOTP' });
+    const vault = makeV3Vault([entry]);
+
+    const entries = listEntries(vault);
+
+    expect((vault.entries as unknown as InnerDoc).schemaVersion).toBe(4);
+    expect('totp' in entries[0]!).toBe(false);
+    expect(entries[0]!.totp).toBeUndefined();
+  });
+
+  it('cascade: a schemaVersion-1 vault cascades 1->2->3->4 in one asInnerDoc call', () => {
+    // A bare Phase-8-vintage entry with no lostVersions (filled by the 1->2 leg).
+    const v1Entry = {
+      id: 'v1-cascade-entry',
+      type: 'login',
+      title: 'Ancient',
+      username: 'olduser',
+      password: 'oldpass',
+      url: 'https://old.example.com',
+      notes: '',
+      tags: [],
+      favorite: false,
+      needsSiteUpdate: false,
+      generatorPreset: null,
+      passwordHistory: [],
+      createdAt: new Date(1_000_000).toISOString(),
+      modifiedAt: new Date(1_000_000).toISOString(),
+      deletedAt: null,
+    };
+    const inner = {
+      schemaVersion: 1,
+      entries: [v1Entry],
+      settings: { generator: DEFAULT_RANDOM_OPTIONS },
+    };
+    const vault: UnlockedVault = {
+      doc: {
+        format: 'cryptiq-vault',
+        version: 1,
+        wrappedKeys: {
+          master: {
+            ciphertext: '',
+            nonce: '',
+            kdf: { algorithm: 2, opsLimit: 3, memLimit: 268_435_456, salt: '' },
+          },
+        },
+        data: { ciphertext: '', nonce: '' },
+        meta: { createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString() },
+      },
+      entries: inner as unknown as object,
+    };
+
+    const entries = listEntries(vault);
+
+    expect((vault.entries as unknown as InnerDoc).schemaVersion).toBe(4);
+    // The 1->2 leg still filled lostVersions.
+    expect(entries[0]!.lostVersions).toEqual([]);
+    // No totp backfill on the cascade either.
+    expect('totp' in entries[0]!).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Pitfall-3: Phase-2 dev vault (no schemaVersion) is upgraded in place
 // ---------------------------------------------------------------------------
 
