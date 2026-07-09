@@ -116,6 +116,22 @@
   let newUrlDraft = $state('');
   let urlHint = $state<string | null>(null);
 
+  // TOTP mirror (TOTP-06 stale-UI fix). Every other field EntryDetail passes
+  // down is backed by a local $state mirror (title/username/.../card/identity)
+  // that is the actual source of truth for rendering — `entry.*` is read only
+  // inside the entry-identity $effect below. `totp` was the ONE exception: it
+  // was passed straight through as `entry?.totp`, a value read off the SAME
+  // mutated-in-place Entry object (crud.ts updateEntry mutates in place by
+  // design, DC-8/P3-02 — sync/merge relies on this, so crud.ts is NOT touched
+  // here). Because `$derived(entry)` recomputes to the IDENTICAL object
+  // reference after a same-entry mutation, Svelte 5 never re-notifies
+  // dependents reading `entry?.totp` — the prop goes stale until entryId
+  // itself changes (navigate away/back). Mirroring `totp` locally, updated
+  // explicitly by persistTotp/removeTotp exactly like persistCard/
+  // persistIdentity update their own mirrors, closes that gap without
+  // touching the LOCKED crud.ts mutation contract.
+  let totp = $state<EntryTotp | undefined>(undefined);
+
   // Type-aware header identity (D-11): non-login entries show their type
   // icon in place of the letter-gradient tile; login is unchanged.
   const headerIcon = $derived(
@@ -152,6 +168,7 @@
       cardCvv = entry.card?.cvv ?? '';
       cardBrand = entry.card?.brand ?? '';
       cardNickname = entry.card?.nickname ?? '';
+      totp = entry.totp;
     } else {
       // Blank "+New" form (P4-14)
       title = '';
@@ -174,6 +191,7 @@
       cardCvv = '';
       cardBrand = '';
       cardNickname = '';
+      totp = undefined;
     }
     // Reset the chip-editor draft state on every entry-identity change.
     newUrlDraft = '';
@@ -382,15 +400,17 @@
   // TotpSection never touches vaultSession directly (callback-through-parent,
   // mirrors persistCard/persistIdentity). Wholesale-replace on save; the core
   // updateEntry `null` sentinel deletes the field entirely on remove.
-  function persistTotp(totp: EntryTotp) {
+  function persistTotp(newTotp: EntryTotp) {
     if (entryId === null) return; // blank form — held in mirrors until first save
-    vaultSession.updateEntry(entryId, { totp });
+    vaultSession.updateEntry(entryId, { totp: newTotp });
+    totp = newTotp; // mirror update — see `totp` declaration for why this is needed
     scheduleSave();
   }
 
   function removeTotp() {
     if (entryId === null) return;
     vaultSession.updateEntry(entryId, { totp: null });
+    totp = undefined; // mirror update — see `totp` declaration for why this is needed
     scheduleSave();
   }
 
@@ -708,7 +728,7 @@
       </div>
 
       <!-- Two-factor (TOTP) — login-only (D-01), between Password and Website/URL -->
-      <TotpSection {entryId} totp={entry?.totp} onSave={persistTotp} onRemove={removeTotp} />
+      <TotpSection {entryId} {totp} onSave={persistTotp} onRemove={removeTotp} />
 
       <!-- URL -->
       <div>
