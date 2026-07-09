@@ -77,3 +77,12 @@ export * from './sync/syncAuth';
 export * from './totp/parse';
 export * from './totp/generate';
 export * from './totp/qr';
+
+// Phase 30 public surface:
+// HIBP — k-anonymity range lookup (D-01/D-07). SHA-1 via @noble/hashes is the sole
+// libsodium-only exception (D-03).
+// Note: HibpLookupError is in ./errors (already exported above). Not re-exported
+// here to avoid TS2308.
+export * from './hibp/hash';
+export * from './hibp/kanon';
+export * from './hibp';
