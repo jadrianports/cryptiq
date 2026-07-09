@@ -55,7 +55,11 @@
   let { entryId: _entryId, totp, onSave, onRemove }: Props = $props();
 
   let pastedValue = $state('');
-  let preview = $state<EntryTotp | null>(null);
+  // $state.raw (not deep $state): `preview` holds the raw parsed secret pre-save;
+  // a deep-reactive proxy would expose it via the DevTools proxy — the same
+  // locked no-secret-in-proxy invariant the vault key/state follow (CLAUDE.md).
+  // Always wholesale-reassigned (never mutated in place), so .raw is a drop-in.
+  let preview = $state.raw<EntryTotp | null>(null);
   let error = $state<{ source: 'paste' | 'qr'; message: string; hint: string } | null>(null);
   let fileInputEl: HTMLInputElement | undefined = $state();
 

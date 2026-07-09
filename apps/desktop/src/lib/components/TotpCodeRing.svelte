@@ -37,14 +37,26 @@
   let code = $state('');
   let secondsRemaining = $state(0);
   let copied = $state(false);
+  let generationFailed = $state(false);
 
   // D-14: the ticking clock lives here (the app tier), calling the pure core
   // generator every tick. An immediate first tick avoids a 1s blank flash.
+  // Fail closed: a malformed `totp` (e.g. an out-of-spec algorithm arriving via
+  // sync or a hand-edited vault) makes otpauth throw — verified in 29-01's
+  // characterization spike. Merge/CRUD only type-check algorithm/period, not
+  // validity, so guard here rather than let an uncaught throw fire every second.
   $effect(() => {
     const tick = () => {
-      const result = generateTotpCode(totp, Date.now());
-      code = result.code;
-      secondsRemaining = result.secondsRemaining;
+      try {
+        const result = generateTotpCode(totp, Date.now());
+        code = result.code;
+        secondsRemaining = result.secondsRemaining;
+        generationFailed = false;
+      } catch {
+        code = '';
+        secondsRemaining = 0;
+        generationFailed = true;
+      }
     };
     tick();
     const id = setInterval(tick, 1000);
@@ -120,15 +132,21 @@
         {[totp.issuer, totp.label].filter(Boolean).join(' · ')}
       </span>
     {/if}
-    <button
-      type="button"
-      onclick={handleCopyCode}
-      title="Copy code"
-      aria-label="Copy 2FA code"
-      class="rounded-cryptiq px-1 -mx-1 text-left font-mono text-display font-semibold tracking-tight text-cryptiq-fg tabular-nums transition-colors hover:bg-cryptiq-hover
-             {copied ? 'text-cryptiq-success' : ''}"
-    >
-      {displayCode}
-    </button>
+    {#if generationFailed}
+      <span class="block text-body text-cryptiq-attention">
+        Can't generate a code — this 2FA seed looks invalid.
+      </span>
+    {:else}
+      <button
+        type="button"
+        onclick={handleCopyCode}
+        title="Copy code"
+        aria-label="Copy 2FA code"
+        class="rounded-cryptiq px-1 -mx-1 text-left font-mono text-display font-semibold tracking-tight text-cryptiq-fg tabular-nums transition-colors hover:bg-cryptiq-hover
+               {copied ? 'text-cryptiq-success' : ''}"
+      >
+        {displayCode}
+      </button>
+    {/if}
   </div>
 </div>

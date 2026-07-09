@@ -30,7 +30,15 @@ export interface PixelBuffer {
  * `null` when no QR code is found (D-10 fail-closed signal) — never throws.
  */
 export function decodeQrToOtpauthUri(pixels: PixelBuffer): string | null {
-  const code = jsQR(pixels.data, pixels.width, pixels.height);
-  if (code === null) return null;
-  return code.data;
+  // Self-enforce the "never throws" contract: a malformed pixel buffer (e.g. a
+  // data length that doesn't match width*height*4) can make jsQR throw. Treat
+  // any decode failure as "no QR found" (null) rather than relying on the
+  // caller to wrap this — the contract lives with the function, not its callers.
+  try {
+    const code = jsQR(pixels.data, pixels.width, pixels.height);
+    if (code === null) return null;
+    return code.data;
+  } catch {
+    return null;
+  }
 }
