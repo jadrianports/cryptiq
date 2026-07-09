@@ -30,6 +30,7 @@
   import GeneratorSurface from './GeneratorSurface.svelte';
   import PurgeConfirm from './PurgeConfirm.svelte';
   import ClipboardToast from './ClipboardToast.svelte';
+  import TotpSection from './TotpSection.svelte';
   import { vaultSession } from '../state/vault.svelte';
   import { clipboardClear, armClipboardClear } from '../state/clipboardGuard.svelte';
   import { ui, pushToast } from '../state/ui.svelte';
@@ -44,7 +45,7 @@
     getVaultSettings,
     registrableHost,
   } from '@cryptiq/core';
-  import type { GeneratorOptions, Entry } from '@cryptiq/core';
+  import type { GeneratorOptions, Entry, EntryTotp } from '@cryptiq/core';
   import { TYPE_ICON } from './typeIcons';
 
   /**
@@ -377,6 +378,22 @@
     scheduleSave();
   }
 
+  // ── TOTP persist/remove (D-01/D-11/D-12, TOTP-04/06) ──────────────────
+  // TotpSection never touches vaultSession directly (callback-through-parent,
+  // mirrors persistCard/persistIdentity). Wholesale-replace on save; the core
+  // updateEntry `null` sentinel deletes the field entirely on remove.
+  function persistTotp(totp: EntryTotp) {
+    if (entryId === null) return; // blank form — held in mirrors until first save
+    vaultSession.updateEntry(entryId, { totp });
+    scheduleSave();
+  }
+
+  function removeTotp() {
+    if (entryId === null) return;
+    vaultSession.updateEntry(entryId, { totp: null });
+    scheduleSave();
+  }
+
   // ── Favorite toggle ────────────────────────────────────────────────────
   function toggleFavorite() {
     if (entryId === null) return;
@@ -689,6 +706,9 @@
           </div>
         {/if}
       </div>
+
+      <!-- Two-factor (TOTP) — login-only (D-01), between Password and Website/URL -->
+      <TotpSection {entryId} totp={entry?.totp} onSave={persistTotp} onRemove={removeTotp} />
 
       <!-- URL -->
       <div>
