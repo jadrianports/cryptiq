@@ -32,6 +32,15 @@ const RFC4648_BASE32_RE = /^[A-Z2-7]+=*$/i;
 const MIN_DIGITS = 6;
 const MAX_DIGITS = 10;
 
+/**
+ * otpauth's own accepted period range (RR-29-01 — otpauth already fails closed
+ * on period=0/negatives via a thrown TypeError, but silently accepts an
+ * unbounded large period such as 999999999, yielding a code that effectively
+ * never rotates). This module enforces its own bound.
+ */
+const MIN_PERIOD = 15;
+const MAX_PERIOD = 300;
+
 const GENERIC_PARSE_ERROR_MESSAGE = "That doesn't look like an otpauth:// link or a Base32 setup key.";
 
 export type PasteKind = 'uri' | 'base32' | 'invalid';
@@ -53,6 +62,12 @@ export function detectPasteKind(raw: string): PasteKind {
 
 function assertDigitsInRange(digits: number): void {
   if (!Number.isInteger(digits) || digits < MIN_DIGITS || digits > MAX_DIGITS) {
+    throw new TotpParseError(GENERIC_PARSE_ERROR_MESSAGE);
+  }
+}
+
+function assertPeriodInRange(period: number): void {
+  if (!Number.isInteger(period) || period < MIN_PERIOD || period > MAX_PERIOD) {
     throw new TotpParseError(GENERIC_PARSE_ERROR_MESSAGE);
   }
 }
@@ -82,6 +97,7 @@ export function parsePastedTotp(raw: string): EntryTotp {
       throw new TotpParseError(GENERIC_PARSE_ERROR_MESSAGE);
     }
     assertDigitsInRange(parsed.digits);
+    assertPeriodInRange(parsed.period);
     return {
       secret: parsed.secret.base32,
       algorithm: parsed.algorithm,
