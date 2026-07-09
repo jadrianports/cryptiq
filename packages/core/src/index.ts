@@ -69,3 +69,11 @@ export * from './sync/pairingCode';
 // Note: sync errors (SyncAuthFailedError, SyncPeerUnreachableError, etc.)
 // are in ./errors (already exported above). Not re-exported here to avoid TS2308.
 export * from './sync/syncAuth';
+
+// Phase 29 public surface:
+// TOTP — smart-paste parse, QR decode, pure code generator (D-13).
+// Note: TOTP errors (TotpParseError, TotpQrDecodeError) are in ./errors
+// (already exported above). Not re-exported here to avoid TS2308.
+export * from './totp/parse';
+export * from './totp/generate';
+export * from './totp/qr';
