@@ -1433,6 +1433,64 @@ describe('Phase 28: schemaVersion 3->4 + Entry.totp round-trip (TOTP-07, SC-1)',
 });
 
 // ---------------------------------------------------------------------------
+// Phase 29 Plan 05: updateEntry(totp) wholesale-replace + null-sentinel remove
+// (D-11/D-12, TOTP-04/06) — updateEntry previously ignored `update.totp`
+// entirely (Phase 28 only wired the schema/migration, not this CRUD verb).
+// ---------------------------------------------------------------------------
+
+describe("Phase 29 Plan 05: updateEntry('totp') set + remove", () => {
+  it('sets totp wholesale on an entry that had none', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, { title: 'Login' });
+
+    const totp = { secret: 'JBSWY3DPEHPK3PXP', algorithm: 'SHA1', digits: 6, period: 30 };
+    const updated = updateEntry(vault, entry.id, { totp });
+
+    expect(updated.totp).toEqual(totp);
+    const [reread] = listEntries(vault);
+    expect(reread!.totp).toEqual(totp);
+  });
+
+  it('wholesale-replaces an existing totp (no deep-merge)', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, {
+      title: 'Login',
+      totp: { secret: 'OLDSECRET', algorithm: 'SHA1', digits: 6, period: 30, issuer: 'Old' },
+    });
+
+    const nextTotp = { secret: 'NEWSECRET', algorithm: 'SHA256', digits: 8, period: 60 };
+    const updated = updateEntry(vault, entry.id, { totp: nextTotp });
+
+    expect(updated.totp).toEqual(nextTotp);
+    // No leftover `issuer` from the old object (wholesale-replace, not merge).
+    expect('issuer' in updated.totp!).toBe(false);
+  });
+
+  it('removes totp via the `null` sentinel (key OMITTED afterward, not undefined)', async () => {
+    const vault = makeVault();
+    const entry = await addEntry(vault, {
+      title: 'Login',
+      totp: { secret: 'JBSWY3DPEHPK3PXP', algorithm: 'SHA1', digits: 6, period: 30 },
+    });
+
+    const updated = updateEntry(vault, entry.id, { totp: null });
+
+    expect('totp' in updated).toBe(false);
+    expect(updated.totp).toBeUndefined();
+  });
+
+  it('omitting totp entirely leaves an existing seed untouched', async () => {
+    const vault = makeVault();
+    const totp = { secret: 'JBSWY3DPEHPK3PXP', algorithm: 'SHA1', digits: 6, period: 30 };
+    const entry = await addEntry(vault, { title: 'Login', totp });
+
+    const updated = updateEntry(vault, entry.id, { title: 'Renamed' });
+
+    expect(updated.totp).toEqual(totp);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Pitfall-3: Phase-2 dev vault (no schemaVersion) is upgraded in place
 // ---------------------------------------------------------------------------
 

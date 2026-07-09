@@ -274,5 +274,15 @@ export type EntryInput = Pick<Entry, 'title'> &
  * Update type for `updateEntry`. Any subset of mutable entry fields.
  *
  * Omits immutable fields: `id`, `type`, `createdAt`.
+ *
+ * `totp` is widened beyond a plain `Partial` to also accept `null` as an explicit
+ * REMOVE sentinel (Phase 29 Plan 05, D-11 "remove the seed"). A bare `Partial<Entry>`
+ * cannot express deletion under `exactOptionalPropertyTypes` (assigning `undefined`
+ * to an already-optional key is a type error, and is indistinguishable at runtime
+ * from simply omitting the key). `updateEntry` treats `totp: null` as "delete the
+ * key" and `totp: EntryTotp` as "wholesale-replace it" — omitting `totp` entirely
+ * leaves it untouched, matching every other field's semantics.
  */
-export type EntryUpdate = Partial<Omit<Entry, 'id' | 'type' | 'createdAt'>>;
+export type EntryUpdate = Partial<Omit<Entry, 'id' | 'type' | 'createdAt' | 'totp'>> & {
+  totp?: EntryTotp | null;
+};

@@ -203,6 +203,7 @@ export async function addEntry(vault: UnlockedVault, input: EntryInput): Promise
     ...(input.equivalentUrls !== undefined ? { equivalentUrls: input.equivalentUrls } : {}),
     ...(input.card !== undefined ? { card: input.card } : {}),
     ...(input.identity !== undefined ? { identity: input.identity } : {}),
+    ...(input.totp !== undefined ? { totp: input.totp } : {}),
     favorite: input.favorite ?? false,
     needsSiteUpdate: input.needsSiteUpdate ?? false,
     generatorPreset: input.generatorPreset ?? null,
@@ -262,6 +263,15 @@ export function updateEntry(vault: UnlockedVault, id: string, update: EntryUpdat
   if (update.equivalentUrls !== undefined) entry.equivalentUrls = update.equivalentUrls;
   if (update.card !== undefined) entry.card = update.card;
   if (update.identity !== undefined) entry.identity = update.identity;
+  // Phase 29 (D-11/D-12, TOTP-06): totp is wholesale-replaced like card/identity,
+  // but also supports explicit removal via the `null` sentinel (see EntryUpdate).
+  if (update.totp !== undefined) {
+    if (update.totp === null) {
+      delete entry.totp;
+    } else {
+      entry.totp = update.totp;
+    }
+  }
 
   return entry;
 }
