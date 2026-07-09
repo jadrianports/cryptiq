@@ -161,9 +161,18 @@ importers:
 
   packages/core:
     dependencies:
+      '@noble/hashes':
+        specifier: ^2.0.1
+        version: 2.2.0
+      jsqr:
+        specifier: 1.4.0
+        version: 1.4.0
       libsodium-wrappers-sumo:
         specifier: ^0.7.15
         version: 0.7.16
+      otpauth:
+        specifier: ^9.5.1
+        version: 9.5.1
       tldts:
         specifier: ^7.4.6
         version: 7.4.6
@@ -179,7 +188,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/node@20.19.41)(@vitest/browser@3.2.4)(jiti@2.7.0)(lightningcss@1.32.0)
+        version: 3.2.4(@types/node@20.19.41)(@vitest/browser@3.2.4)(happy-dom@20.10.6)(jiti@2.7.0)(lightningcss@1.32.0)
 
 packages:
 
@@ -734,6 +743,10 @@ packages:
     peerDependenciesMeta:
       '@cfworker/json-schema':
         optional: true
+
+  '@noble/hashes@2.2.0':
+    resolution: {integrity: sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg==}
+    engines: {node: '>= 20.19.0'}
 
   '@opengsd/gsd-core@1.4.3':
     resolution: {integrity: sha512-bDpRrS64hBf0mVU08YeX2fceH4yvhquOtKQBWjCSyCKRgxKeJF26d9XqpBArCsSP3Z3/WJ7g12671N0xa5SI7g==}
@@ -2380,6 +2393,9 @@ packages:
     resolution: {integrity: sha512-MT/xP0CrubFRNLNKvxJ2BYfy53Zkm++5bX9dtuPbqAeQpTVe0MQTFhao8+Cp//EmJp244xt6Drw/GVEGCUj40g==}
     engines: {node: '>=12', npm: '>=6'}
 
+  jsqr@1.4.0:
+    resolution: {integrity: sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==}
+
   jszip@3.10.1:
     resolution: {integrity: sha512-xXDvecyTpGLrqFrvkrUSoxxfJI5AH7U8zxxtVclpsUtMCq4JQ290LY8AW5c7Ggnr/Y/oK+bQMbqK2qmtk3pN4g==}
 
@@ -2723,6 +2739,9 @@ packages:
   os-shim@0.1.3:
     resolution: {integrity: sha512-jd0cvB8qQ5uVt0lvCIexBaROw1KyKm5sbulg2fWOHjETisuCzWyt+eTZKEMs8v6HwzoGs8xik26jg7eCM6pS+A==}
     engines: {node: '>= 0.4.0'}
+
+  otpauth@9.5.1:
+    resolution: {integrity: sha512-fJmDAHc8wImfqqqOXIlBvT1dEKrZK0Cmb2VEgScpNTolCz0PHh6ExUZGv4sLtOsWNaHCQlD+rRqaPgnoxFoZjQ==}
 
   p-limit@3.1.0:
     resolution: {integrity: sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ==}
@@ -4022,6 +4041,8 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@4.4.3)
     transitivePeerDependencies:
       - supports-color
+
+  '@noble/hashes@2.2.0': {}
 
   '@opengsd/gsd-core@1.4.3(zod@4.4.3)':
     dependencies:
@@ -5603,6 +5624,8 @@ snapshots:
       ms: 2.1.3
       semver: 7.8.1
 
+  jsqr@1.4.0: {}
+
   jszip@3.10.1:
     dependencies:
       lie: 3.3.0
@@ -5922,6 +5945,10 @@ snapshots:
       word-wrap: 1.2.5
 
   os-shim@0.1.3: {}
+
+  otpauth@9.5.1:
+    dependencies:
+      '@noble/hashes': 2.2.0
 
   p-limit@3.1.0:
     dependencies:

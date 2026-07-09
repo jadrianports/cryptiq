@@ -28,7 +28,10 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@noble/hashes": "^2.0.1",
+    "jsqr": "1.4.0",
     "libsodium-wrappers-sumo": "^0.7.15",
+    "otpauth": "^9.5.1",
     "tldts": "^7.4.6"
   }
 }
