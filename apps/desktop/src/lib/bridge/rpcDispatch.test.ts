@@ -261,7 +261,12 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
   // -------------------------------------------------------------------------
 
   it('match-origin returns metadata-only candidates — no candidate carries a password field', async () => {
-    const entry = makeEntry({ url: 'example.com', title: 'Example', username: 'alice' });
+    const entry = makeEntry({
+      url: 'example.com',
+      title: 'Example',
+      username: 'alice',
+      totp: { secret: 'ABC', algorithm: 'SHA1', digits: 6, period: 30 },
+    });
     vaultState.entries = [entry];
 
     const result = (await handleRpcRequest({
@@ -283,6 +288,9 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
     });
     for (const candidate of result.candidates) {
       expect('password' in candidate).toBe(false);
+      // TOTP-08/D-15 GATE: the seed must never ride the match-origin wire,
+      // even though the seeded entry has one.
+      expect('totp' in candidate).toBe(false);
     }
   });
 
@@ -441,7 +449,11 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
   });
 
   it('match-origin candidates never carry a password field even with health flags attached', async () => {
-    const entry = makeEntry({ url: 'example.com', password: 'weak-pass' });
+    const entry = makeEntry({
+      url: 'example.com',
+      password: 'weak-pass',
+      totp: { secret: 'ABC', algorithm: 'SHA1', digits: 6, period: 30 },
+    });
     vaultState.entries = [entry];
 
     const result = (await handleRpcRequest({
@@ -461,6 +473,9 @@ describe('bridge/rpcDispatch — XSEC-05/D-12 idle isolation + BRIDGE-08/FILL-03
       expect(candidate).not.toHaveProperty('name');
       expect(candidate).not.toHaveProperty('phone');
       expect(candidate).not.toHaveProperty('address');
+      // TOTP-08/D-15 GATE: totp/secret-adjacent references = zero.
+      expect(candidate).not.toHaveProperty('totp');
+      expect(candidate).not.toHaveProperty('secret');
     }
   });
 
