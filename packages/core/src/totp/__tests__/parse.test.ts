@@ -68,6 +68,17 @@ describe('parsePastedTotp — otpauth:// URI branch', () => {
     const uri = `otpauth://totp/x?digits=999&secret=${SHA1_SEED_BASE32}`;
     expect(() => parsePastedTotp(uri)).toThrow(TotpParseError);
   });
+
+  it('throws TotpParseError on an out-of-range period value (otpauth silently accepts period=999999999 — this module must not, RR-29-01)', () => {
+    const uri = `otpauth://totp/x?period=999999999&secret=${SHA1_SEED_BASE32}`;
+    expect(() => parsePastedTotp(uri)).toThrow(TotpParseError);
+  });
+
+  it('parses a valid non-default period=60 URI and yields period 60', () => {
+    const uri = `otpauth://totp/x?period=60&secret=${SHA1_SEED_BASE32}`;
+    const result = parsePastedTotp(uri);
+    expect(result.period).toBe(60);
+  });
 });
 
 describe('parsePastedTotp — raw Base32 branch', () => {
