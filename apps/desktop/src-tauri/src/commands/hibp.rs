@@ -78,3 +78,121 @@ pub async fn hibp_range_lookup(prefix: String) -> Result<String, String> {
 
     execute_hibp_request(&client, req).await
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    // ── SC-1 / SC-2: unsent-Request inspection — zero network, zero mock server ──────────────
+
+    #[test]
+    fn request_carries_exactly_the_5_hex_prefix_and_padding_header() {
+        let client = reqwest::Client::new();
+        let req = build_hibp_request(&client, "5BAA6").unwrap();
+
+        assert_eq!(req.url().host_str(), Some("api.pwnedpasswords.com"));
+        assert_eq!(req.url().path(), "/range/5BAA6");
+        assert!(req.url().query().is_none(), "no query string may leak identifying data");
+        assert_eq!(
+            req.headers()
+                .get("Add-Padding")
+                .map(|v| v.to_str().unwrap()),
+            Some("true"),
+            "Add-Padding header must be present and exactly 'true' (Pitfall 4)"
+        );
+        // No Authorization/API-key header — the range endpoint is keyless.
+        assert!(req.headers().get("Authorization").is_none());
+    }
+
+    // ── SC-1 / V5: invalid prefixes are rejected BEFORE any network use ──────────────────────
+
+    #[tokio::test]
+    async fn rejects_non_hex_prefix() {
+        let result = hibp_range_lookup("XYZAB".to_string()).await;
+        assert_eq!(result, Err("hibp_invalid_prefix".to_string()));
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_length_prefix() {
+        let result = hibp_range_lookup("5BAA6A".to_string()).await;
+        assert_eq!(result, Err("hibp_invalid_prefix".to_string()));
+    }
+
+    #[tokio::test]
+    async fn rejects_short_prefix() {
+        let result = hibp_range_lookup("5BA".to_string()).await;
+        assert_eq!(result, Err("hibp_invalid_prefix".to_string()));
+    }
+
+    // ── D-04: fail-closed execute-layer tests against a local response double ────────────────
+    // Per Pitfall 3, the production command's host stays hardcoded — testability for the
+    // execute layer comes from testing `execute_hibp_request` directly with a manually built
+    // `Request` pointed at a local TCP listener, never by making the host configurable.
+
+    /// Spawns a one-shot local HTTP server on 127.0.0.1 that reads a single request and writes
+    /// back the given raw HTTP response bytes, then closes. Returns the bound address.
+    fn spawn_one_shot_http_server(response: &'static str) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test listener");
+        let addr = listener.local_addr().expect("local_addr");
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                // Drain (best-effort) whatever the client sent before replying.
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn non_200_status_maps_to_stable_err_short_code() {
+        let addr = spawn_one_shot_http_server(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let client = reqwest::Client::builder()
+            .timeout(HIBP_REQUEST_TIMEOUT)
+            .build()
+            .unwrap();
+        let req = client
+            .get(format!("http://{addr}/range/5BAA6"))
+            .build()
+            .unwrap();
+
+        let result = execute_hibp_request(&client, req).await;
+        assert_eq!(result, Err("hibp_http_status_429".to_string()));
+    }
+
+    #[tokio::test]
+    async fn transport_failure_never_reads_as_ok() {
+        // Bind then immediately drop — guarantees the port is closed (connection refused)
+        // without depending on any externally-reachable host.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test listener");
+        let addr = listener.local_addr().expect("local_addr");
+        drop(listener);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let req = client
+            .get(format!("http://{addr}/range/5BAA6"))
+            .build()
+            .unwrap();
+
+        let result = execute_hibp_request(&client, req).await;
+        assert!(
+            matches!(
+                result.as_ref().map_err(String::as_str),
+                Err("hibp_timeout") | Err("hibp_transport_error")
+            ),
+            "transport failure must surface as a distinct Err short-code, never Ok: {result:?}"
+        );
+    }
+}
