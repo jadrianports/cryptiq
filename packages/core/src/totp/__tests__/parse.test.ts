@@ -79,6 +79,19 @@ describe('parsePastedTotp — otpauth:// URI branch', () => {
     const result = parsePastedTotp(uri);
     expect(result.period).toBe(60);
   });
+
+  // RR-29-01 boundary pins: assertPeriodInRange must be INCLUSIVE at both ends.
+  // Without these, an off-by-one guard (`period <= MIN_PERIOD || period >= MAX_PERIOD`)
+  // still passes the period=999999999 / period=60 fixtures above.
+  it.each([15, 300])('accepts the inclusive period boundary %i (RR-29-01)', (period) => {
+    const uri = `otpauth://totp/x?period=${String(period)}&secret=${SHA1_SEED_BASE32}`;
+    expect(parsePastedTotp(uri).period).toBe(period);
+  });
+
+  it.each([14, 301])('throws TotpParseError just outside the period boundary (%i, RR-29-01)', (period) => {
+    const uri = `otpauth://totp/x?period=${String(period)}&secret=${SHA1_SEED_BASE32}`;
+    expect(() => parsePastedTotp(uri)).toThrow(TotpParseError);
+  });
 });
 
 describe('parsePastedTotp — raw Base32 branch', () => {
