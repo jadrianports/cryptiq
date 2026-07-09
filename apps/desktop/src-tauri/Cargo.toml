@@ -69,6 +69,13 @@ blake2 = "=0.10.6"
 # already-resolved version, no new download, mirroring the blake2/windows-sys reuse pattern.
 base64 = "=0.22.1"
 
+# Phase 30: first-ever HTTP client — HIBP k-anonymity range lookup, apps/desktop/src-tauri ONLY.
+# Human-verified on crates.io 2026-07-10 (checkpoint:human-verify approved by user):
+#   reqwest 0.13.4 — github.com/seanmonstar/reqwest, MIT OR Apache-2.0
+# default-features = false + features = ["rustls"] avoids OpenSSL/native-tls and the http2/
+# system-proxy bloat in reqwest's full default feature set (Windows-first; macOS via CI).
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
 # DEV/TEST INFRA — PERMANENT, dev-only. hypothesi MCP bridge drives the running app over a
 # localhost WebSocket during UAT (e.g. the v2.0 single-device sync checks). Registered ONLY
 # under #[cfg(debug_assertions)] in lib.rs, so the WebSocket server never starts in a release

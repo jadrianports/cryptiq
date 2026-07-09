@@ -161,6 +161,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.2.0
       jsqr:
         specifier: 1.4.0
         version: 1.4.0
