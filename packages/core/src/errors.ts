@@ -420,3 +420,40 @@ export class SyncMergeError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 29 (TOTP) typed errors (DC-9 pattern — Shape B: message-only constructor)
+//
+// Ingestion (pasted otpauth:// URI / raw Base32 / QR image) is the only
+// adversarial-input surface Phase 29 introduces. Fail closed (D-10): every
+// parse/decode failure surfaces one of these, never partial data.
+// ---------------------------------------------------------------------------
+
+/**
+ * A pasted otpauth:// URI or raw Base32 string could not be parsed into a valid
+ * `EntryTotp` — malformed URI, non-`totp` otpauth kind (D-09), bad Base32
+ * alphabet, or an out-of-range `digits` value (otpauth does not fail closed on
+ * `digits` itself — TOTP-01/02, D-10). Never a partial/best-effort result.
+ * Callers branch on `instanceof TotpParseError` or `.code === 'TOTP_PARSE_ERROR'`.
+ */
+export class TotpParseError extends Error {
+  readonly code = 'TOTP_PARSE_ERROR';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * A QR-code image decode surfaced a payload that could not be resolved to a
+ * valid single `otpauth://totp` URI. Reserved for callers that want a typed
+ * distinction from a generic `TotpParseError`; `decodeQrToOtpauthUri` itself
+ * fails closed with `null` (never throws) per D-10 — this class exists for a
+ * caller-side wrapper that wants a typed error after a `null`/non-TOTP result.
+ * Callers branch on `instanceof TotpQrDecodeError` or `.code === 'TOTP_QR_DECODE_ERROR'`.
+ */
+export class TotpQrDecodeError extends Error {
+  readonly code = 'TOTP_QR_DECODE_ERROR';
+  constructor(message: string) {
+    super(message);
+  }
+}
