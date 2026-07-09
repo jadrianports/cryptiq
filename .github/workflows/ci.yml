@@ -73,6 +73,9 @@ jobs:
       - name: Custom lint — sync capabilities
         run: node scripts/lint/lint-sync-capabilities.mjs
 
+      - name: Custom lint — TOTP wire-minimization
+        run: node scripts/lint/lint-totp-wire-minimization.mjs
+
       - name: svelte-check + tsc --noEmit
         run: pnpm run typecheck
 
