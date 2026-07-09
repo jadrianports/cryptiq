@@ -160,3 +160,98 @@ test('(d) a QR image that decodes to null shows the QR-fail error; onSave is nev
   expect(onSave).not.toHaveBeenCalled();
   await expect.element(screen.getByText('No 2FA code yet')).toBeVisible();
 });
+
+// ---------------------------------------------------------------------------
+// Filled/view-mode state (29-05: TotpCodeRing mount + seed reveal + remove-
+// confirm + editable label/issuer + persistent inline disclosure,
+// D-04/D-06/D-07/D-11/D-12, TOTP-04/06).
+// ---------------------------------------------------------------------------
+
+const FILLED_TOTP: EntryTotp = {
+  secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+  algorithm: 'SHA1',
+  digits: 6,
+  period: 30,
+  label: 'alice@example.com',
+  issuer: 'Example Corp',
+};
+
+test('(e) filled state renders TotpCodeRing and masks the raw secret by default', async () => {
+  const screen = render(TotpSection, {
+    entryId: 'entry-1',
+    totp: FILLED_TOTP,
+    onSave: () => {},
+    onRemove: () => {},
+  });
+
+  // TotpCodeRing is present (its tap-to-copy code button is a stable anchor).
+  await expect.element(screen.getByRole('button', { name: 'Copy 2FA code' })).toBeVisible();
+
+  // The raw secret is NOT in the DOM until revealed.
+  await expect.element(screen.getByText(FILLED_TOTP.secret)).not.toBeInTheDocument();
+  await expect.element(screen.getByText('hold to peek')).toBeVisible();
+
+  // Toggling reveal shows the raw secret as read-only text (never an <input>).
+  await screen.getByRole('button', { name: 'Show setup key' }).click();
+  await expect.element(screen.getByText(FILLED_TOTP.secret)).toBeVisible();
+  const revealedSecretEl = screen.container.querySelector(`input[value="${FILLED_TOTP.secret}"]`);
+  expect(revealedSecretEl).toBeNull();
+
+  // The persistent inline one-basket disclosure is present (CVV-precedent class match).
+  const disclosureEl = screen.getByText(/one vault/i).element();
+  expect(disclosureEl.className).toContain('text-cryptiq-fg-subtle');
+});
+
+test('(f) Remove opens a confirm modal; confirming calls onRemove', async () => {
+  const onRemove = vi.fn();
+
+  const screen = render(TotpSection, {
+    entryId: 'entry-1',
+    totp: FILLED_TOTP,
+    onSave: () => {},
+    onRemove,
+  });
+
+  await expect.element(screen.getByRole('alertdialog')).not.toBeInTheDocument();
+
+  await screen.getByRole('button', { name: 'Remove 2FA code' }).click();
+
+  await expect.element(screen.getByRole('alertdialog')).toBeVisible();
+  await expect.element(screen.getByText('Remove 2FA code?')).toBeVisible();
+  expect(onRemove).not.toHaveBeenCalled();
+
+  // Confirm button inside the modal shares its accessible name with the
+  // trigger — scope to the dialog to click the actual confirm action.
+  await screen
+    .getByRole('alertdialog')
+    .getByRole('button', { name: 'Remove 2FA code' })
+    .click();
+
+  expect(onRemove).toHaveBeenCalledOnce();
+});
+
+test('(g) label/issuer edits call onSave with secret/algorithm/digits/period unchanged (D-12)', async () => {
+  let saved: EntryTotp | null = null;
+
+  const screen = render(TotpSection, {
+    entryId: 'entry-1',
+    totp: FILLED_TOTP,
+    onSave: (totp: EntryTotp) => {
+      saved = totp;
+    },
+    onRemove: () => {},
+  });
+
+  const issuerField = screen.getByRole('textbox', { name: 'TOTP issuer' });
+  await issuerField.fill('New Issuer');
+  (issuerField.element() as HTMLInputElement).blur();
+
+  expect(saved).not.toBeNull();
+  const savedIssuer = saved as unknown as EntryTotp;
+  expect(savedIssuer.issuer).toBe('New Issuer');
+  expect(savedIssuer.label).toBe(FILLED_TOTP.label);
+  expect(savedIssuer.secret).toBe(FILLED_TOTP.secret);
+  expect(savedIssuer.algorithm).toBe(FILLED_TOTP.algorithm);
+  expect(savedIssuer.digits).toBe(FILLED_TOTP.digits);
+  expect(savedIssuer.period).toBe(FILLED_TOTP.period);
+});
