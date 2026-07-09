@@ -457,3 +457,27 @@ export class TotpQrDecodeError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 30 (HIBP) typed errors (DC-9 pattern — Shape C: reason-carrying, mirrors
+// CredentialManagerError)
+// ---------------------------------------------------------------------------
+
+/**
+ * The HIBP range lookup failed — network unreachable, timeout, non-200 (incl. 429
+ * rate-limit), or a malformed response body. Fail closed (D-04): NEVER read as
+ * "not breached." Carries the Rust-side short-code string (e.g. "hibp_timeout",
+ * "hibp_http_status_429", "hibp_transport_error", "hibp_malformed_body",
+ * "hibp_invalid_prefix") so Phase 31's UI can distinguish reasons if it chooses to,
+ * without the seam itself interpreting them (out of scope this phase).
+ * Callers branch on `instanceof HibpLookupError` or `.code === 'HIBP_LOOKUP_FAILED'`.
+ */
+export class HibpLookupError extends Error {
+  readonly code = 'HIBP_LOOKUP_FAILED';
+  constructor(
+    message: string,
+    public readonly reason?: string,
+  ) {
+    super(message);
+  }
+}
