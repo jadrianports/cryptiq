@@ -749,6 +749,10 @@ pub async fn send_framed<S: AsyncWrite + Unpin>(stream: &mut S, data: &[u8]) -> 
 
 pub struct HandshakeResult {
     pub sas_display: String,
+    // Never read after being set — retained alongside `sas_display` for parity/diagnostics.
+    // #[allow] rather than removal: no architectural change intended by this lint cleanup
+    // (2026-07-10 CI clippy gate landing).
+    #[allow(dead_code)]
     pub sas_raw: u32,
     pub transport: snow::TransportState,
     pub peer_static_pk: Vec<u8>,
@@ -1247,6 +1251,7 @@ pub struct PairingSession {
     /// spawned task (`run_confirm_exchange`), which owns the live `TransportState` for that
     /// exchange. The copy stored here is retained for diagnostics/compat; it is NOT used to send
     /// frames at finalize time (the stream is closed by then).
+    #[allow(dead_code)]
     pub transport: Option<snow::TransportState>,
     /// Peer's 32-byte Curve25519 static public key (from get_remote_static).
     /// Stored in CredManager + peers.json on finalize.
@@ -1269,6 +1274,10 @@ pub struct PairingSession {
     /// config_dir for this session (used by pairing_finalize).
     pub config_dir: String,
     /// This device's own deviceId — sent to the peer inside the local CONFIRMED frame.
+    // Never read after being set on this struct (the value is used at send-time before being
+    // stored). #[allow] rather than removal: no architectural change intended by this lint
+    // cleanup (2026-07-10 CI clippy gate landing).
+    #[allow(dead_code)]
     pub local_device_id: String,
     /// This device's own deviceName — sent to the peer inside the local CONFIRMED frame.
     pub local_device_name: String,
@@ -1592,7 +1601,7 @@ pub async fn pairing_initiate(
         let lifecycle = match run_responder_lifecycle(
             &mut stream,
             &*sk_clone,
-            &*secret_clone,
+            &secret_clone,
             &local_device_id_task,
             &local_device_name_task,
             Some(vault_pair_id_task.clone()), // Fix B: responder is the vaultPairId authority
@@ -1779,7 +1788,7 @@ pub async fn pairing_connect(
         let lifecycle = match run_initiator_lifecycle(
             &mut stream,
             &*sk_task,
-            &*secret_task,
+            &secret_task,
             &local_device_id_task,
             &local_device_name_task,
             None, // Fix B: initiator is NOT the authority — it ADOPTS the responder's vaultPairId

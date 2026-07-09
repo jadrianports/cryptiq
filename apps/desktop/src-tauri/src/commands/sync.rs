@@ -552,9 +552,9 @@ fn hex_nibble(b: u8) -> Result<u8, u8> {
 ///   1. Header frame: `send_framed_large(&(chunk_count as u32).to_be_bytes())` — 4 BE bytes.
 ///   2. Then `chunk_count` chunk frames, each `send_framed_large(&enc[..n])` where `enc` is the
 ///      Noise ciphertext of one ≤`VAULT_CHUNK_SIZE` (65519-byte) slice of the plaintext blob.
-/// The receiver reads the header, caps the count at `MAX_VAULT_CHUNKS`, then reads exactly that
-/// many chunk frames, decrypting each through `transport.read_message` and appending the
-/// plaintext. The concatenated plaintext is B's full `VaultDocumentV1`.
+///      The receiver reads the header, caps the count at `MAX_VAULT_CHUNKS`, then reads exactly that
+///      many chunk frames, decrypting each through `transport.read_message` and appending the
+///      plaintext. The concatenated plaintext is B's full `VaultDocumentV1`.
 ///
 /// This replaces the previous single-`read_message` design, which silently failed for vaults
 /// above ~65 KiB because a single Noise message payload cannot exceed `VAULT_CHUNK_SIZE`.
@@ -836,7 +836,7 @@ pub async fn sync_now(
         // Drop the MutexGuard before creating BusyGuardHold (avoid holding the lock for the
         // whole function). BusyGuardHold takes a reference to the SyncBusyGuard managed state.
         drop(busy_guard);
-        BusyGuardHold(&*sync_busy_state)
+        BusyGuardHold(&sync_busy_state)
     };
 
     // ---- Step 1a: Read peers.json, get peer's lastKnownIp/port and keys ----
@@ -904,7 +904,7 @@ pub async fn sync_now(
     // Deref the Zeroizing wrappers to the underlying &[u8; 32] / &[u8].
     let mut transport = tokio::time::timeout(
         SYNC_HANDSHAKE_DEADLINE,
-        run_ik_handshake_initiator(&mut stream, &*own_sk, &peer_pk, &*psk),
+        run_ik_handshake_initiator(&mut stream, &*own_sk, &peer_pk, &psk),
     )
     .await
     .map_err(|_| "sync_now: IK handshake timed out".to_string())?
@@ -1288,7 +1288,7 @@ pub async fn sync_listener_start(
             // IK handshake as RESPONDER: verify connecting device holds the known peer static key.
             let transport_result = tokio::time::timeout(
                 SYNC_HANDSHAKE_DEADLINE,
-                run_ik_handshake_responder(&mut stream, &*own_sk, &*psk, &peer_pk),
+                run_ik_handshake_responder(&mut stream, &*own_sk, &psk, &peer_pk),
             )
             .await;
             let mut transport = match transport_result {

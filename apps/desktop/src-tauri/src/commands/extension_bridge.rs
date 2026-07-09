@@ -238,7 +238,12 @@ impl Default for ExtensionBridgeState {
 /// this is a one-shot decision, not a mutual-confirm exchange). `decision_tx` is consumed by
 /// `bridge_approve`/`bridge_deny` (Plan 04's Tauri commands); `true` = Approve, `false` = Deny.
 pub struct PendingAssociation {
+    // Never read after being set — retained for diagnostics/future use, not dead state (the
+    // decision itself flows solely through `decision_tx`). #[allow] rather than removal: no
+    // architectural change intended by this lint cleanup (2026-07-10 CI clippy gate landing).
+    #[allow(dead_code)]
     pub client_public_key: [u8; 32],
+    #[allow(dead_code)]
     pub label: String,
     pub decision_tx: oneshot::Sender<bool>,
 }
