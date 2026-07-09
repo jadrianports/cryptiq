@@ -161,6 +161,8 @@ pub fn run() {
             // Phase 20 — UX-05 extension-bridge kill-switch start/stop (D-01/D-04)
             commands::extension_bridge::start_extension_bridge_listener,
             commands::extension_bridge::stop_extension_bridge_listener,
+            // Phase 30 — HIBP k-anonymity range lookup shuttle
+            commands::hibp::hibp_range_lookup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");
