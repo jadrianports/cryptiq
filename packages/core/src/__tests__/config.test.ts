@@ -221,3 +221,179 @@ describe('CryptiqConfig extensionBridgeEnabled field (UX-05 / D-04)', () => {
     });
   });
 });
+
+// HIBP-01 / HIBP-06 / D-02 / D-16 regression-lock for the two consent flags (Phase 31-01).
+// UNLIKE listenerEnabled/extensionBridgeEnabled (default true), these flags MUST default to
+// false on absence — a naive `?? true` copy-paste would silently authorize this app's
+// first-ever network egress for every pre-Phase-31 config.json (RESEARCH Pitfall 2). The
+// "both keys absent -> both false" fixture below is the regression lock for that failure mode.
+describe('CryptiqConfig HIBP consent flags (D-02/D-16)', () => {
+  describe('DEFAULT_CONFIG', () => {
+    it('DEFAULT_CONFIG.hibpEntryScanEnabled is false', () => {
+      expect(DEFAULT_CONFIG.hibpEntryScanEnabled).toBe(false);
+    });
+
+    it('DEFAULT_CONFIG.hibpMasterCheckEnabled is false', () => {
+      expect(DEFAULT_CONFIG.hibpMasterCheckEnabled).toBe(false);
+    });
+
+    it('DEFAULT_CONFIG.schemaVersion is still 1 (no schema bump)', () => {
+      expect(DEFAULT_CONFIG.schemaVersion).toBe(1);
+    });
+  });
+
+  describe('parseConfig — both HIBP keys absent defaults to false (the pre-Phase-31 upgrade fixture)', () => {
+    it('parses a config with neither hibpEntryScanEnabled nor hibpMasterCheckEnabled as both false', () => {
+      // Simulates every existing install's config.json prior to Phase 31 — neither key exists.
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({ vaultPath: null, schemaVersion: 1 }, null, 2) + '\n',
+      );
+      const parsed = parseConfig(bytes);
+      expect(parsed.hibpEntryScanEnabled).toBe(false);
+      expect(parsed.hibpMasterCheckEnabled).toBe(false);
+    });
+  });
+
+  describe('parseConfig — hibpEntryScanEnabled explicit values', () => {
+    it('parses hibpEntryScanEnabled: true as true', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, hibpEntryScanEnabled: true },
+          null,
+          2,
+        ) + '\n',
+      );
+      const parsed = parseConfig(bytes);
+      expect(parsed.hibpEntryScanEnabled).toBe(true);
+    });
+
+    it('parses hibpEntryScanEnabled: false as false', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, hibpEntryScanEnabled: false },
+          null,
+          2,
+        ) + '\n',
+      );
+      const parsed = parseConfig(bytes);
+      expect(parsed.hibpEntryScanEnabled).toBe(false);
+    });
+  });
+
+  describe('parseConfig — hibpMasterCheckEnabled explicit values', () => {
+    it('parses hibpMasterCheckEnabled: true as true', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, hibpMasterCheckEnabled: true },
+          null,
+          2,
+        ) + '\n',
+      );
+      const parsed = parseConfig(bytes);
+      expect(parsed.hibpMasterCheckEnabled).toBe(true);
+    });
+
+    it('parses hibpMasterCheckEnabled: false as false', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, hibpMasterCheckEnabled: false },
+          null,
+          2,
+        ) + '\n',
+      );
+      const parsed = parseConfig(bytes);
+      expect(parsed.hibpMasterCheckEnabled).toBe(false);
+    });
+  });
+
+  describe('parseConfig — HIBP flag type validation (fail-closed on non-boolean)', () => {
+    it('throws ConfigCorruptError when hibpEntryScanEnabled is a string', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, hibpEntryScanEnabled: 'yes' },
+          null,
+          2,
+        ) + '\n',
+      );
+      expect(() => parseConfig(bytes)).toThrowError(ConfigCorruptError);
+      expect(() => parseConfig(bytes)).toThrowError(/hibpEntryScanEnabled/);
+    });
+
+    it('throws ConfigCorruptError when hibpEntryScanEnabled is a number', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({ vaultPath: null, schemaVersion: 1, hibpEntryScanEnabled: 1 }, null, 2) +
+          '\n',
+      );
+      expect(() => parseConfig(bytes)).toThrowError(ConfigCorruptError);
+    });
+
+    it('throws ConfigCorruptError when hibpMasterCheckEnabled is a string', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, hibpMasterCheckEnabled: 'no' },
+          null,
+          2,
+        ) + '\n',
+      );
+      expect(() => parseConfig(bytes)).toThrowError(ConfigCorruptError);
+      expect(() => parseConfig(bytes)).toThrowError(/hibpMasterCheckEnabled/);
+    });
+
+    it('throws ConfigCorruptError when hibpMasterCheckEnabled is a number', () => {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(
+          { vaultPath: null, schemaVersion: 1, hibpMasterCheckEnabled: 0 },
+          null,
+          2,
+        ) + '\n',
+      );
+      expect(() => parseConfig(bytes)).toThrowError(ConfigCorruptError);
+    });
+  });
+
+  describe('serializeConfig + parseConfig round-trip', () => {
+    it('round-trips hibpEntryScanEnabled: true — explicit ON persists', () => {
+      const original = {
+        vaultPath: null,
+        schemaVersion: 1 as const,
+        hibpEntryScanEnabled: true,
+      };
+      const result = parseConfig(serializeConfig(original));
+      expect(result.hibpEntryScanEnabled).toBe(true);
+    });
+
+    it('round-trips hibpMasterCheckEnabled: true — explicit ON persists', () => {
+      const original = {
+        vaultPath: null,
+        schemaVersion: 1 as const,
+        hibpMasterCheckEnabled: true,
+      };
+      const result = parseConfig(serializeConfig(original));
+      expect(result.hibpMasterCheckEnabled).toBe(true);
+    });
+
+    it('round-trip preserves hibpEntryScanEnabled and hibpMasterCheckEnabled independently', () => {
+      const original = {
+        vaultPath: null,
+        schemaVersion: 1 as const,
+        hibpEntryScanEnabled: true,
+        hibpMasterCheckEnabled: false,
+      };
+      const result = parseConfig(serializeConfig(original));
+      expect(result.hibpEntryScanEnabled).toBe(true);
+      expect(result.hibpMasterCheckEnabled).toBe(false);
+    });
+
+    it('round-trip does not disturb listenerEnabled/extensionBridgeEnabled defaults', () => {
+      const original = {
+        vaultPath: null,
+        schemaVersion: 1 as const,
+        hibpEntryScanEnabled: true,
+        hibpMasterCheckEnabled: true,
+      };
+      const result = parseConfig(serializeConfig(original));
+      expect(result.listenerEnabled).toBe(true);
+      expect(result.extensionBridgeEnabled).toBe(true);
+    });
+  });
+});
