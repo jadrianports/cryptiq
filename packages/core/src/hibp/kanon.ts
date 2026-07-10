@@ -24,12 +24,24 @@ export function splitPrefixSuffix(hex40: string): { prefix: string; suffix: stri
 /**
  * Returns true if `suffix` (case-insensitive) appears as the `SUFFIX:COUNT`
  * left-hand-side of any line in `responseLines` (D-08 GATE — both sides
- * uppercased before comparison).
+ * uppercased before comparison), AND that line's COUNT parses to a finite
+ * integer strictly greater than 0.
+ *
+ * HIBP's `Add-Padding: true` response injects fabricated `SUFFIX:0` records
+ * that the API docs say must be discarded after receipt (T-30-PAD) — a
+ * count-0 line is never treated as a match. A missing colon, empty, or
+ * non-numeric COUNT parses to `NaN`, which is never `> 0`, so those lines
+ * fail closed automatically without a separate branch.
  */
 export function matchesSuffix(responseLines: string[], suffix: string): boolean {
   const target = suffix.toUpperCase();
   return responseLines.some((line) => {
-    const [lineSuffix] = line.split(':');
-    return lineSuffix?.toUpperCase() === target;
+    const [lineSuffix, countStr] = line.split(':');
+    const suffixMatch = lineSuffix?.toUpperCase() === target;
+    // Parsed count is available here for a future "seen N times" UI, but is
+    // intentionally not surfaced through this boolean contract (see
+    // api_shape_decision in the 260710-n3i plan) — D-04 in index.ts stays untouched.
+    const count = Number.parseInt(countStr ?? '', 10);
+    return suffixMatch && count > 0;
   });
 }

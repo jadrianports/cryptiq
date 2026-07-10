@@ -38,6 +38,26 @@ describe('matchesSuffix (SC-3 GATE)', () => {
     const lines = ['0000000000000000000000000000000000:1', 'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF:2'];
     expect(matchesSuffix(lines, PASSWORD_SUFFIX)).toBe(false);
   });
+
+  it('discards a count-0 HIBP Add-Padding fabricated record (T-30-PAD)', () => {
+    const lines = [`${PASSWORD_SUFFIX}:0`];
+    expect(matchesSuffix(lines, PASSWORD_SUFFIX)).toBe(false);
+  });
+
+  it('still matches the real breached "password" KAT with a genuine positive count', () => {
+    const lines = [`${PASSWORD_SUFFIX}:52372427`];
+    expect(matchesSuffix(lines, PASSWORD_SUFFIX)).toBe(true);
+  });
+
+  it('fails closed when the line has no COUNT field at all (no colon)', () => {
+    const lines = [PASSWORD_SUFFIX];
+    expect(matchesSuffix(lines, PASSWORD_SUFFIX)).toBe(false);
+  });
+
+  it('fails closed when COUNT is non-numeric', () => {
+    const lines = [`${PASSWORD_SUFFIX}:notanumber`];
+    expect(matchesSuffix(lines, PASSWORD_SUFFIX)).toBe(false);
+  });
 });
 
 describe('lookupHibpRange (fail-closed orchestrator, D-04/D-07)', () => {
