@@ -36,6 +36,9 @@
   // Health-audit store: cleared on vault lock to release Entry refs (plaintext) and
   // bound the score-cache memory lifetime to the session (defense-in-depth).
   import { clearHealthAudit } from './lib/state/healthAudit.svelte';
+  // Breach-audit store (Phase 31): cleared on vault lock alongside clearHealthAudit() —
+  // releases Entry refs + the password-derived hash cache (D-08).
+  import { clearBreachAudit } from './lib/state/breachAudit.svelte';
   import { appConfigDir } from '@tauri-apps/api/path';
   import { loadConfig } from './lib/config/config-adapter';
   import { pairingStore } from './lib/sync/PairingStore.svelte';
@@ -231,6 +234,9 @@
       // hold plaintext passwords) and resets the score cache. This bounds the
       // plaintext lifetime to the unlocked session (defense-in-depth, Pitfall 7).
       clearHealthAudit();
+      // Clear the breach-audit store on vault lock: releases Entry refs + the
+      // password-derived hash cache (Pitfall 4/7, D-08).
+      clearBreachAudit();
       // D-03: reset the pairing store on lock — clears peers list so secret-adjacent
       // peer data (device IDs, public keys) does not outlive the unlocked session.
       pairingStore.reset();
