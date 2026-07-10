@@ -54,9 +54,16 @@
 
   let panel: HTMLDivElement | null = null;
 
+  // WR-02: focus a NEUTRAL target by default — never the affirmative (consent-
+  // granting) button. This is the sole disclosure gate authorizing the app's
+  // first-ever network egress; auto-focusing "Enable"/"Check this password"
+  // risks a keyboard double-activation footgun (Enter/Space on the triggering
+  // control immediately followed by a stray keyup on the newly-focused affirm
+  // button) and lets a habitual double-Enter grant consent unread. A deliberate
+  // Tab/click is required to reach the affirmative action.
   $effect(() => {
     tick().then(() => {
-      panel?.querySelector<HTMLButtonElement>('[data-hibp-affirm]')?.focus();
+      panel?.querySelector<HTMLButtonElement>('[data-hibp-cancel]')?.focus();
     });
   });
 
@@ -118,6 +125,7 @@
   <div class="mt-8 flex items-center justify-end gap-3">
     <button
       type="button"
+      data-hibp-cancel
       onclick={onCancel}
       class="rounded-cryptiq px-3 py-2 text-body font-medium text-cryptiq-fg-muted transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg"
     >
