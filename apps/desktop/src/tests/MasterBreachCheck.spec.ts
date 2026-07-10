@@ -162,3 +162,38 @@ test('(d) first use (consent not yet granted) opens the master-check disclosure 
   // The button remains visible for a later retry (not hidden after a decline).
   await expect.element(screen.getByText('Check against breaches', { exact: true })).toBeInTheDocument();
 });
+
+test('(e) editing the new-password field after a check clears the stale result banner (WR-01)', async () => {
+  setMockConfigFlags({ hibpMasterCheckEnabled: true });
+
+  const screen = render(ChangeMasterView);
+  await advanceToStep2(screen);
+
+  const newPwInput = screen.getByLabelText('New master password');
+  await newPwInput.fill(NEW_PASSWORD);
+  await screen.getByText('Check against breaches', { exact: true }).click();
+  await expect.element(screen.getByText('Not found in known breaches.')).toBeInTheDocument();
+
+  // Edit the field after the result rendered — the stale "safe" banner for the
+  // now-different value must disappear, not linger attached to a changed field.
+  await newPwInput.fill(`${NEW_PASSWORD}-edited`);
+  await expect.element(screen.getByText('Not found in known breaches.')).not.toBeInTheDocument();
+});
+
+test('(f) going back to Step 1 and forward again does not show a leftover result banner (WR-01)', async () => {
+  setMockConfigFlags({ hibpMasterCheckEnabled: true });
+
+  const screen = render(ChangeMasterView);
+  await advanceToStep2(screen);
+
+  const newPwInput = screen.getByLabelText('New master password');
+  await newPwInput.fill(NEW_PASSWORD);
+  await screen.getByText('Check against breaches', { exact: true }).click();
+  await expect.element(screen.getByText('Not found in known breaches.')).toBeInTheDocument();
+
+  await screen.getByText('Back', { exact: true }).click();
+  await expect.element(screen.getByText('Enter your current master password to continue.', { exact: false })).toBeInTheDocument();
+
+  await advanceToStep2(screen);
+  await expect.element(screen.getByText('Not found in known breaches.')).not.toBeInTheDocument();
+});

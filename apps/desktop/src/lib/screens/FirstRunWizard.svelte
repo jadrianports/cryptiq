@@ -129,6 +129,15 @@
     }
   }
 
+  // WR-01: clear a stale result banner the moment the checked field is edited —
+  // purely a local state reset, NOT a lookup trigger (does not reintroduce the
+  // banned per-keystroke egress pattern / D-15 / Pitfall 6).
+  function handleMasterPasswordInput(): void {
+    if (breachCheckResult !== 'idle' && breachCheckResult !== 'checking') {
+      breachCheckResult = 'idle';
+    }
+  }
+
   // ── Navigation helpers ───────────────────────────────────────────────────────
   function nextStep(): void {
     if (step === 'explainer') { step = 'warning'; return; }
@@ -307,6 +316,7 @@
           bind:value={masterPassword}
           autocomplete="new-password"
           placeholder="Enter your master password"
+          oninput={handleMasterPasswordInput}
           class="w-full rounded-cryptiq border border-cryptiq-border-strong bg-cryptiq-surface-2 px-3 py-2 font-mono text-body text-cryptiq-fg placeholder:text-cryptiq-fg-subtle focus:border-cryptiq-accent focus:outline-none focus:ring-1 focus:ring-cryptiq-ring"
         />
         <!-- Live strength meter (AUTH-02 weak-warned-not-blocked) -->

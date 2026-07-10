@@ -115,6 +115,15 @@
     }
   }
 
+  // WR-01: clear a stale result banner the moment the checked field is edited —
+  // purely a local state reset, NOT a lookup trigger (does not reintroduce the
+  // banned per-keystroke egress pattern / D-15 / Pitfall 6).
+  function handleNewPasswordInput(): void {
+    if (breachCheckResult !== 'idle' && breachCheckResult !== 'checking') {
+      breachCheckResult = 'idle';
+    }
+  }
+
   // ── Step 1: advance to step 2 ────────────────────────────────────────────────
   // No Argon2id derive here (option a) — shows "Verifying…" briefly for UX
   // responsiveness, then advances. The actual derive happens in Step 2.
@@ -196,6 +205,7 @@
     error = null;
     newPassword = '';
     confirmNewPassword = '';
+    breachCheckResult = 'idle'; // avoid showing a stale result for a cleared field
   }
 </script>
 
@@ -308,6 +318,7 @@
               placeholder="Choose a new master password"
               disabled={submitting}
               onkeydown={handleStep2Keydown}
+              oninput={handleNewPasswordInput}
               class="w-full rounded-cryptiq border border-cryptiq-border-strong bg-cryptiq-surface-2 px-3 py-2 font-mono text-body text-cryptiq-fg placeholder:text-cryptiq-fg-subtle focus:border-cryptiq-accent focus:outline-none focus:ring-1 focus:ring-cryptiq-ring disabled:opacity-60"
             />
             <StrengthMeter password={newPassword} />
