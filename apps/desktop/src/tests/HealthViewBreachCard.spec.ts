@@ -225,3 +225,33 @@ test('(d) breach drill-down expands without crashing; breached "Fix" sets ui.sel
   expect(ui.openGeneratorFor).toBe(breachedEntry.id);
   expect(view.current).toBe('main');
 });
+
+// ---------------------------------------------------------------------------
+// (e) CR-01: a post-sweep addition prevents a false "All clear"
+// ---------------------------------------------------------------------------
+
+test('(e) a breached/unknown entry added AFTER the sweep prevents "All clear" (CR-01)', async () => {
+  setMockConfigFlags({ hibpEntryScanEnabled: true });
+  vi.mocked(hibpInvoke).mockResolvedValue(''); // everything swept so far resolves safe
+
+  await vaultSession.addEntry({ title: 'Site A', password: strongPw(1) });
+
+  const screen = render(HealthView);
+
+  // First sweep settles all-clear.
+  await expect.element(screen.getByText('All clear')).toBeInTheDocument();
+
+  // A new entry is added AFTER the one-time sweep — its password hash was never
+  // queried, so it must surface as 'unknown' via reconcileBreachAudit, NOT be
+  // silently absent, and NOT let "All clear" keep rendering.
+  await vaultSession.addEntry({ title: 'Site B (post-sweep)', password: strongPw(2) });
+
+  await expect.element(screen.getByText('All clear')).not.toBeInTheDocument();
+  await expect
+    .element(screen.getByRole('button', { name: '0 breached · 1 unknown' }))
+    .toBeInTheDocument();
+
+  // No re-arm of the network sweep on the post-sweep mutation — reconcile is
+  // cache-only. Exactly the calls from the initial sweep (1), never more.
+  expect(hibpInvoke).toHaveBeenCalledTimes(1);
+});

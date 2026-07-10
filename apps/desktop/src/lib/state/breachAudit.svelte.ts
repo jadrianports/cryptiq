@@ -300,6 +300,52 @@ export async function ensureBreachAuditFresh(
 }
 
 /**
+ * Synchronously reconcile the breach-sweep result against the CURRENT vault contents,
+ * WITHOUT any network lookup (D-04 — the sweep itself stays session-once; this only
+ * re-buckets entries using the existing hash cache).
+ *
+ * CR-01: an entry created or edited AFTER the one-time sweep is otherwise absent from
+ * every bucket (not even `unknown`), which lets `isAllClear` render a false "All clear".
+ * This re-derives breached/safe/unknown from `_cache` for the CURRENT entry set: a
+ * cache hit routes to breached/safe as before; a cache MISS (new entry, or an edited
+ * entry whose new password hash was never swept) routes to `unknown` — a cache miss is
+ * definitionally "not yet checked", never "safe". No `lookupHibpRange`/`hibpInvoke` call
+ * happens here — call sites MUST NOT re-arm a network sweep on every vault mutation
+ * (that would violate the D-04 session-once egress budget).
+ *
+ * Self-guards: no-op before the first sweep (`!_hasSwept`) and no-op while a sweep is
+ * actively streaming (`_status === 'scanning'`) so this never clobbers in-flight writes
+ * from `_sweep`. Does not touch `_generation` — this performs no async work to cancel.
+ *
+ * @param vault The unlocked vault object (from vaultSession.vault), or null (locked).
+ */
+export function reconcileBreachAudit(vault: { entries: object } | null): void {
+  if (vault === null || !_hasSwept || _status === 'scanning') return;
+
+  const scoreable = _extractScoreable(vault);
+  const groups = _groupByPasswordHash(scoreable);
+
+  const breached: Entry[] = [];
+  const safe: Entry[] = [];
+  const unknown: Entry[] = [];
+
+  for (const [hash, groupEntries] of groups) {
+    if (_cache.has(hash)) {
+      if (_cache.get(hash) === true) {
+        breached.push(...groupEntries);
+      } else {
+        safe.push(...groupEntries);
+      }
+    } else {
+      // Cache miss = not-yet-checked = unknown. NEVER a network lookup here.
+      unknown.push(...groupEntries);
+    }
+  }
+
+  _result = _snapshotResult(breached, safe, unknown);
+}
+
+/**
  * Re-query ONLY the currently-unknown groups (D-11) — never a full re-scan. No-op if
  * there is no result yet or the vault is locked.
  */

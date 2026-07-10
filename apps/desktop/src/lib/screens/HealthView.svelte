@@ -43,7 +43,7 @@
   import { ui } from '../state/ui.svelte';
   import { go } from '../state/view.svelte';
   import { healthAudit, ensureAuditFresh } from '../state/healthAudit.svelte';
-  import { breachAudit, ensureBreachAuditFresh, retryUnknown } from '../state/breachAudit.svelte';
+  import { breachAudit, ensureBreachAuditFresh, retryUnknown, reconcileBreachAudit } from '../state/breachAudit.svelte';
   import { hibpInvoke } from '../adapters/hibpInvoke';
   import { loadConfig } from '../config/config-adapter';
   import { scorePassword } from '../zxcvbnSetup';
@@ -74,6 +74,12 @@
     const vault = vaultSession.vault; // tracked dep
     // void the returned Promise — $effect.pre is synchronous; async work is internal
     void ensureAuditFresh(vault, scoreEntry);
+    // CR-01: re-bucket the breach dimension against the CURRENT vault on every
+    // CRUD mutation, using ONLY the existing hash cache — NO network lookup, NO
+    // re-arming the session-once sweep (D-04). Surfaces entries added/edited
+    // after the one-time sweep as 'unknown' instead of leaving them absent from
+    // every bucket. Self-guards internally on !hasSwept / an in-flight sweep.
+    reconcileBreachAudit(vault);
   });
 
   // ── Drill-down state ─────────────────────────────────────────────────────────

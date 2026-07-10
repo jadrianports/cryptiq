@@ -23,7 +23,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Entry, HibpInvoke } from '@cryptiq/core';
 import { sha1Hex } from '@cryptiq/core';
-import { breachAudit, ensureBreachAuditFresh, retryUnknown, clearBreachAudit } from '../breachAudit.svelte';
+import {
+  breachAudit,
+  ensureBreachAuditFresh,
+  retryUnknown,
+  clearBreachAudit,
+  reconcileBreachAudit,
+} from '../breachAudit.svelte';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -310,5 +316,62 @@ describe('breachAudit — session-scoped breach-sweep store', () => {
     await retryUnknown(makeVault([makeEntry('e1', 'pw-a')]), invokeSpy);
     expect(invokeSpy).not.toHaveBeenCalled();
     expect(breachAudit.result).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. CR-01 reconcileBreachAudit — post-sweep additions surface as 'unknown',
+  //    NEVER a network call, prior cached classifications stay intact.
+  // -------------------------------------------------------------------------
+
+  it('reconcileBreachAudit surfaces a post-sweep new entry as unknown, with NO invoke call', async () => {
+    const invokeSpy = vi.fn(fakeInvokeAllSafe);
+    const swept = [makeEntry('e1', 'pw-a'), makeEntry('e2', 'pw-b')];
+
+    await ensureBreachAuditFresh(makeVault(swept), invokeSpy);
+    expect(breachAudit.result?.safe.map((e) => e.id).sort()).toEqual(['e1', 'e2']);
+    expect(breachAudit.result?.unknown).toHaveLength(0);
+    expect(invokeSpy).toHaveBeenCalledTimes(2);
+
+    vi.clearAllMocks(); // isolate the reconcile call below — must trigger ZERO new calls
+
+    // A new entry added after the sweep, with an uncached password hash.
+    const newEntry = makeEntry('e3', 'pw-never-swept');
+    const vault2 = makeVault([...swept, newEntry]);
+
+    reconcileBreachAudit(vault2);
+
+    // NO network egress from reconcile (D-04) — the cache-miss routes to 'unknown'.
+    expect(invokeSpy).not.toHaveBeenCalled();
+    expect(breachAudit.result?.unknown.map((e) => e.id)).toEqual(['e3']);
+    expect(breachAudit.result?.safe.map((e) => e.id).sort()).toEqual(['e1', 'e2']);
+    expect(breachAudit.result?.breached).toEqual([]);
+    // hasSwept/status are untouched by reconcile — still reflects the original sweep.
+    expect(breachAudit.hasSwept).toBe(true);
+    expect(breachAudit.status).toBe('ready');
+  });
+
+  it('reconcileBreachAudit is a no-op before the first sweep or mid-sweep', async () => {
+    // Before any sweep at all — hasSwept is false.
+    reconcileBreachAudit(makeVault([makeEntry('e1', 'pw-a')]));
+    expect(breachAudit.result).toBeNull();
+
+    // Mid-sweep (status === 'scanning') — must not clobber the streaming result.
+    const box: { resolve: ((v: string) => void) | null } = { resolve: null };
+    const deferredInvoke: HibpInvoke = () =>
+      new Promise((resolve) => {
+        box.resolve = resolve;
+      });
+    const entries = [makeEntry('e1', 'pw-a')];
+    const p = ensureBreachAuditFresh(makeVault(entries), deferredInvoke);
+    expect(box.resolve).not.toBeNull();
+    expect(breachAudit.status).toBe('scanning');
+
+    // Calling reconcile while scanning must not disturb the in-flight sweep's result.
+    reconcileBreachAudit(makeVault(entries));
+    expect(breachAudit.status).toBe('scanning');
+
+    box.resolve?.('');
+    await p;
+    expect(breachAudit.result?.safe).toHaveLength(1);
   });
 });
