@@ -378,7 +378,7 @@
               onclick={() => go('settings')}
               class="self-start text-meta font-medium text-cryptiq-accent"
             >
-              Turn on breach checking &rarr;
+              Turn on breach checking →
             </button>
           {:else if breachCardVariant === 'scanning'}
             <div class="flex items-center justify-between gap-2">
@@ -395,7 +395,7 @@
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                 <path d="M12 8v4m0 4h.01" />
               </svg>
-              <span class="text-meta text-cryptiq-fg-muted">Checking passwords&hellip;</span>
+              <span class="text-meta text-cryptiq-fg-muted">Checking passwords…</span>
             </div>
             <div>
               <p class="text-body font-semibold text-cryptiq-fg">Breached</p>
@@ -429,7 +429,7 @@
                     {breachedCount}
                   </span>
                   {#if unknownCount > 0}
-                    <span class="text-cryptiq-fg-muted" aria-hidden="true">&middot;</span>
+                    <span class="text-cryptiq-fg-muted" aria-hidden="true">·</span>
                     <span class="size-1.5 rounded-full bg-cryptiq-attention" aria-hidden="true"></span>
                     <span class="text-2xl font-bold tabular-nums text-cryptiq-fg">{unknownCount}</span>
                   {/if}
