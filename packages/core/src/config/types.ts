@@ -15,6 +15,20 @@ export interface CryptiqConfig {
    * (existing installs keep working on upgrade). Mirrors listenerEnabled (D-04).
    */
   extensionBridgeEnabled?: boolean;
+  /**
+   * Consent to scan stored entry passwords against the HaveIBeenPwned k-anonymity
+   * range API (HIBP-01 / D-02). Device-local — config.json only, NEVER InnerDoc.settings
+   * (enabling on one device must not start egress on a synced peer). Default: **false**
+   * — unlike listenerEnabled/extensionBridgeEnabled, this authorizes the app's first
+   * network egress and must stay opt-in.
+   */
+  hibpEntryScanEnabled?: boolean;
+  /**
+   * Consent to check the master password against the HaveIBeenPwned k-anonymity range
+   * API at set/change time (HIBP-06 / D-16). Device-local — config.json only, NEVER
+   * InnerDoc.settings. Default: **false** — same opt-in-only rule as hibpEntryScanEnabled.
+   */
+  hibpMasterCheckEnabled?: boolean;
 }
 
 export const DEFAULT_CONFIG: CryptiqConfig = {
@@ -22,4 +36,6 @@ export const DEFAULT_CONFIG: CryptiqConfig = {
   schemaVersion: 1,
   listenerEnabled: true,
   extensionBridgeEnabled: true,
+  hibpEntryScanEnabled: false,
+  hibpMasterCheckEnabled: false,
 };

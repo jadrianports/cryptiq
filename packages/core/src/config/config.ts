@@ -52,11 +52,32 @@ export function parseConfig(bytes: Uint8Array): CryptiqConfig {
     throw new ConfigCorruptError('config.json: extensionBridgeEnabled must be boolean or absent.');
   }
 
+  // hibpEntryScanEnabled: optional boolean, default FALSE (HIBP-01 / D-02 / Phase 31).
+  // Device-local consent to scan stored entry passwords via the HaveIBeenPwned
+  // k-anonymity range API. UNLIKE listenerEnabled/extensionBridgeEnabled, absence MUST
+  // resolve to false — a `?? true` here would silently authorize this app's first-ever
+  // network egress for every pre-Phase-31 install. This is the load-bearing deviation.
+  const hibpEntryScanEnabled = obj.hibpEntryScanEnabled;
+  if (hibpEntryScanEnabled !== undefined && typeof hibpEntryScanEnabled !== 'boolean') {
+    throw new ConfigCorruptError('config.json: hibpEntryScanEnabled must be boolean or absent.');
+  }
+
+  // hibpMasterCheckEnabled: optional boolean, default FALSE (HIBP-06 / D-16 / Phase 31).
+  // Device-local consent to check the master password via the same HIBP range API at
+  // set/change time. Same default-OFF rule as hibpEntryScanEnabled — `?? false`, never
+  // `?? true`.
+  const hibpMasterCheckEnabled = obj.hibpMasterCheckEnabled;
+  if (hibpMasterCheckEnabled !== undefined && typeof hibpMasterCheckEnabled !== 'boolean') {
+    throw new ConfigCorruptError('config.json: hibpMasterCheckEnabled must be boolean or absent.');
+  }
+
   return {
     vaultPath,
     schemaVersion,
     listenerEnabled: (listenerEnabled as boolean | undefined) ?? true,
     extensionBridgeEnabled: (extensionBridgeEnabled as boolean | undefined) ?? true,
+    hibpEntryScanEnabled: (hibpEntryScanEnabled as boolean | undefined) ?? false,
+    hibpMasterCheckEnabled: (hibpMasterCheckEnabled as boolean | undefined) ?? false,
   };
 }
 
