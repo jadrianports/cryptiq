@@ -42,6 +42,7 @@
   import SyncSettingsSection from '../sync/SyncSettingsSection.svelte';
   import ExtensionSettingsSection from '../bridge/ExtensionSettingsSection.svelte';
   import { extensionPeerStore } from '../bridge/ExtensionPeerStore.svelte';
+  import HibpSettingsSection from '../hibp/HibpSettingsSection.svelte';
 
   /**
    * Props contract for Phase 12 (Plan 12-01 Task 3).
@@ -642,6 +643,16 @@
             Website icons will be available once this feature is fully wired in a future update. No network requests are made right now.
           </p>
         {/if}
+      </section>
+
+      <!-- ── Section: Breach Checking (Phase 31 / HIBP-01) ────────────────── -->
+      <section aria-labelledby="breach-checking-heading">
+        <h2 id="breach-checking-heading" class="mb-2 px-1 text-meta font-medium tracking-wide text-cryptiq-fg-subtle uppercase">
+          Breach Checking
+        </h2>
+        <div class="overflow-hidden rounded-cryptiq-lg border border-cryptiq-border bg-cryptiq-surface shadow-cryptiq-panel">
+          <HibpSettingsSection />
+        </div>
       </section>
 
       <!-- ── Section: Audit (AUDIT-04 / Phase 6) ──────────────────────────── -->
