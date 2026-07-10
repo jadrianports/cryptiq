@@ -34,10 +34,14 @@
   Token rules (P4-03): cryptiq-* tokens only; no literal hex/oklch.
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { go, setChangeMasterSuccess } from '../state/view.svelte';
   import { vaultSession } from '../state/vault.svelte';
-  import { WrongPasswordError } from '@cryptiq/core';
+  import { WrongPasswordError, lookupHibpRange } from '@cryptiq/core';
   import StrengthMeter from '../components/StrengthMeter.svelte';
+  import HibpConsentDialog from '../hibp/HibpConsentDialog.svelte';
+  import { loadConfig, saveConfig } from '../config/config-adapter';
+  import { hibpInvoke } from '../adapters/hibpInvoke';
 
   // ── Step state ───────────────────────────────────────────────────────────────
   type Step = 'verify-current' | 'enter-new';
@@ -59,6 +63,57 @@
   const newDiffersFromCurrent = $derived(
     newPassword.length === 0 || newPassword !== currentPassword,
   );
+
+  // ── Master-password breach check (HIBP-06) ───────────────────────────────────
+  // Click-only, advisory, fail-closed to 'unknown' — NEVER wired to newPassword via
+  // an $effect/$derived (D-15/Pitfall 6). Own independent consent flag, separate
+  // from hibpEntryScanEnabled (D-16). Shares the SAME lookupHibpRange seam (D-17).
+  type BreachCheckResult = 'idle' | 'checking' | 'breached' | 'safe' | 'unknown';
+  let masterCheckConsent = $state(false);
+  let breachCheckResult = $state<BreachCheckResult>('idle');
+  let showMasterCheckDialog = $state(false);
+
+  onMount(async () => {
+    const cfg = await loadConfig();
+    masterCheckConsent = cfg.hibpMasterCheckEnabled ?? false;
+  });
+
+  // The ONLY trigger for a lookup — a type="button" onclick. Never fires on keystroke.
+  async function handleBreachCheckClick(): Promise<void> {
+    if (breachCheckResult === 'checking') return;
+    if (!masterCheckConsent) {
+      // First use: gate behind the master-check disclosure (D-16) — do not check yet.
+      showMasterCheckDialog = true;
+      return;
+    }
+    await runBreachCheck();
+  }
+
+  // The ONLY site that ever persists hibpMasterCheckEnabled: true (mirrors
+  // HibpSettingsSection's D-03 pattern) — spread-merges a freshly loaded config.
+  async function handleMasterCheckConfirm(): Promise<void> {
+    const currentConfig = await loadConfig();
+    await saveConfig({ ...currentConfig, hibpMasterCheckEnabled: true });
+    masterCheckConsent = true;
+    showMasterCheckDialog = false;
+    await runBreachCheck();
+  }
+
+  function handleMasterCheckCancel(): void {
+    // Consent stays OFF, nothing persisted; the button remains visible for a later retry.
+    showMasterCheckDialog = false;
+  }
+
+  async function runBreachCheck(): Promise<void> {
+    breachCheckResult = 'checking';
+    try {
+      const breached = await lookupHibpRange(newPassword, hibpInvoke);
+      breachCheckResult = breached ? 'breached' : 'safe';
+    } catch {
+      // ANY failure (HibpLookupError or otherwise) reads as 'unknown' — NEVER 'safe'.
+      breachCheckResult = 'unknown';
+    }
+  }
 
   // ── Step 1: advance to step 2 ────────────────────────────────────────────────
   // No Argon2id derive here (option a) — shows "Verifying…" briefly for UX
@@ -264,6 +319,49 @@
             {/if}
           </div>
 
+          <!-- Master-password breach check (HIBP-06) — sibling row, never inside StrengthMeter -->
+          <div>
+            <button
+              type="button"
+              onclick={() => void handleBreachCheckClick()}
+              disabled={breachCheckResult === 'checking'}
+              class="rounded-cryptiq px-3 py-2 text-meta font-medium text-cryptiq-fg-muted transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {breachCheckResult === 'checking' ? 'Checking…' : 'Check against breaches'}
+            </button>
+
+            {#if breachCheckResult === 'breached'}
+              <div class="mt-2 flex items-start gap-2" role="alert" aria-live="polite">
+                <svg class="mt-0.5 size-4 shrink-0 text-cryptiq-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  <line x1="12" y1="8" x2="12" y2="13" />
+                  <circle cx="12" cy="16.5" r="0.75" fill="currentColor" stroke="none" />
+                </svg>
+                <p class="text-meta text-cryptiq-danger">
+                  This password has appeared in a known data breach. Consider choosing a different one.
+                </p>
+              </div>
+            {:else if breachCheckResult === 'safe'}
+              <div class="mt-2 flex items-center gap-2" role="alert" aria-live="polite">
+                <svg class="size-4 shrink-0 text-cryptiq-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M20 6 9 17l-5-5" />
+                </svg>
+                <p class="text-meta text-cryptiq-fg-muted">Not found in known breaches.</p>
+              </div>
+            {:else if breachCheckResult === 'unknown'}
+              <div class="mt-2 flex items-center gap-2" role="alert" aria-live="polite">
+                <span class="flex size-4 shrink-0 items-center justify-center rounded-full bg-cryptiq-attention text-cryptiq-fg dark:text-cryptiq-bg">
+                  <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.7-2.4 1.5-2.4 3.2" />
+                    <circle cx="12" cy="16.3" r="0.4" fill="currentColor" stroke="none" />
+                  </svg>
+                </span>
+                <p class="text-meta text-cryptiq-fg-muted">Couldn't check right now — try again in a moment.</p>
+              </div>
+            {/if}
+          </div>
+
           <!-- Confirm new password field -->
           <div>
             <label for="confirm-new-pw" class="mb-1 block text-meta font-medium text-cryptiq-fg-muted">
@@ -312,3 +410,11 @@
     {/if}
   </div>
 </div>
+
+{#if showMasterCheckDialog}
+  <HibpConsentDialog
+    kind="master-check"
+    onConfirm={() => void handleMasterCheckConfirm()}
+    onCancel={handleMasterCheckCancel}
+  />
+{/if}
