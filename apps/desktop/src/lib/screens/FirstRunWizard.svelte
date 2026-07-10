@@ -148,12 +148,9 @@
       return;
     }
     if (step === 'recovery-opt-in') {
-      if (withRecoveryKey) {
-        // Recovery key will be shown after vault creation.
-        void handleCreate();
-      } else {
-        void handleCreate();
-      }
+      // handleCreate() itself branches on withRecoveryKey internally (recovery key
+      // is shown after vault creation only when withRecoveryKey is true).
+      void handleCreate();
       return;
     }
     if (step === 'recovery-key') {
