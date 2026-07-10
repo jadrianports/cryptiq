@@ -24,6 +24,7 @@
   import FirstRunStep from '../components/FirstRunStep.svelte';
   import StrengthMeter from '../components/StrengthMeter.svelte';
   import RecoveryKeyCard from '../components/RecoveryKeyCard.svelte';
+  import HibpConsentDialog from '../hibp/HibpConsentDialog.svelte';
   import { vaultSession } from '../state/vault.svelte';
   import { go } from '../state/view.svelte';
   import {
@@ -32,6 +33,8 @@
     ensureVaultDir,
   } from '../config/config-adapter';
   import { TauriVaultStorageAdapter } from '../adapters/TauriVaultStorageAdapter';
+  import { lookupHibpRange } from '@cryptiq/core';
+  import { hibpInvoke } from '../adapters/hibpInvoke';
 
   // ── Step machine ────────────────────────────────────────────────────────────
   // Not-so-clever trick: numeric steps (not string) so progress bar math is trivial.
@@ -64,6 +67,16 @@
   let withRecoveryKey = $state(true);
   let recoveryKey = $state<string | null>(null);
 
+  // ── Master-password breach check (HIBP-06) ───────────────────────────────────
+  // In-memory-only consent (no config.json exists yet — D-13 defers persistence
+  // to the handleCreate saveConfig literal below). Click-only, advisory,
+  // fail-closed to 'unknown' — NEVER wired to masterPassword via an
+  // $effect/$derived (D-15/Pitfall 6). Independent of hibpEntryScanEnabled (D-16).
+  type BreachCheckResult = 'idle' | 'checking' | 'breached' | 'safe' | 'unknown';
+  let masterCheckConsent = $state(false);
+  let breachCheckResult = $state<BreachCheckResult>('idle');
+  let showMasterCheckDialog = $state(false);
+
   // v1 stores the vault at a FIXED app-managed path (UAT T4 decision — fixed location).
   // Resolve it once on mount so the location step + create() use it; no freeform picker.
   onMount(async () => {
@@ -78,6 +91,43 @@
   );
   const passwordStepCanContinue = $derived(passwordsMatch);
   const totalSteps = $derived(withRecoveryKey ? STEPS_WITH_RECOVERY : STEPS_WITHOUT_RECOVERY);
+
+  // ── Master-password breach check handlers (click-only — never $effect/$derived) ──
+  // The ONLY trigger for a lookup — a type="button" onclick. Never fires on keystroke.
+  async function handleBreachCheckClick(): Promise<void> {
+    if (breachCheckResult === 'checking') return;
+    if (!masterCheckConsent) {
+      // First use: gate behind the master-check disclosure (D-16) — do not check yet.
+      showMasterCheckDialog = true;
+      return;
+    }
+    await runBreachCheck();
+  }
+
+  // In-memory consent capture only — there is no config.json yet at this point in
+  // the wizard, so persistence is deferred to handleCreate's single saveConfig
+  // literal (D-13). Do NOT saveConfig here.
+  async function handleMasterCheckConfirm(): Promise<void> {
+    masterCheckConsent = true;
+    showMasterCheckDialog = false;
+    await runBreachCheck();
+  }
+
+  function handleMasterCheckCancel(): void {
+    // Consent stays OFF, nothing captured; the button remains visible for a later retry.
+    showMasterCheckDialog = false;
+  }
+
+  async function runBreachCheck(): Promise<void> {
+    breachCheckResult = 'checking';
+    try {
+      const breached = await lookupHibpRange(masterPassword, hibpInvoke);
+      breachCheckResult = breached ? 'breached' : 'safe';
+    } catch {
+      // ANY failure (HibpLookupError or otherwise) reads as 'unknown' — NEVER 'safe'.
+      breachCheckResult = 'unknown';
+    }
+  }
 
   // ── Navigation helpers ───────────────────────────────────────────────────────
   function nextStep(): void {
@@ -134,7 +184,9 @@
       passwordBytes.fill(0);
 
       // Persist the chosen vault path to config so subsequent launches go straight to unlock.
-      await saveConfig({ vaultPath, schemaVersion: 1 });
+      // D-13: the in-memory masterCheckConsent captured above widens this SAME literal —
+      // never a second saveConfig call, never a loadConfig-spread (no prior config exists yet).
+      await saveConfig({ vaultPath, schemaVersion: 1, hibpMasterCheckEnabled: masterCheckConsent });
 
       if (withRecoveryKey && result.recoveryKey !== undefined) {
         recoveryKey = result.recoveryKey;
@@ -261,6 +313,51 @@
         <StrengthMeter password={masterPassword} />
       </div>
 
+      <!-- Master-password breach check (HIBP-06) — sibling row, never inside StrengthMeter.
+           Visually subordinate to the wizard's one dominant danger moment (the earlier
+           "no password reset" step) — a plain secondary button, no tone="danger" panel. -->
+      <div>
+        <button
+          type="button"
+          onclick={() => void handleBreachCheckClick()}
+          disabled={breachCheckResult === 'checking'}
+          class="rounded-cryptiq px-3 py-2 text-meta font-medium text-cryptiq-fg-muted transition-colors hover:bg-cryptiq-hover hover:text-cryptiq-fg disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {breachCheckResult === 'checking' ? 'Checking…' : 'Check against breaches'}
+        </button>
+
+        {#if breachCheckResult === 'breached'}
+          <div class="mt-2 flex items-start gap-2" role="alert" aria-live="polite">
+            <svg class="mt-0.5 size-4 shrink-0 text-cryptiq-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <line x1="12" y1="8" x2="12" y2="13" />
+              <circle cx="12" cy="16.5" r="0.75" fill="currentColor" stroke="none" />
+            </svg>
+            <p class="text-meta text-cryptiq-danger">
+              This password has appeared in a known data breach. Consider choosing a different one.
+            </p>
+          </div>
+        {:else if breachCheckResult === 'safe'}
+          <div class="mt-2 flex items-center gap-2" role="alert" aria-live="polite">
+            <svg class="size-4 shrink-0 text-cryptiq-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+            <p class="text-meta text-cryptiq-fg-muted">Not found in known breaches.</p>
+          </div>
+        {:else if breachCheckResult === 'unknown'}
+          <div class="mt-2 flex items-center gap-2" role="alert" aria-live="polite">
+            <span class="flex size-4 shrink-0 items-center justify-center rounded-full bg-cryptiq-attention text-cryptiq-fg dark:text-cryptiq-bg">
+              <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.7-2.4 1.5-2.4 3.2" />
+                <circle cx="12" cy="16.3" r="0.4" fill="currentColor" stroke="none" />
+              </svg>
+            </span>
+            <p class="text-meta text-cryptiq-fg-muted">Couldn't check right now — try again in a moment.</p>
+          </div>
+        {/if}
+      </div>
+
       <!-- Confirm field -->
       <div>
         <label for="confirm-pw" class="mb-1 block text-meta font-medium text-cryptiq-fg-muted">
@@ -365,4 +462,12 @@
       <p class="text-body text-cryptiq-fg-muted">Creating your vault…</p>
     </div>
   </div>
+{/if}
+
+{#if showMasterCheckDialog}
+  <HibpConsentDialog
+    kind="master-check"
+    onConfirm={() => void handleMasterCheckConfirm()}
+    onCancel={handleMasterCheckCancel}
+  />
 {/if}
