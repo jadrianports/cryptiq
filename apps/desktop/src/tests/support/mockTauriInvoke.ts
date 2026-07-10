@@ -8,12 +8,13 @@
 //   vault_lock_*                           — advisory lock lifecycle (vault.svelte.ts)
 //   plugin:fs|exists                       — file/dir presence check
 //   plugin:fs|read_file                    — file read (config-adapter + TauriVaultStorageAdapter)
-//   plugin:fs|write_file                   — file write (config-adapter — no-op)
+//   plugin:fs|write_file                   — file write (config-adapter — captured, see below)
 //   plugin:fs|mkdir                        — dir creation (config-adapter — no-op)
 //   plugin:fs|stat                         — file stat (no-op → throws VaultNotFoundError path)
 //   plugin:dialog|save                     — vault-path picker (FirstRunWizard — no-op)
 //   plugin:clipboard-manager|write_text    — per-field copy (copyField.ts — no-op)
 //   plugin:opener|open_url                 — URL launch (openUrl.ts — no-op)
+//   hibp_range_lookup                      — HIBP k-anonymity range lookup (Phase 31)
 //
 // Any unrecognized command rejects with a clear error message so component tests
 // fail loudly if an unexpected invoke is triggered.
@@ -21,9 +22,18 @@
 // CONFIGURABLE STATE — controlled by test helpers exported below:
 //   setMockVaultPath(path | null)    controls what loadConfig() returns
 //   setMockVaultBytes(bytes | null)  raw vault bytes for TauriVaultStorageAdapter.load()
+//   setMockConfigFlags(flags)        seeds hibpEntryScanEnabled/hibpMasterCheckEnabled on
+//                                    the config.json a spec's loadConfig() will read back
+//   setMockHibpResponse(mode, pw?)   controls hibp_range_lookup's response (match/no-match/fail)
+//   getLastSavedConfig()             the last CryptiqConfig object written via saveConfig()
 //   resetMockState()                 restore defaults between tests
+//
+// NOTE (Phase 31, Plan 31-02): this file is the Wave-1 shared owner of the three HIBP
+// test-infra additions below (hibp_range_lookup mock, config consent-flag seeding,
+// saveConfig write-capture). Downstream Plans 03/04/05 CONSUME these helpers and must
+// NOT edit this file themselves — keeps same-wave plans conflict-free.
 
-type InvokeArgs = Record<string, unknown>;
+import { sha1Hex } from '@cryptiq/core';
 
 // ---------------------------------------------------------------------------
 // Configurable mock state
@@ -63,6 +73,59 @@ export function setMockExtensionAssociations(associations: MockExtensionAssociat
 }
 
 /**
+ * Consent-flag overlay merged into the config.json a spec's loadConfig() will read
+ * back via plugin:fs|read_file (Phase 31). Absent (both undefined, the default) means
+ * a spec exercises the real parseConfig() `?? false` default-OFF path — mirrors a
+ * pre-Phase-31 config.json missing both fields.
+ */
+let _mockConfigFlags: { hibpEntryScanEnabled?: boolean; hibpMasterCheckEnabled?: boolean } = {};
+
+/** Seed hibpEntryScanEnabled/hibpMasterCheckEnabled on the mocked config.json. */
+export function setMockConfigFlags(flags: {
+  hibpEntryScanEnabled?: boolean;
+  hibpMasterCheckEnabled?: boolean;
+}): void {
+  _mockConfigFlags = { ...flags };
+}
+
+/**
+ * The last CryptiqConfig object written via saveConfig() (plugin:fs|write_file to the
+ * config path), captured so specs can assert a persisted flag (e.g.
+ * `hibpEntryScanEnabled: true`) occurred only after a confirm — never on toggle alone.
+ */
+let _lastSavedConfig: unknown = null;
+
+/** Read the last config object persisted via saveConfig(), or null if none yet. */
+export function getLastSavedConfig(): unknown {
+  return _lastSavedConfig;
+}
+
+/**
+ * hibp_range_lookup response mode (Phase 31):
+ *   'no-match' (default) — empty range body, lookupHibpRange resolves false.
+ *   'match'              — body includes the TRUE SHA-1 suffix of `_mockHibpMatchPassword`
+ *                           (only for the matching prefix), so the real matchesSuffix logic
+ *                           genuinely matches — lookupHibpRange resolves true.
+ *   'fail'                — invoke rejects, lookupHibpRange throws HibpLookupError.
+ */
+type MockHibpResponseMode = 'no-match' | 'match' | 'fail';
+
+let _mockHibpMode: MockHibpResponseMode = 'no-match';
+let _mockHibpMatchPassword: string | null = null;
+
+/**
+ * Configure hibp_range_lookup's mocked response.
+ * @param mode     'no-match' (default), 'match', or 'fail'.
+ * @param password Required when mode === 'match' — the password whose TRUE SHA-1 suffix
+ *                 the mock will return a match for (via the real sha1Hex/matchesSuffix
+ *                 logic, never a fabricated suffix).
+ */
+export function setMockHibpResponse(mode: MockHibpResponseMode, password?: string): void {
+  _mockHibpMode = mode;
+  _mockHibpMatchPassword = password ?? null;
+}
+
+/**
  * Set the vault path the mocked config layer will return.
  * Pass null to simulate "no vault configured" (first-run scenario).
  */
@@ -89,6 +152,10 @@ export function resetMockState(): void {
   _mockVaultPath = '/fake/vault.cryptiq';
   _mockVaultBytes = null;
   _mockExtensionAssociations = [];
+  _mockConfigFlags = {};
+  _lastSavedConfig = null;
+  _mockHibpMode = 'no-match';
+  _mockHibpMatchPassword = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +163,7 @@ export function resetMockState(): void {
 // ---------------------------------------------------------------------------
 
 function configBytes(vaultPath: string): number[] {
-  const json = JSON.stringify({ schemaVersion: 1, vaultPath });
+  const json = JSON.stringify({ schemaVersion: 1, vaultPath, ..._mockConfigFlags });
   return Array.from(new TextEncoder().encode(json));
 }
 
@@ -104,7 +171,11 @@ function configBytes(vaultPath: string): number[] {
 // The mock invoke — aliased over @tauri-apps/api/core
 // ---------------------------------------------------------------------------
 
-export async function invoke(command: string, args?: InvokeArgs): Promise<unknown> {
+export async function invoke(
+  command: string,
+  args?: unknown,
+  _options?: { headers?: Record<string, string> },
+): Promise<unknown> {
   // ── Advisory lock lifecycle ────────────────────────────────────────────────
   if (
     command === 'vault_lock_acquire' ||
@@ -151,8 +222,21 @@ export async function invoke(command: string, args?: InvokeArgs): Promise<unknow
   }
 
   // ── plugin:fs|write_file ──────────────────────────────────────────────────
-  // config-adapter's saveConfig() — no-op in tests
+  // config-adapter's saveConfig() is the only writeFile() caller in this codebase
+  // (vault writes go through custom Rust commands, not plugin:fs). Unlike every
+  // other command, @tauri-apps/plugin-fs's writeFile() sends the path via the raw
+  // invoke() `options.headers.path` (URI-encoded), NOT the `args` object — `args`
+  // here IS the raw byte payload. Captured into _lastSavedConfig (Phase 31) so
+  // specs can assert a persisted consent flag occurred only after an explicit
+  // confirm, never on toggle alone.
   if (command === 'plugin:fs|write_file') {
+    try {
+      const bytes = args instanceof Uint8Array ? args : Uint8Array.from(args as number[]);
+      const text = new TextDecoder('utf-8').decode(bytes);
+      _lastSavedConfig = JSON.parse(text);
+    } catch {
+      // Non-config binary write (none exist today) or malformed payload — ignore.
+    }
     return undefined;
   }
 
@@ -185,6 +269,29 @@ export async function invoke(command: string, args?: InvokeArgs): Promise<unknow
   // openUrl.ts — no-op (tests don't test external URL launching)
   if (command === 'plugin:opener|open_url') {
     return undefined;
+  }
+
+  // ── hibp_range_lookup ─────────────────────────────────────────────────────
+  // The ONLY egress path lookupHibpRange() calls (Phase 31). The real
+  // sha1Hex/matchesSuffix k-anonymity logic in @cryptiq/core is NEVER mocked —
+  // this handler returns a raw range-response body (or throws), exactly like the
+  // real Rust hibp_range_lookup command would, and lets the real core logic parse it.
+  if (command === 'hibp_range_lookup') {
+    if (_mockHibpMode === 'fail') {
+      throw new Error('[test] mock hibp_range_lookup failure (setMockHibpResponse fail mode)');
+    }
+    if (_mockHibpMode === 'match' && _mockHibpMatchPassword !== null) {
+      const hex = sha1Hex(_mockHibpMatchPassword);
+      const truePrefix = hex.slice(0, 5);
+      const trueSuffix = hex.slice(5);
+      const requestedPrefix = (args as Record<string, string> | undefined)?.prefix ?? '';
+      if (requestedPrefix === truePrefix) {
+        return `${trueSuffix}:1\r\n`;
+      }
+    }
+    // 'no-match' (default) — empty range body, or a 'match' request for a
+    // different prefix than the configured password's — never matches.
+    return '';
   }
 
   // ── extension_peers_list ──────────────────────────────────────────────────
