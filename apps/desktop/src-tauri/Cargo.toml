@@ -76,7 +76,7 @@ base64 = "=0.22.1"
 # `tauri.mcp-bridge.conf.json` (applied via `tauri dev --config` / `pnpm dev:bridge`) — NOT in
 # capabilities/default.json or bootstrap.json, so it cannot reach a production build.
 # Kept permanently (no more remove/re-add churn). API: Builder::new().bind_address(&str).build().
-tauri-plugin-mcp-bridge = "0.11"
+tauri-plugin-mcp-bridge = "0.12"
 
 # Desktop-only plugins per D-15 (Linux dropped; macOS + Windows only).
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
