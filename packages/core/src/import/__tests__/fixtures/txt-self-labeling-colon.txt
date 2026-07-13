@@ -1,0 +1,3 @@
+site: Gmail, user: john, pass: hunter2dummy
+site: Facebook, user: jane, pass: dummypass123
+site: Notes App, user: bob, pass: dummytwitpass, notes: this is a longer note

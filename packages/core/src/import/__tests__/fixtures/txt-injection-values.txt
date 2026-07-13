@@ -1,0 +1,4 @@
+Gmail,john,=cmd|' /c calc'!A0
+Facebook,jane,+1234567890
+Twitter,bob,-1+2+3
+Reddit,alice,@SUM(1+2)

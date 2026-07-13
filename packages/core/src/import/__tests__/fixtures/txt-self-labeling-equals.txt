@@ -1,0 +1,3 @@
+url=gmail.com user=john pass=hunter2dummy
+url=facebook.com user=jane pass=dummypass123
+user=bob pass=dummytwitpass url=twitter.com

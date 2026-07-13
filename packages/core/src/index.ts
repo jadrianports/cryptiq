@@ -45,6 +45,7 @@ export * from './import/detect';
 export * from './import/map';
 export * from './import/dedup';
 export * from './import/normalize';
+export * from './import/sniff';
 // Audit — types and orchestration verb
 export * from './audit/types';
 export * from './audit/audit';

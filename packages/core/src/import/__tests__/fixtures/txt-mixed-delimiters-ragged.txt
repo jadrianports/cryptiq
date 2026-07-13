@@ -1,0 +1,5 @@
+Gmail,john,hunter2dummy
+Facebook,jane,dummypass123
+Twitter,bob
+Reddit,alice,dummyredditpw,extra
+LinkedIn,carol,dummylinkedinpw
