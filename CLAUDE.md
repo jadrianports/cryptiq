@@ -59,7 +59,7 @@ for new code · `Math.random()` near secrets · `nodeLinker: hoisted` · global 
 - No `console.*` in `packages/core` (tests exempt). No `Math.random` anywhere — use `sodium.randombytes_buf`.
 - `_`-prefixed names = intentionally unused (honored by tsconfig + ESLint).
 - Lockfiles committed: `pnpm-lock.yaml` + `Cargo.lock`. `package-lock.json`/`yarn.lock` gitignored.
-- **Git (user-delegated 2026-07-03):** the agent commits its own work per-plan on `main` without waiting. NEVER `git push` (local-only repo) and NEVER destructive git (`reset --hard`, force-push, `branch -D`, `clean -f`).
+- **Git (user-delegated 2026-07-03; push authorized 2026-07-14):** the agent commits its own work per-plan on `main` without waiting, and may `git push origin main` (repo is public: `github.com/jadrianports/cryptiq`). **Tags are pushed ONLY on explicit user instruction** — a `v*` tag fires the release pipeline, which is the update channel (RCE-by-design). NEVER destructive git (`reset --hard`, force-push, `branch -D`, `clean -f`).
 
 **Crypto / vault (Phase 2 — LOCKED, do not modify the wire format or params)**
 - Single libsodium entry: every crypto module gets the handle via `crypto/sodium.ts` `getSodium()`. Raw `libsodium-wrappers-sumo` imports banned outside `sodium.ts`.
