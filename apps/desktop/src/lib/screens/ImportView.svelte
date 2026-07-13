@@ -115,8 +115,11 @@
   // detectFormat() never sniffed anything).
   let sourceIsTxt = $state(false);
   // Stashed split lines from the selected .txt file, so a pill click can
-  // re-tokenize without re-reading the file.
-  let txtLines = $state<string[]>([]);
+  // re-tokenize without re-reading the file. These raw lines are the plaintext
+  // password rows before tokenization, so they use $state.raw (never a deep
+  // reactive proxy that could expose secrets via DevTools) with full-array
+  // reassignment only — matching the previewRows/malformedRows secret-state rule.
+  let txtLines = $state.raw<string[]>([]);
   // All 5 scored candidates from sniffFormat() (D-03 — always show every
   // candidate, not just the winner).
   let txtCandidates = $state<SniffCandidate[]>([]);
