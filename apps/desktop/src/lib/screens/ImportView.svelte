@@ -34,9 +34,12 @@
     mapRow,
     deduplicateRows,
     normalizeRow,
+    tokenize,
     type ImportMapper,
     type MappedRow,
     type DedupResult,
+    type SniffCandidate,
+    type SniffFormat,
   } from '@cryptiq/core';
   import FirstRunStep from '../components/FirstRunStep.svelte';
   import { vaultSession } from '../state/vault.svelte';
@@ -46,6 +49,9 @@
   // open/close so App.svelte blur-lock and idle-lock don't fire spuriously.
   import { setNativeDialogOpen, clearNativeDialogOpen } from '../state/dialogGuard.svelte';
   import { detectBom } from '../import/detectEncoding';
+  // .txt front door (IMPORT-09/10/11, Phase 32): Svelte-free BOM-gate/sniff/tokenize
+  // orchestration. See the `.txt` branch of handleFileSelect below.
+  import { readTxtFile } from '../import/txtImport';
   // Vite Web Worker import — Vite compiles csvWorker.ts as a separate bundle.
   // The ?worker suffix is the Vite convention for manual Web Worker creation.
   import CsvWorker from '../import/csvWorker?worker';
@@ -102,6 +108,24 @@
   let colPassword = $state(-1);
   let colNotes    = $state(-1);
 
+  // ── .txt source state (IMPORT-09/10/11, D-03/D-04) ────────────────────────
+  // Set true only by the .txt branch of handleFileSelect; reset false on the
+  // CSV branch. Gates the detected-format pill row (only meaningful for a
+  // sniffed .txt source — CSV imports that land on column-map via a null
+  // detectFormat() never sniffed anything).
+  let sourceIsTxt = $state(false);
+  // Stashed split lines from the selected .txt file, so a pill click can
+  // re-tokenize without re-reading the file.
+  let txtLines = $state<string[]>([]);
+  // All 5 scored candidates from sniffFormat() (D-03 — always show every
+  // candidate, not just the winner).
+  let txtCandidates = $state<SniffCandidate[]>([]);
+  // The currently-selected candidate format (pill highlight + label).
+  let txtSelectedFormat = $state<SniffFormat | null>(null);
+  // Ragged rows from the current tokenize() call, merged into malformedRows
+  // AFTER buildPreviewFromMapper() runs (D-04) — see applyGenericMappingWithRagged.
+  let pendingRaggedRows = $state<Array<{ rowIndex: number; reason: string }>>([]);
+
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   /**
@@ -141,6 +165,44 @@
 
     error = null;
     parsingProgress = true;
+
+    // ── .txt branch (IMPORT-09/10/11) ────────────────────────────────────────
+    // Always lands on column-map, NEVER the CSV path's header-based auto-detect
+    // helper — this IS the mechanism that satisfies IMPORT-11's "no fast path"
+    // requirement (32-RESEARCH.md Assumption A4). Reuses buildPreviewFromMapper /
+    // applyGenericMapping completely unchanged (IMPORT-10) via the SAME
+    // csvHeaders/rawDataRows state the CSV branch below already populates.
+    if (file.name.toLowerCase().endsWith('.txt')) {
+      try {
+        const result = await readTxtFile(file);
+        csvHeaders = result.headers;
+        rawDataRows = result.dataRows;
+        // Pitfall 5: reset stale column-map selections on every new .txt file.
+        colTitle = colUrl = colUsername = colPassword = colNotes = -1;
+        txtLines = result.lines;
+        txtCandidates = result.candidates;
+        txtSelectedFormat = result.bestFormat;
+        pendingRaggedRows = result.raggedRows;
+        sourceIsTxt = true;
+        step = 'column-map';
+      } catch (e) {
+        if (e instanceof Error && e.message === 'utf16-rejected') {
+          error =
+            'This file looks like UTF-16. Please re-export it as UTF-8 from your browser or password manager and try again.';
+        } else if (e instanceof Error && e.message === 'empty-file') {
+          error = 'The file appears to be empty.';
+        } else {
+          error = 'Failed to read the file.';
+        }
+      } finally {
+        parsingProgress = false;
+      }
+      return;
+    }
+
+    // CSV branch (unchanged) — reset the .txt-source flag so a previous .txt
+    // import's pill row / ragged-merge wiring doesn't leak into this import.
+    sourceIsTxt = false;
 
     try {
       // Step 1: BOM check — read first 3 bytes only (IMPORT-04 / T-06-06).
@@ -303,6 +365,59 @@
     buildPreviewFromMapper(genericMapper, csvHeaders, rawDataRows);
   }
 
+  // ── .txt detected-format pill row (D-03/D-04) ─────────────────────────────
+
+  /**
+   * Re-tokenize the stashed .txt lines under a newly-selected candidate format
+   * and reassign csvHeaders/rawDataRows/pendingRaggedRows. Stays on column-map —
+   * never re-invokes readTxtFile (no re-read of the file needed).
+   */
+  function selectTxtFormat(format: SniffFormat): void {
+    const result = tokenize(txtLines, format);
+    csvHeaders = result.headers;
+    rawDataRows = result.dataRows;
+    pendingRaggedRows = result.raggedRows;
+    txtSelectedFormat = format;
+    // Pitfall 5: reset stale column-map selections — the new header set may
+    // have a different column count/order than the previous one.
+    colTitle = colUrl = colUsername = colPassword = colNotes = -1;
+  }
+
+  /** UI-SPEC Copywriting Contract: "Detected: {delimiter description}, {N} columns/fields". */
+  function txtFormatDescription(format: SniffFormat): string {
+    switch (format) {
+      case 'comma':
+        return 'comma-separated';
+      case 'tab':
+        return 'tab-separated';
+      case 'whitespace':
+        return 'whitespace-separated';
+      case 'kv-colon':
+        return 'key: value pairs';
+      case 'kv-equals':
+        return 'key=value pairs';
+    }
+  }
+
+  /** Positional candidates count "columns"; kv candidates count "fields" (UI-SPEC example). */
+  function txtFieldUnit(format: SniffFormat): string {
+    return format === 'kv-colon' || format === 'kv-equals' ? 'fields' : 'columns';
+  }
+
+  /**
+   * Merge any pending ragged rows into malformedRows AFTER buildPreviewFromMapper()
+   * runs (D-04) — that function does a full $state.raw reassignment of malformedRows,
+   * which would otherwise wipe any pre-merged ragged entries.
+   */
+  function applyGenericMappingWithRagged(): void {
+    applyGenericMapping(); // UNCHANGED — sets previewRows/malformedRows/step
+    if (pendingRaggedRows.length > 0) {
+      // Full-array reassignment (Pitfall 7 / $state.raw invariant) — never .push.
+      malformedRows = [...malformedRows, ...pendingRaggedRows];
+      pendingRaggedRows = [];
+    }
+  }
+
   // ── preview step ───────────────────────────────────────────────────────────
 
   /** Toggle a row's action between 'skip' and 'import'. */
@@ -376,12 +491,12 @@
     showContinue={false}
   >
     <p>
-      Export your passwords as a CSV from Chrome, Firefox, Bitwarden, or another password
-      manager. Cryptiq auto-detects the format and lets you review before committing.
+      Export your passwords as a CSV, or point Cryptiq at a plain-text <code>passwords.txt</code>
+      file — either way, Cryptiq auto-detects the format and lets you review before committing.
     </p>
     <p class="mt-3 text-meta text-cryptiq-fg-subtle">
-      Supported formats: Chrome / Edge, Firefox, Bitwarden. Other formats will show a
-      manual column-mapping screen.
+      Supported: Chrome / Edge, Firefox, Bitwarden CSV exports, and plaintext <code>.txt</code>
+      (<code>key: value</code>, <code>key=value</code>, comma-, tab-, or whitespace-separated).
     </p>
 
     {#if error}
@@ -405,11 +520,11 @@
       {:else}
         <label class="block">
           <span class="mb-1.5 block text-meta font-medium text-cryptiq-fg-muted">
-            Choose a CSV file
+            Choose a file to import
           </span>
           <input
             type="file"
-            accept=".csv,text/csv"
+            accept=".csv,text/csv,.txt,text/plain"
             onclick={setNativeDialogOpen}
             onchange={handleFileSelect}
             class="block w-full cursor-pointer rounded-cryptiq border border-cryptiq-border bg-cryptiq-surface-2 px-3 py-2 text-body text-cryptiq-fg
@@ -442,12 +557,34 @@
     continueLabel="Preview import"
     canContinue={colPassword >= 0 && colTitle >= 0}
     onBack={() => { step = 'pick-file'; }}
-    onContinue={applyGenericMapping}
+    onContinue={sourceIsTxt ? applyGenericMappingWithRagged : applyGenericMapping}
   >
     <p>
       Cryptiq couldn't auto-detect this CSV format. Select which column maps to each field.
       <strong>Title</strong> and <strong>Password</strong> are required; other fields are optional.
     </p>
+
+    {#if sourceIsTxt && txtSelectedFormat}
+      {@const selectedCandidate = txtCandidates.find((c) => c.format === txtSelectedFormat)}
+      <div class="mt-4 flex flex-wrap items-center gap-1.5">
+        <span class="text-meta font-medium text-cryptiq-fg-muted">
+          Detected: {txtFormatDescription(txtSelectedFormat)}, {selectedCandidate?.fieldCount ?? 0} {txtFieldUnit(txtSelectedFormat)}
+        </span>
+        {#each txtCandidates as candidate (candidate.format)}
+          <button
+            type="button"
+            disabled={!candidate.eligible}
+            onclick={() => selectTxtFormat(candidate.format)}
+            class="rounded px-2 py-0.5 text-meta font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40
+                   {candidate.format === txtSelectedFormat
+                     ? 'bg-cryptiq-accent text-cryptiq-accent-fg'
+                     : 'bg-cryptiq-surface-2 text-cryptiq-fg-muted hover:bg-cryptiq-hover'}"
+          >
+            {candidate.label}
+          </button>
+        {/each}
+      </div>
+    {/if}
 
     <div class="mt-4 space-y-3">
       {#each [
@@ -655,11 +792,12 @@
     showContinue={true}
   >
     <p class="font-semibold text-cryptiq-fg">
-      Now securely delete your CSV file — Cryptiq can't do this for you.
+      Now securely delete your {sourceIsTxt ? 'import' : 'CSV'} file — Cryptiq can't do this for you.
     </p>
     <p class="mt-3 text-cryptiq-fg-muted">
-      Your CSV file contains your passwords in plain text. Use your operating system's
-      secure-delete feature or empty the Recycle Bin after deleting to prevent recovery.
+      Your {sourceIsTxt ? 'import' : 'CSV'} file contains your passwords in plain text. Use your
+      operating system's secure-delete feature or empty the Recycle Bin after deleting to prevent
+      recovery.
     </p>
     <p class="mt-3 text-cryptiq-fg-muted">
       Your imported entries are now in your vault. Check the <strong>Health</strong> view
