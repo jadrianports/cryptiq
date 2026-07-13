@@ -136,6 +136,27 @@ describe('tokenize (IMPORT-09/10)', () => {
     expect(result.raggedRows).toHaveLength(0);
   });
 
+  it('kv-equals: a multi-word value routes the row to raggedRows, never a silently truncated password (SC-4/D-04)', () => {
+    // Whitespace outer-splitting means a spaced value (e.g. a diceware
+    // passphrase) leaves bare trailing tokens that can't parse as key=value.
+    // The row MUST be surfaced for review, not committed with the password
+    // truncated to its first word.
+    const lines = [
+      'url=gmail.com user=john pass=singleword',
+      'url=proton.me user=jane pass=correct horse battery staple',
+    ];
+    const result = tokenize(lines, 'kv-equals');
+    expect(result.headers).toEqual(['url', 'user', 'pass']);
+    // Only the clean row is committed; the multi-word-value row is ragged.
+    expect(result.dataRows).toEqual([['gmail.com', 'john', 'singleword']]);
+    expect(result.raggedRows).toHaveLength(1);
+    expect(result.raggedRows[0]?.rowIndex).toBe(2);
+    // The truncated password must NOT appear in any committed row.
+    for (const row of result.dataRows) {
+      expect(row).not.toContain('correct');
+    }
+  });
+
   it('kv-colon: multi-word colon value preserved whole; missing key on other rows -> ""', () => {
     const lines = linesOf(readFixture('txt-self-labeling-colon.txt'));
     const result = tokenize(lines, 'kv-colon');

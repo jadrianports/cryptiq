@@ -237,6 +237,15 @@ const RAGGED_FIELD_COUNT_REASON = "field count didn't match the detected column 
 /** Reason string for a kv row with zero matching key<delim>value tokens. */
 const RAGGED_NO_KV_MATCH_REASON = 'no key/value pairs matched the detected format';
 
+/**
+ * Reason string for a kv row that matched SOME key<delim>value tokens but also
+ * carried bare, non-matching outer tokens (e.g. a multi-word `kv-equals` value
+ * whose trailing words split off under whitespace outer-splitting). Surfacing
+ * the whole row for review is the SC-4/D-04 alternative to silently dropping
+ * those tokens and committing a truncated value.
+ */
+const RAGGED_KV_PARTIAL_REASON = 'part of this line did not fit the key/value format';
+
 function positionalSplitterFor(format: 'comma' | 'tab' | 'whitespace'): (line: string) => string[] {
   if (format === 'comma') return splitComma;
   if (format === 'tab') return splitTab;
@@ -283,11 +292,18 @@ function tokenizeKv(lines: string[], format: 'kv-colon' | 'kv-equals'): Tokenize
   // (D-02: key-order is NOT guaranteed stable across self-labeling lines).
   const headers: string[] = [];
   const seenHeaders = new Set<string>();
+  // Per-line count of NON-EMPTY outer tokens that did not parse as
+  // key<delim>value. A row with any such leftover token is routed to raggedRows
+  // rather than silently dropping the token (SC-4/D-04) — this is what prevents
+  // a multi-word `kv-equals` value from being truncated to its first word.
+  const perLineUnmatched: number[] = [];
 
   for (const line of lines) {
     const pairs: Array<{ key: string; value: string }> = [];
+    let unmatched = 0;
     for (const rawToken of outerSplit(line)) {
       const token = rawToken.trim();
+      if (token.length === 0) continue;
       const m = tokenPattern.exec(token);
       if (m) {
         const key = m[1]!.trim();
@@ -297,9 +313,12 @@ function tokenizeKv(lines: string[], format: 'kv-colon' | 'kv-equals'): Tokenize
           seenHeaders.add(key);
           headers.push(key);
         }
+      } else {
+        unmatched++;
       }
     }
     perLinePairs.push(pairs);
+    perLineUnmatched.push(unmatched);
   }
 
   const dataRows: string[][] = [];
@@ -308,6 +327,13 @@ function tokenizeKv(lines: string[], format: 'kv-colon' | 'kv-equals'): Tokenize
     const pairs = perLinePairs[i]!;
     if (pairs.length === 0) {
       raggedRows.push({ rowIndex: i + 1, reason: RAGGED_NO_KV_MATCH_REASON });
+      continue;
+    }
+    if (perLineUnmatched[i]! > 0) {
+      // Some outer tokens on this line didn't parse as key<delim>value. Refuse
+      // to silently drop them and commit a truncated row — surface the whole
+      // line for review instead (SC-4/D-04).
+      raggedRows.push({ rowIndex: i + 1, reason: RAGGED_KV_PARTIAL_REASON });
       continue;
     }
     // Project BY KEY NAME into the union header order (Anti-Pattern guard —
