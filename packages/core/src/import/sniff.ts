@@ -228,16 +228,115 @@ export function sniffFormat(lines: string[]): SniffResult {
 }
 
 /**
+ * Reason string for a positional row whose field count doesn't match the
+ * detected column model. LOCKED per 32-UI-SPEC.md's Copywriting Contract —
+ * do not change this string.
+ */
+const RAGGED_FIELD_COUNT_REASON = "field count didn't match the detected column layout";
+
+/** Reason string for a kv row with zero matching key<delim>value tokens. */
+const RAGGED_NO_KV_MATCH_REASON = 'no key/value pairs matched the detected format';
+
+function positionalSplitterFor(format: 'comma' | 'tab' | 'whitespace'): (line: string) => string[] {
+  if (format === 'comma') return splitComma;
+  if (format === 'tab') return splitTab;
+  return splitWhitespace;
+}
+
+function tokenizePositional(lines: string[], format: 'comma' | 'tab' | 'whitespace'): TokenizeResult {
+  const splitter = positionalSplitterFor(format);
+  const fieldCounts = lines.map((l) => splitter(l).length);
+  const { modalCount } = computeStats(fieldCounts);
+  const columnCount = Math.max(modalCount, 1);
+  const headers = Array.from({ length: columnCount }, (_v, i) => `Column ${i + 1}`);
+
+  const dataRows: string[][] = [];
+  const raggedRows: RaggedRow[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const fields = splitter(line);
+    if (fields.length === columnCount) {
+      dataRows.push(fields);
+    } else {
+      raggedRows.push({ rowIndex: i + 1, reason: RAGGED_FIELD_COUNT_REASON });
+    }
+  }
+
+  return { format, headers, dataRows, raggedRows };
+}
+
+function kvOuterSplitterFor(format: 'kv-colon' | 'kv-equals'): (line: string) => string[] {
+  return format === 'kv-colon' ? splitKvColonOuter : splitKvEqualsOuter;
+}
+
+function kvTokenPatternFor(format: 'kv-colon' | 'kv-equals'): RegExp {
+  return format === 'kv-colon' ? KV_COLON_TOKEN : KV_EQUALS_TOKEN;
+}
+
+function tokenizeKv(lines: string[], format: 'kv-colon' | 'kv-equals'): TokenizeResult {
+  const outerSplit = kvOuterSplitterFor(format);
+  const tokenPattern = kvTokenPatternFor(format);
+
+  // Per-line parsed key/value pairs (insertion order preserved per line).
+  const perLinePairs: Array<Array<{ key: string; value: string }>> = [];
+  // Union header set, insertion-ordered by first encounter across ALL lines
+  // (D-02: key-order is NOT guaranteed stable across self-labeling lines).
+  const headers: string[] = [];
+  const seenHeaders = new Set<string>();
+
+  for (const line of lines) {
+    const pairs: Array<{ key: string; value: string }> = [];
+    for (const rawToken of outerSplit(line)) {
+      const token = rawToken.trim();
+      const m = tokenPattern.exec(token);
+      if (m) {
+        const key = m[1]!.trim();
+        const value = m[2]!;
+        pairs.push({ key, value });
+        if (!seenHeaders.has(key)) {
+          seenHeaders.add(key);
+          headers.push(key);
+        }
+      }
+    }
+    perLinePairs.push(pairs);
+  }
+
+  const dataRows: string[][] = [];
+  const raggedRows: RaggedRow[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const pairs = perLinePairs[i]!;
+    if (pairs.length === 0) {
+      raggedRows.push({ rowIndex: i + 1, reason: RAGGED_NO_KV_MATCH_REASON });
+      continue;
+    }
+    // Project BY KEY NAME into the union header order (Anti-Pattern guard —
+    // never by raw per-line token position). Missing key on this line -> ''.
+    const byKey = new Map(pairs.map((p) => [p.key, p.value]));
+    dataRows.push(headers.map((h) => byKey.get(h) ?? ''));
+  }
+
+  return { format, headers, dataRows, raggedRows };
+}
+
+/**
  * Tokenize ALL lines (not just the sniff sample) under a chosen format.
  *
- * STUB (Task 1): returns an empty placeholder result. Real tokenization
- * (synthetic headers, name-based kv projection, ragged-row routing) lands
- * in Task 3.
+ * Positional formats synthesize `Column N` headers sized to the modal field
+ * count; kv formats synthesize smart-key headers as the union of matched
+ * keys, projecting each row BY KEY NAME (never by raw token position — a
+ * self-labeling line's keys are not guaranteed to appear in the same order
+ * on every row). Rows whose field/match count doesn't fit the chosen model
+ * are routed to `raggedRows`, never padded/truncated (D-04/SC-4). Values are
+ * never mutated or prefixed (IMPORT-08 verbatim carry).
  *
  * @param lines  Raw text lines (non-empty; caller has already filtered blanks).
  * @param format The format to tokenize under (from `SniffResult.bestFormat`
  *               or a user override).
  */
-export function tokenize(_lines: string[], format: SniffFormat): TokenizeResult {
-  return { format, headers: [], dataRows: [], raggedRows: [] };
+export function tokenize(lines: string[], format: SniffFormat): TokenizeResult {
+  if (format === 'comma' || format === 'tab' || format === 'whitespace') {
+    return tokenizePositional(lines, format);
+  }
+  return tokenizeKv(lines, format);
 }
