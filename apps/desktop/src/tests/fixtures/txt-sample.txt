@@ -1,0 +1,3 @@
+url=https://gmail.example.com user=john pass=Tr0ub4dor&3
+url=https://yahoo.example.com user=jane pass=Sunshine123!
+just a note, not a real entry
