@@ -28,6 +28,14 @@ permissions:
 
 jobs:
   release:
+    # PLATFORM SCOPE (Phase 33, 2026-07-14) — Windows-only, in LOCKSTEP with ci.yml's
+    # `build` matrix. See the long-form rationale on that job: macOS has not compiled
+    # since Phase 14 (ungated Windows named pipes in the v3.0 extension bridge), and
+    # there is no macOS dev machine to UAT a build on.
+    #
+    # Keeping this matrix in lockstep with ci.yml is the whole point: a release leg
+    # that CI never exercises is an untested artifact shipped to users. If you restore
+    # the macOS legs in ci.yml, restore them HERE TOO, in the same commit.
     strategy:
       fail-fast: false
       matrix:
@@ -35,12 +43,6 @@ jobs:
           - platform: windows-2025
             args: ''
             rust-target: ''
-          - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            rust-target: 'aarch64-apple-darwin'
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-            rust-target: 'x86_64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60

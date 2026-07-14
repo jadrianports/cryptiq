@@ -151,6 +151,28 @@ jobs:
 
   build:
     name: build
+    # PLATFORM SCOPE (Phase 33, 2026-07-14) — Windows-only, deliberately.
+    #
+    # The macOS legs (macos-latest x aarch64/x86_64) were REMOVED, not silently
+    # dropped. When Phase 33 resurrected this pipeline, its first live run proved
+    # macOS has not compiled since Phase 14: the v3.0 extension bridge uses
+    # Windows named pipes with no cfg gating on BOTH sides —
+    #   apps/native-host/src/main.rs                        (ClientOptions/NamedPipeClient)
+    #   apps/desktop/src-tauri/src/commands/extension_bridge.rs  (NamedPipeServer/ServerOptions)
+    # so `cargo build --target *-apple-darwin` fails outright (E0433).
+    # Red-run evidence: https://github.com/jadrianports/cryptiq/actions/runs/29320174285
+    #
+    # macOS SOURCE SUPPORT IS INTACT AND INTENTIONAL — clipboard.rs and pairing.rs
+    # keep their #[cfg(target_os = "macos")] paths, and capabilities still declare
+    # platforms: ["windows","macOS"]. Only the BUILD LEGS are gone. Restoring macOS
+    # = re-add these legs + cfg-gate (or port) the named-pipe bridge. Nothing else
+    # was unwound, so this stays cheap to reverse.
+    #
+    # Rationale: there is no macOS dev machine on this project (CLAUDE.md), so a
+    # macOS build could never be UAT'd — shipping an unverifiable artifact is worse
+    # than shipping none. Gating on a leg that cannot go green would also mean
+    # ci-required is red forever, which is the exact "green CI that isn't green"
+    # pathology this phase exists to kill.
     strategy:
       fail-fast: false
       matrix:
@@ -158,12 +180,6 @@ jobs:
           - platform: windows-2025
             args: ''
             rust-target: ''
-          - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            rust-target: 'aarch64-apple-darwin'
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-            rust-target: 'x86_64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
