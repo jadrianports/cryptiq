@@ -232,7 +232,11 @@ describe('resealInnerDoc', () => {
 
     // Simulate the SAFE-04 caller pattern: encode, seal, wipe
     const entriesBytes = new TextEncoder().encode(JSON.stringify(mergedInner));
-    const _resealedBytes = await resealInnerDoc(mergedInner, vaultKey, partnerDoc);
+    const resealedBytes = await resealInnerDoc(mergedInner, vaultKey, partnerDoc);
+
+    // Sanity: the reseal call actually produced a serialized vault document
+    // (otherwise the wipe assertion below would be exercising a no-op call).
+    expect(resealedBytes.length).toBeGreaterThan(0);
 
     // SAFE-04: caller wipes entriesBytes in a finally block
     sodium.memzero(entriesBytes);
