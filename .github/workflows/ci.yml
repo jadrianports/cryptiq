@@ -1,4 +1,9 @@
-# Cryptiq Phase 1 CI — D-08 (Windows-only), D-09 (9 green-required jobs), D-10 (cargo check + clippy).
+# Cryptiq CI — tiered job graph (Phase 33, CI-07/D-01) proving every gate actually
+# executes on a push: `rust` (cargo check/clippy/test for BOTH Rust workspaces), `node`
+# (ESLint + all 11 custom lints + typecheck + vitest + audit, once on Windows), `build`
+# (tauri build fanned across Windows + macOS arm64/x64, sidecar staged per leg), and
+# `ci-required` (the single required status check — fails if any of the above is
+# skipped, cancelled, or failed; a skipped job must never masquerade as a pass).
 #
 # Every `uses:` is pinned to a 40-character commit SHA (DIST-03 / Pitfall 14 /
 # CVE-2025-30066 defense). Dependabot maintains these SHAs automatically because it
@@ -7,6 +12,12 @@
 #
 # DIST-04: Phase 1 ships UNSIGNED installers. TAURI_SIGNING_PRIVATE_KEY is explicitly
 # empty so Tauri's build step knows not to attempt signing. Code-signing returns post-v1.
+#
+# CI-08/D-06: nearly every step below is one-command-per-step by construction (the
+# tier-split itself is the structural fix — GitHub's pwsh wrapper on windows-2025 only
+# checks the LAST command's $LASTEXITCODE, so a native-command failure earlier in a
+# multi-line run: block can otherwise go green). Any surviving multi-line pwsh block
+# must carry `$PSNativeCommandUseErrorActionPreference = $true` as its first line.
 
 name: ci
 
@@ -15,12 +26,13 @@ on:
   pull_request:
 
 # Least-privilege per OWASP CI/CD hardening. Any job that needs write access must
-# override explicitly (none in Phase 1).
+# override explicitly (none here).
 permissions:
   contents: read
 
 jobs:
-  ci:
+  rust:
+    name: rust
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -44,17 +56,53 @@ jobs:
         with:
           components: clippy
 
+      # CI-01: tauri-build's build script resolves `externalBin` entries DURING
+      # `cargo check` itself (not only at bundle time) — staging MUST precede any
+      # cargo step in this job, not just precede `tauri build`.
+      - name: Stage native-host sidecar (externalBin — MUST precede any cargo step)
+        run: pnpm --filter @cryptiq/desktop stage:nmhost
+
       - name: cargo check (Tauri)
         working-directory: apps/desktop/src-tauri
         run: cargo check
 
-      - name: cargo clippy
+      - name: cargo clippy (Tauri)
         working-directory: apps/desktop/src-tauri
         run: cargo clippy -- -D warnings
 
-      - name: cargo test
+      - name: cargo test (Tauri)
         working-directory: apps/desktop/src-tauri
         run: cargo test
+
+      - name: cargo check (native-host)
+        working-directory: apps/native-host
+        run: cargo check
+
+      - name: cargo clippy (native-host)
+        working-directory: apps/native-host
+        run: cargo clippy -- -D warnings
+
+      - name: cargo test (native-host)
+        working-directory: apps/native-host
+        run: cargo test
+
+  node:
+    name: node
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
+        with:
+          run_install: false
+
+      - name: pnpm install (frozen)
+        run: pnpm install --frozen-lockfile
 
       - name: ESLint
         run: pnpm exec eslint .
@@ -80,6 +128,18 @@ jobs:
       - name: Custom lint — TOTP wire-minimization
         run: node scripts/lint/lint-totp-wire-minimization.mjs
 
+      - name: Custom lint — version consistency
+        run: node scripts/lint/lint-version-consistency.mjs
+
+      - name: Custom lint — sidecar staging order
+        run: node scripts/lint/lint-sidecar-staging.mjs
+
+      - name: Custom lint — workspace scripts
+        run: node scripts/lint/lint-workspace-scripts.mjs
+
+      - name: Custom lint — Vite key-leak guard
+        run: node scripts/lint/lint-vite-key-leak.mjs
+
       - name: svelte-check + tsc --noEmit
         run: pnpm run typecheck
 
@@ -89,9 +149,80 @@ jobs:
       - name: pnpm audit (HIGH/CRITICAL = fail)
         run: pnpm audit --prod --audit-level=high
 
+  build:
+    name: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-2025
+            args: ''
+            rust-target: ''
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            rust-target: 'aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+            rust-target: 'x86_64-apple-darwin'
+
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
+        with:
+          run_install: false
+
+      - name: pnpm install (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      # CI-01: per-leg staging BEFORE the build — the sidecar must be built from
+      # source for every matrix leg, in CI, so a clean clone with zero dev-machine
+      # artifacts is what `pnpm build` actually exercises.
+      - name: Stage native-host sidecar (per-leg target)
+        run: pnpm --filter @cryptiq/desktop stage:nmhost -- --target ${{ matrix.rust-target || '' }}
+
       - name: pnpm build (Vite + tauri build)
         env:
           # DIST-04: Phase 1 ships unsigned. Explicit empty values signal "intentionally not signing".
           TAURI_SIGNING_PRIVATE_KEY: ''
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: pnpm build
+
+      # CI-10: Stage B of the Vite key-leak guard only means something once dist/**
+      # actually exists — runs here, post-build, on every leg.
+      - name: Vite key-leak dist grep
+        run: node scripts/lint/lint-vite-key-leak.mjs
+
+  ci-required:
+    name: CI Required
+    runs-on: ubuntu-latest
+    needs: [rust, node, build]
+    if: always()
+    steps:
+      - name: Verify no required job was skipped, cancelled, or failed
+        shell: bash
+        run: |
+          echo "rust:  ${{ needs.rust.result }}"
+          echo "node:  ${{ needs.node.result }}"
+          echo "build: ${{ needs.build.result }}"
+
+      - name: Fail if any required job did not succeed
+        if: |
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled') ||
+          contains(needs.*.result, 'skipped')
+        shell: bash
+        run: |
+          echo "::error::One or more required CI jobs was skipped, cancelled, or failed."
+          exit 1
