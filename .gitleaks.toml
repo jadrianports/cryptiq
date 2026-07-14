@@ -1,0 +1,54 @@
+# Cryptiq gitleaks configuration (Phase 34, HARD-01 / D-04).
+#
+# Extends gitleaks' default ruleset (`[extend] useDefault = true`) with a
+# high-confidence custom rule targeting a leaked TAURI_SIGNING_PRIVATE_KEY —
+# the minisign-encrypted Ed25519 secret key `tauri signer generate` produces
+# (Phase 36 will introduce the real key; this guard lands BEFORE it exists so
+# the very first commit that could leak it is already covered).
+#
+# Consumed by the `secrets` job landing in 34-02 (`gitleaks git --config
+# .gitleaks.toml ...`), NOT wired into a workflow by this plan — this file is
+# a standalone artifact so 34-02's ci.yml edits can land in one conflict-free
+# pass (see 34-CONTEXT.md D-01..D-04).
+#
+# LIVE-VERIFIED 2026-07-15 against a real `tauri signer generate` scratch key
+# on this machine (deleted immediately after inspection, never committed):
+#   - The on-disk private key file is the raw 3-line minisign format, whose
+#     first line reads exactly `untrusted comment: rsign encrypted secret
+#     key` and whose base64 secret-key body begins `RWRTY0Iy` — both match
+#     RESEARCH.md's crate-default prediction byte-for-byte; Tauri's CLI does
+#     NOT override the `minisign` crate's default comment string.
+#   - The `TAURI_SIGNING_PRIVATE_KEY` env-var form (what CI secrets actually
+#     hold, per Tauri's own CLI output "String of your private key") is the
+#     WHOLE 3-line file base64-encoded ONCE MORE on a single line. A raw-file
+#     leak and a double-base64 env-var-string leak look different on disk, so
+#     a third rule anchors the base64 encoding of the header string itself
+#     (`dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWdu` = base64("untrusted comment: rsign"),
+#     independently computed and confirmed against the same scratch key).
+#
+# The committed `.pub` verify-key is NOT a secret and must never trip these
+# rules — `RWRTY0Iy` (and its base64-of-base64 anchor) is unique to SECRET
+# keys; minisign PUBLIC keys use a different magic prefix.
+
+title = "Cryptiq gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "tauri-minisign-secret-key"
+description = "Tauri/minisign encrypted secret key header (TAURI_SIGNING_PRIVATE_KEY leak, raw file form)"
+regex = '''untrusted comment: rsign encrypted secret key'''
+keywords = ["untrusted", "comment", "rsign", "minisign"]
+
+[[rules]]
+id = "tauri-minisign-secret-key-body"
+description = "minisign encrypted secret-key base64 body (Ed+Sc+B2 magic prefix, raw file form)"
+regex = '''RWRTY0Iy[A-Za-z0-9+/=]+'''
+keywords = ["RWRTY0Iy"]
+
+[[rules]]
+id = "tauri-minisign-secret-key-env-b64"
+description = "minisign encrypted secret-key header, base64-of-base64 (TAURI_SIGNING_PRIVATE_KEY env-var string form)"
+regex = '''dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWdu[A-Za-z0-9+/=]+'''
+keywords = ["dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWdu"]
