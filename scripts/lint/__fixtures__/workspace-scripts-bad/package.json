@@ -1,0 +1,9 @@
+{
+  "name": "workspace-scripts-bad-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deliberately missing scripts.typecheck for lint-workspace-scripts.mjs's should-fail self-test (CI-09). Never a real pnpm workspace member.",
+  "scripts": {
+    "build": "echo noop"
+  }
+}
