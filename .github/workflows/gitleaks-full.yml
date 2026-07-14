@@ -62,4 +62,6 @@ jobs:
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          ./gitleaks-bin/gitleaks.exe git --config .gitleaks.toml .
+          # --verbose to name the rule + file; --redact so a real finding never prints the
+          # secret into this public repo's run log. See ci.yml's secrets job for the rationale.
+          ./gitleaks-bin/gitleaks.exe git --config .gitleaks.toml --verbose --redact .

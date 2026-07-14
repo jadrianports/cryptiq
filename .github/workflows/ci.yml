@@ -380,7 +380,11 @@ jobs:
           } else {
             $range = '${{ github.event.before }}..${{ github.event.after }}'
           }
-          ./gitleaks-bin/gitleaks.exe git --config .gitleaks.toml --log-opts="$range" .
+          # --verbose names the RULE and file for each finding; without it the log says only
+          # "leaks found: 2", which tells an on-call reader nothing (the same legibility bar
+          # HARD-06 sets for lint:custom). --redact is MANDATORY alongside it: this repo is
+          # public, so a real finding must never echo the secret itself into the run log.
+          ./gitleaks-bin/gitleaks.exe git --config .gitleaks.toml --log-opts="$range" --verbose --redact .
 
   ci-required:
     name: CI Required
