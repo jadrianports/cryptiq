@@ -1,0 +1,63 @@
+# Cryptiq gitleaks — weekly FULL-HISTORY sweep (Phase 34, HARD-01/D-03 backstop).
+#
+# ci.yml's `secrets` job only ever scans an incremental commit range (the pushed
+# range on `push`, the PR range on `pull_request`). That range can miss a leak: a
+# force-push, a rewritten history, or a bad/missing `--log-opts` range (e.g. the
+# all-zeros `before` on a repo's very first push). This workflow is the backstop —
+# it walks the ENTIRE commit history every week, independent of any push event.
+#
+# Deliberately a SEPARATE workflow from ci.yml, not a cron trigger bolted onto it —
+# a weekly schedule firing the whole rust/node/build/secrets graph would waste
+# Windows minutes on unchanged code (mirrors codeql.yml's standalone-schedule shape,
+# offset one hour later to avoid runner pile-up with that workflow's own weekly run).
+#
+# `fetch-depth: 0` on the checkout is CRITICAL — the default shallow depth-1 checkout
+# would make a "full-history" scan a lie. The scan step below has NO `--log-opts`
+# range; the ABSENCE of that flag is what makes gitleaks walk the whole history
+# (contrast with ci.yml's `secrets` job, which always passes a range).
+#
+# Same gitleaks binary-pin exception as ci.yml's `secrets` job: pinned by version +
+# URL + SHA256, NOT a `uses:` — deliberately NOT Dependabot-tracked, NOT covered by
+# lint-workflow-sha-pins.mjs. Manual bump cadence: watch
+# https://github.com/gitleaks/gitleaks/releases and update both values here AND in
+# ci.yml's `secrets` job (keep them in lockstep).
+
+name: gitleaks-full
+
+on:
+  schedule:
+    - cron: '0 7 * * 1' # weekly, Monday 07:00 UTC — one hour after codeql.yml's 06:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks-full:
+    name: gitleaks (full history)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Download + verify gitleaks
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $ver = '8.30.1'
+          $sha = 'd29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e'
+          Invoke-WebRequest -Uri "https://github.com/gitleaks/gitleaks/releases/download/v$ver/gitleaks_${ver}_windows_x64.zip" -OutFile gitleaks.zip
+          $actual = (Get-FileHash gitleaks.zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $sha) {
+            Write-Error "gitleaks SHA256 mismatch: expected $sha, got $actual"
+            exit 1
+          }
+          Expand-Archive gitleaks.zip -DestinationPath .
+
+      - name: gitleaks scan (full history — NO --log-opts range)
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./gitleaks.exe git --config .gitleaks.toml .

@@ -122,6 +122,25 @@ jobs:
         working-directory: apps/native-host
         run: cargo test
 
+      # HARD-02/D-05: cargo-audit only parses each Cargo.lock — it does not compile
+      # either workspace, so this is cheap even though it runs after the full
+      # check/clippy/test suite above. `--deny warnings` also fails on yanked and
+      # unmaintained crates, not only advisories with a CVE.
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853  # v2.83.2
+        with:
+          tool: cargo-audit
+
+      # Two NAMED steps (not a loop), one per literal Cargo.lock path — a missing or
+      # renamed lockfile surfaces as its own distinct red step (CI-08 one-command-per-
+      # step discipline), and each Rust workspace must be red-run independently to
+      # prove native-host is genuinely audited, not just src-tauri (the four-milestone
+      # blind-spot this phase exists to close).
+      - name: cargo audit (Tauri)
+        run: cargo audit --deny warnings --file apps/desktop/src-tauri/Cargo.lock
+
+      - name: cargo audit (native-host)
+        run: cargo audit --deny warnings --file apps/native-host/Cargo.lock
+
   node:
     name: node
     runs-on: windows-2025
@@ -279,18 +298,66 @@ jobs:
       - name: Vite key-leak dist grep
         run: node scripts/lint/lint-vite-key-leak.mjs
 
+  secrets:
+    name: secrets
+    runs-on: windows-2025
+    timeout-minutes: 15
+    # HARD-01/D-01/D-02: gitleaks *binary*, not gitleaks/gitleaks-action — the Action
+    # requires a paid GITLEAKS_LICENSE for org-owned repos (a latent trap if this repo
+    # ever transfers to an org) and drags in a GITHUB_TOKEN dependency the binary path
+    # never needs. Pinned by version + URL + SHA256 instead of a `uses:` — this is a
+    # DELIBERATE exception to the repo's SHA-pin-every-`uses:` rule, so it is NOT
+    # Dependabot-tracked and NOT covered by lint-workflow-sha-pins.mjs. Manual bump
+    # cadence: watch https://github.com/gitleaks/gitleaks/releases and update both the
+    # version and SHA256 below (same values are reused in gitleaks-full.yml).
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Download + verify gitleaks
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $ver = '8.30.1'
+          $sha = 'd29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e'
+          Invoke-WebRequest -Uri "https://github.com/gitleaks/gitleaks/releases/download/v$ver/gitleaks_${ver}_windows_x64.zip" -OutFile gitleaks.zip
+          $actual = (Get-FileHash gitleaks.zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $sha) {
+            Write-Error "gitleaks SHA256 mismatch: expected $sha, got $actual"
+            exit 1
+          }
+          Expand-Archive gitleaks.zip -DestinationPath .
+
+      # D-03: incremental scan — the pushed commit range on `push`, the PR range on
+      # `pull_request`. `github.event.before` is all-zeros on a repo's first push (no
+      # prior commit to range from), so fall back to scanning HEAD alone in that case.
+      # The weekly full-history sweep in gitleaks-full.yml is the backstop for anything
+      # this range misses (force-push, rewritten history, a bad/missing range).
+      - name: gitleaks scan (incremental)
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            $range = '${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}'
+          } elseif ('${{ github.event.before }}' -match '^0+$') {
+            $range = 'HEAD'
+          } else {
+            $range = '${{ github.event.before }}..${{ github.event.after }}'
+          }
+          ./gitleaks.exe git --config .gitleaks.toml --log-opts="$range" .
+
   ci-required:
     name: CI Required
     runs-on: ubuntu-latest
-    needs: [rust, node, build]
+    needs: [rust, node, build, secrets]
     if: always()
     steps:
       - name: Verify no required job was skipped, cancelled, or failed
         shell: bash
         run: |
-          echo "rust:  ${{ needs.rust.result }}"
-          echo "node:  ${{ needs.node.result }}"
-          echo "build: ${{ needs.build.result }}"
+          echo "rust:    ${{ needs.rust.result }}"
+          echo "node:    ${{ needs.node.result }}"
+          echo "build:   ${{ needs.build.result }}"
+          echo "secrets: ${{ needs.secrets.result }}"
 
       - name: Fail if any required job did not succeed
         if: |
