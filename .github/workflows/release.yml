@@ -34,10 +34,13 @@ jobs:
         include:
           - platform: windows-2025
             args: ''
+            rust-target: ''
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
+            rust-target: 'aarch64-apple-darwin'
           - platform: macos-latest
             args: '--target x86_64-apple-darwin'
+            rust-target: 'x86_64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
@@ -62,6 +65,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      # CI-01 lockstep with ci.yml's build job: stage the sidecar per leg before
+      # tauri-action builds/bundles it.
+      - name: Stage native-host sidecar (per-leg target)
+        run: pnpm --filter @cryptiq/desktop stage:nmhost -- --target ${{ matrix.rust-target || '' }}
 
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # action-v0.6.2
         env:
