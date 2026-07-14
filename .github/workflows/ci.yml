@@ -202,13 +202,22 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      # CI-01: per-leg staging BEFORE the build — the sidecar must be built from
-      # source for every matrix leg, in CI, so a clean clone with zero dev-machine
-      # artifacts is what `pnpm build` actually exercises.
-      - name: Stage native-host sidecar (per-leg target)
-        run: pnpm --filter @cryptiq/desktop stage:nmhost -- --target ${{ matrix.rust-target || '' }}
-
-      - name: pnpm build (Vite + tauri build)
+      # CI-12 / CLEAN-CLONE SMOKE — deliberately does NOT pre-stage the sidecar.
+      #
+      # `pnpm build` -> `pnpm -r build && pnpm --filter ./apps/desktop tauri:build`,
+      # and `tauri:build` is itself `pnpm stage:nmhost && tauri build`. So the root
+      # build script stages its own sidecar — exactly as a user's clean clone does.
+      #
+      # An explicit staging step HERE used to mask that: the CI-06 red-run for
+      # `clean-clone-smoke.patch` (which reverts tauri:build -> bare `tauri build`)
+      # came back GREEN, proving this job was NOT gating CI-12 at all. Pre-staging
+      # made the root script's correctness irrelevant. Removing it turns this job
+      # into a real clean-clone smoke test.
+      # Fake-green evidence:  https://github.com/jadrianports/cryptiq/actions/runs/29321815825
+      #
+      # The `rust` job still stages explicitly, and MUST — there, `cargo check`
+      # resolves externalBin directly with no tauri:build wrapper to stage for it (CI-01).
+      - name: pnpm build (Vite + tauri build — stages its own sidecar via tauri:build)
         env:
           # DIST-04: Phase 1 ships unsigned. Explicit empty values signal "intentionally not signing".
           TAURI_SIGNING_PRIVATE_KEY: ''
