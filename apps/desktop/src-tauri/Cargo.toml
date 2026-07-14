@@ -1,6 +1,6 @@
 [package]
 name = "cryptiq"
-version = "1.0.0"
+version = "3.2.0"
 description = "Cryptiq — local-first password manager"
 authors = ["Cryptiq"]
 edition = "2021"

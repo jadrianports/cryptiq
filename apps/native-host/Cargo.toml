@@ -1,6 +1,6 @@
 [package]
 name = "cryptiq-nmhost"
-version = "1.0.0"
+version = "3.2.0"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Cryptiq native-messaging bridge sidecar (spawned by Chrome, not the app)"
