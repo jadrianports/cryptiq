@@ -43,18 +43,38 @@ since the pipeline might be red for unrelated reasons.
 | 8 | CI-07 `ci-required` aggregator (skip = fail) | `ci-required-aggregator.patch` | [29321812489](https://github.com/jadrianports/cryptiq/actions/runs/29321812489) | `node` **skipped**, `rust`+`build` succeeded, `CI Required` still **RED** |
 | 9 | CI-08 pwsh non-final-line exit propagation | `pwsh-exit-propagation.patch` | [29321809530](https://github.com/jadrianports/cryptiq/actions/runs/29321809530) | `rust` → `NativeCommandExitException` at **Line 3** (the non-final `cargo build`); the trailing `Write-Host` never ran |
 | 10 | CI-12 clean-clone `pnpm build` (root build routes through staging) | `clean-clone-smoke.patch` | [29322716256](https://github.com/jadrianports/cryptiq/actions/runs/29322716256) | `build` → `pnpm build`. First attempt came back GREEN — see "The fake gate" below. |
-| 11 | HARD-01 `secrets` job / gitleaks custom minisign rule | `gitleaks-minisign.patch` | pending | pending |
-| 12 | HARD-02a `cargo audit (Tauri)` — planted yanked dep in `apps/desktop/src-tauri` | `cargo-audit-tauri.patch` | pending | pending |
-| 13 | HARD-02b `cargo audit (native-host)` — planted yanked dep in `apps/native-host` | `cargo-audit-nativehost.patch` | pending | pending |
-| 14 | HARD-04 ESLint over an `apps/extension/**/*.svelte` `{@html}` violation | `eslint-extension-svelte.patch` | pending | pending |
+| 11 | HARD-01 `secrets` job / gitleaks custom minisign rule | `gitleaks-minisign.patch` | [29359090838](https://github.com/jadrianports/cryptiq/actions/runs/29359090838) | `secrets` → gitleaks scan (incremental). Log names the CUSTOM rules: `RuleID: tauri-minisign-secret-key` + `-body`, `Secret: REDACTED`. `rust`/`node`/`build` all GREEN in the same run. |
+| 12 | HARD-02a `cargo audit (Tauri)` — planted yanked dep in `apps/desktop/src-tauri` | `cargo-audit-tauri.patch` | [29357301109](https://github.com/jadrianports/cryptiq/actions/runs/29357301109) | `rust` → **`cargo audit (Tauri)`** (yanked `once_cell 1.20.0`) |
+| 13 | HARD-02b `cargo audit (native-host)` — planted yanked dep in `apps/native-host` | `cargo-audit-nativehost.patch` | [29357285887](https://github.com/jadrianports/cryptiq/actions/runs/29357285887) | `rust` → **`cargo audit (native-host)`** — the historically-blind workspace, failing at its OWN named step |
+| 14 | HARD-04 ESLint over an `apps/extension/**/*.svelte` `{@html}` violation | `eslint-extension-svelte.patch` | [29357276756](https://github.com/jadrianports/cryptiq/actions/runs/29357276756) | `node` → **ESLint** (`svelte/no-at-html-tags`) |
+| 15 | HARD-06 `pnpm lint:custom` still NAMES the failing lint after the DRY collapse | `version-consistency.patch` (reused) | [29357290223](https://github.com/jadrianports/cryptiq/actions/runs/29357290223) | `node` → **Custom lints (auto-discovered)**; log reads `✖ 1/11 custom lint(s) failed: lint-version-consistency.mjs` — legibility survived |
 
-Rows 11-14 (Phase 34, HARD-01/HARD-02/HARD-04) are authored but not yet red-run — the live
-push→observe→revert ritual for these four (plus the HARD-06 `pnpm lint:custom` DRY-legibility
-reuse of an existing row-5 patch) is 34-03 Task 2, a `checkpoint:human-verify` gate. Until
-that task lands, treat these four rows' "pending" URLs as NOT proof of anything — per this
-file's own opening argument, an unexercised patch proves nothing.
+**Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
 Attribution was checked on every row — the gate had to fail at *its own step*, not incidentally.
+
+### Phase 34's fake gates: the ritual earned its keep twice more
+
+The first red-run round "passed" — five branches, five red runs. Every one was worthless, and
+config-text review would have shipped all of it:
+
+1. **gitleaks never executed.** `Expand-Archive -DestinationPath .` unpacked the zip's own
+   `LICENSE` into the repo root, colliding with ours. The `secrets` job was red on *every*
+   branch having never scanned a byte. Red = "working", if you only look at the colour.
+   `gitleaks-full.yml` had the identical bug, so the weekly sweep was dead on arrival too.
+2. **`cargo audit (native-host)` never ran.** Steps are sequential; the Tauri audit was failing
+   (on *real* pre-existing advisories), so the native-host step was **skipped every time** —
+   leaving the historically-blind workspace unaudited *precisely when something was already
+   wrong*. The four-milestone blind spot, faithfully reproduced inside its own fix. `if: always()`.
+3. **gitleaks flagged our own break-patch.** With those fixed, `secrets` still went red on
+   branches planting no secret: a new branch has an all-zeros `event.before`, so the scan falls
+   back to full history — which contains `gitleaks-minisign.patch` itself. HARD-01's "red" was
+   attributable to the patch file, not the planted key. Allowlisted `*.patch` (the `__fixtures__/`
+   path it plants into is deliberately NOT allowlisted, or the gate would prove nothing).
+
+Rows 11-15 above are the *post-fix* runs. The lesson is the same one CI-12 taught: **a red run is
+not proof a gate works — only a red run that fails at the right step, paired with a green-on-real,
+is.** Colour alone is what "green but blind" looks like in the mirror.
 
 ## The fake gate — the ritual's most valuable catch (CI-12)
 
