@@ -143,17 +143,12 @@ describe('validatePairingCode — wrong check character (D-11)', () => {
     const code = buildValidCode();
     const realCheck = crockfordCheckChar(FIXTURE_BYTES_32);
     // Replace check char with any char that is NOT the real check.
+    // By construction wrongCheck is always '5' or '6' and is always the OPPOSITE branch
+    // of realCheck's own comparison to '5' — so wrongCheck !== realCheck is guaranteed
+    // algebraically (not merely "extremely unlikely" as a prior comment here claimed).
     const wrongCheck = realCheck === '5' ? '6' : '5';
     const knownBadCheck = code.slice(0, -1) + wrongCheck;
-    if (realCheck !== wrongCheck) {
-      expect(() => validatePairingCode(knownBadCheck)).toThrow(PairingCodeInvalidError);
-    } else {
-      // Extremely unlikely: pick another wrong char
-      const altBad = code.slice(0, -1) + 'A';
-      if (realCheck !== 'A') {
-        expect(() => validatePairingCode(altBad)).toThrow(PairingCodeInvalidError);
-      }
-    }
+    expect(() => validatePairingCode(knownBadCheck)).toThrow(PairingCodeInvalidError);
   });
 });
 
