@@ -93,3 +93,71 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
 
       - uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+
+  # HARD-03's teeth. WITHOUT this job, CodeQL is advisory and nothing more:
+  # `codeql-action/analyze` uploads alerts to the Security tab and exits 0 — a planted
+  # critical vuln leaves the workflow GREEN. Proven live: runs 29361233154 (js/code-injection,
+  # CRITICAL) and 29361228789 (actions/cache-poisoning) both went green while CodeQL was
+  # correctly detecting the plant. Green-but-blind, the exact pathology this milestone exists
+  # to kill, hiding inside the tool that is supposed to prevent it.
+  #
+  # GitHub only surfaces CodeQL as a pass/fail via the "Code scanning results" check on a
+  # PULL REQUEST. Cryptiq is a solo push-to-main project (D-07 also keeps CodeQL out of
+  # ci-required), so PR-gating is the wrong shape here — and branch protection with required
+  # checks would REJECT direct pushes to main outright. Instead we read back the alerts CodeQL
+  # just filed for this exact SHA and fail the run ourselves.
+  #
+  # Fails on any OPEN alert at security-severity critical|high on this ref. Lower severities
+  # (medium/low/note) are reported but do not gate — the same "deny warnings but list the
+  # justified exceptions" posture cargo-audit takes in ci.yml.
+  codeql-gate:
+    name: CodeQL Gate
+    needs: analyze
+    if: always() # a SKIPPED analyze must not silently pass the gate (CI-07's skip=fail lesson)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: read
+    steps:
+      - name: Fail if any analyze job did not succeed
+        if: needs.analyze.result != 'success'
+        run: |
+          echo "::error::analyze did not succeed (result=${{ needs.analyze.result }}) — refusing to pass the gate"
+          exit 1
+
+      - name: Fail on critical/high code-scanning alerts for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Alerts are indexed asynchronously after the SARIF upload; poll briefly rather than
+          # racing it. A race here would read zero alerts and pass a vulnerable commit — the
+          # failure mode that matters, so it fails closed on exhaustion below.
+          for attempt in $(seq 1 10); do
+            if gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?ref=${REF}&state=open&per_page=100" \
+                 > alerts.json 2>/dev/null; then
+              break
+            fi
+            echo "alerts API not ready (attempt ${attempt}/10) — retrying in 15s"
+            sleep 15
+            if [ "$attempt" -eq 10 ]; then
+              echo "::error::could not read code-scanning alerts after 10 attempts — failing closed"
+              exit 1
+            fi
+          done
+
+          jq -r '.[] | select(.rule.security_severity_level == "critical" or .rule.security_severity_level == "high")
+                 | "\(.rule.security_severity_level | ascii_upcase)\t\(.rule.id)\t\(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"' \
+            alerts.json > blocking.tsv || true
+
+          if [ -s blocking.tsv ]; then
+            echo "::error::CodeQL found blocking (critical/high) alerts on this ref:"
+            column -t -s $'\t' blocking.tsv
+            exit 1
+          fi
+
+          TOTAL=$(jq 'length' alerts.json)
+          echo "No critical/high CodeQL alerts on this ref. (${TOTAL} open alert(s) at lower severities.)"

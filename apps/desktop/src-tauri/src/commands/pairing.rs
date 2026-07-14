@@ -124,7 +124,7 @@ pub fn peer_target(device_id: &str) -> String {
 #[cfg(target_os = "windows")]
 mod credential_manager {
     use std::ptr;
-    use windows_sys::Win32::Foundation::{GetLastError, BOOL, TRUE};
+    use windows_sys::Win32::Foundation::{GetLastError, BOOL, ERROR_INVALID_DATA, TRUE};
     use windows_sys::Win32::Security::Credentials::{
         CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
         CRED_TYPE_GENERIC,
@@ -170,6 +170,14 @@ mod credential_manager {
             unsafe { CredReadW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred_ptr) };
         if result != TRUE {
             return Err(unsafe { GetLastError() });
+        }
+        // Win32's contract says a TRUE return means cred_ptr is populated, but that contract is
+        // invisible to a static analyzer (CodeQL flags this deref as rust/access-invalid-pointer,
+        // high) and invisible to the next reader. A null check across an FFI boundary in
+        // credential-handling code costs one branch — take it, and fail closed rather than
+        // dereference on a contract we cannot see enforced.
+        if cred_ptr.is_null() {
+            return Err(ERROR_INVALID_DATA);
         }
         // Copy bytes from the credential blob BEFORE calling CredFree (Pitfall 4 mitigation).
         // L1: a zero-length credential (Win32 may set CredentialBlob == NULL with size 0) makes
