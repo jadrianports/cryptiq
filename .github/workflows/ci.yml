@@ -55,6 +55,53 @@ jobs:
     name: rust
     runs-on: windows-2025
     timeout-minutes: 30
+    env:
+      # HARD-02 advisory exceptions. Each ID here is a DELIBERATE, justified acceptance —
+      # not a convenience mute. `--deny warnings` stays on, so anything NOT listed below
+      # (including a YANKED crate, which registers as a warning) still fails the build.
+      # That is what keeps this a gate rather than a rubber stamp.
+      #
+      # Reviewed 2026-07-15 against a live `cargo audit` on both workspaces. apps/native-host
+      # is CLEAN (0 advisories) and deliberately gets NO exceptions.
+      #
+      # Two advisories were fixed properly rather than ignored, and are absent from this list:
+      #   plist 1.9.0 -> 1.10.0   pulls quick-xml 0.41 (drops the Windows-reachable 0.39.4)
+      #   anyhow 1.0.102 -> 1.0.103   clears RUSTSEC-2026-0190 (unsound)
+      #
+      # GROUP A — Linux-only, structurally unreachable. Cryptiq excludes Linux (see CLAUDE.md);
+      # these crates live behind the GTK3/X11/Wayland backends of `arboard` + Tauri and are
+      # never compiled on the Windows or macOS targets we ship. `cargo audit` reads the
+      # lockfile, which is target-agnostic, so it flags them anyway.
+      # quick-xml 0.39.4 (RUSTSEC-2026-0194/0195, 7.5 high) survives ONLY via
+      # wayland-scanner <- wl-clipboard-rs <- arboard. Verified: `cargo tree -i
+      # quick-xml@0.39.4` prints nothing on the Windows target, and only the wayland
+      # chain under `--target all`. If Linux support is ever added, these MUST come back.
+      #
+      # GROUP B — Windows-reachable, but no upstream fix exists. All are `unmaintained`
+      # notices (not vulnerabilities) on crates pinned by Tauri itself: bincode 1.x via
+      # tauri-plugin-persisted-scope, and the unic-* family via urlpattern <- tauri-utils.
+      # We cannot bump past them without Tauri doing so first. Re-check on each Tauri bump.
+      CARGO_AUDIT_IGNORES: >-
+        --ignore RUSTSEC-2026-0194
+        --ignore RUSTSEC-2026-0195
+        --ignore RUSTSEC-2024-0413
+        --ignore RUSTSEC-2024-0416
+        --ignore RUSTSEC-2024-0412
+        --ignore RUSTSEC-2024-0418
+        --ignore RUSTSEC-2024-0411
+        --ignore RUSTSEC-2024-0417
+        --ignore RUSTSEC-2024-0414
+        --ignore RUSTSEC-2024-0415
+        --ignore RUSTSEC-2024-0420
+        --ignore RUSTSEC-2024-0419
+        --ignore RUSTSEC-2024-0429
+        --ignore RUSTSEC-2024-0370
+        --ignore RUSTSEC-2025-0141
+        --ignore RUSTSEC-2025-0081
+        --ignore RUSTSEC-2025-0075
+        --ignore RUSTSEC-2025-0080
+        --ignore RUSTSEC-2025-0100
+        --ignore RUSTSEC-2025-0098
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -136,10 +183,16 @@ jobs:
       # prove native-host is genuinely audited, not just src-tauri (the four-milestone
       # blind-spot this phase exists to close).
       - name: cargo audit (Tauri)
-        run: cargo audit --deny warnings --file apps/desktop/src-tauri/Cargo.lock
+        run: cargo audit --deny warnings --file apps/desktop/src-tauri/Cargo.lock ${{ env.CARGO_AUDIT_IGNORES }}
 
+      # `if: always()` is load-bearing, not defensive boilerplate. Steps are sequential:
+      # without it, a red Tauri audit SKIPS this step entirely, so the native-host
+      # workspace goes unaudited exactly when something is already wrong — which is the
+      # four-milestone blind spot this phase exists to close. Verified by an observed
+      # red-run: with both audits red, each must fail at its OWN named step.
       - name: cargo audit (native-host)
-        run: cargo audit --deny warnings --file apps/native-host/Cargo.lock
+        if: always()
+        run: cargo audit --deny warnings --file apps/native-host/Cargo.lock ${{ env.CARGO_AUDIT_IGNORES }}
 
   node:
     name: node
@@ -289,6 +342,10 @@ jobs:
     # version and SHA256 below (same values are reused in gitleaks-full.yml).
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # The incremental scan below walks `github.event.before..after`. The default
+          # depth-1 checkout has none of those commits, so the range would be unwalkable.
+          fetch-depth: 0
 
       - name: Download + verify gitleaks
         shell: pwsh
@@ -302,7 +359,10 @@ jobs:
             Write-Error "gitleaks SHA256 mismatch: expected $sha, got $actual"
             exit 1
           }
-          Expand-Archive gitleaks.zip -DestinationPath .
+          # MUST unpack into a subdirectory: the gitleaks zip ships its own LICENSE, which
+          # collides with this repo's LICENSE at the root and makes Expand-Archive fail —
+          # a red `secrets` job on every branch that never actually runs gitleaks.
+          Expand-Archive gitleaks.zip -DestinationPath gitleaks-bin
 
       # D-03: incremental scan — the pushed commit range on `push`, the PR range on
       # `pull_request`. `github.event.before` is all-zeros on a repo's first push (no
@@ -320,7 +380,7 @@ jobs:
           } else {
             $range = '${{ github.event.before }}..${{ github.event.after }}'
           }
-          ./gitleaks.exe git --config .gitleaks.toml --log-opts="$range" .
+          ./gitleaks-bin/gitleaks.exe git --config .gitleaks.toml --log-opts="$range" .
 
   ci-required:
     name: CI Required

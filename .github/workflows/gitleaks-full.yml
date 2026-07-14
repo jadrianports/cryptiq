@@ -54,10 +54,12 @@ jobs:
             Write-Error "gitleaks SHA256 mismatch: expected $sha, got $actual"
             exit 1
           }
-          Expand-Archive gitleaks.zip -DestinationPath .
+          # Subdirectory, not root: the zip ships a LICENSE that collides with this repo's
+          # own LICENSE and makes Expand-Archive fail before gitleaks ever runs.
+          Expand-Archive gitleaks.zip -DestinationPath gitleaks-bin
 
       - name: gitleaks scan (full history — NO --log-opts range)
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          ./gitleaks.exe git --config .gitleaks.toml .
+          ./gitleaks-bin/gitleaks.exe git --config .gitleaks.toml .
