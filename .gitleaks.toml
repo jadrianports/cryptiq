@@ -35,6 +35,49 @@ title = "Cryptiq gitleaks configuration"
 [extend]
 useDefault = true
 
+# The CI-selftest break-patches are `git diff` text that DELIBERATELY carries a synthetic
+# minisign key — that is the whole point of `gitleaks-minisign.patch` (HARD-01). Without
+# this allowlist gitleaks flags our own committed patch file and the `secrets` job goes red
+# on every branch whose push range covers it, plus the weekly full-history sweep in
+# gitleaks-full.yml is red FOREVER. Observed live: run 29357296916 and siblings.
+#
+# Scoped to `*.patch` under scripts/ci-selftest/ ONLY. The path those patches PLANT into
+# (scripts/ci-selftest/__fixtures__/) is deliberately NOT allowlisted — that is the file the
+# HARD-01 red-run must still be caught on, or the gate proves nothing. Verified by red-run:
+# with this allowlist in place, the planted fixture still reds `gitleaks scan (incremental)`.
+[[allowlists]]
+description = "CI-selftest break-patches carry a synthetic (never-real) minisign key by design"
+paths = ['''^scripts/ci-selftest/.*\.patch$''']
+
+# gitleaks' DEFAULT `generic-api-key` rule fires on 14 pre-existing false positives across
+# the repo — high-entropy strings that are, without exception, published test vectors or
+# public keys. Left unhandled, the weekly full-history sweep (gitleaks-full.yml) is red from
+# its very first Monday, and a red-by-default gate is one nobody reads. Confirmed against
+# gitleaks 8.30.1 locally; each was inspected by hand:
+#   5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8  SHA-1 of the literal string "password" — THE
+#                                             canonical HIBP k-anonymity test hash
+#   GEZDGNBVGY3TQOJQ… / JBSWY3DPEHPK3PXP…     RFC-4648/6238 base32 TOTP test secrets
+#   MIIBIjANBgkqhkiG9w0BAQEFAAOC…            an SPKI header — a PUBLIC key, not a secret
+#   dG9rZW4tYmFzZTY0 / cGFpcmluZy10b2tlbi…    base64 of the placeholder strings themselves
+#   cinder-velvet-quartz-meadow-…            a demo passphrase in the design gallery
+#   curve25519-dalek                         a crate NAME, matched next to a Cargo.lock checksum
+#
+# `targetRules` scopes this to `generic-api-key` ALONE. The three custom minisign rules stay
+# ACTIVE on every one of these paths — so a real TAURI_SIGNING_PRIVATE_KEY committed into a
+# test file is still caught. That distinction is the whole point of not using a blanket path
+# mute. Verified by red-run, not by reading the docs.
+[[allowlists]]
+description = "generic-api-key false positives: published test vectors and public keys only"
+targetRules = ["generic-api-key"]
+paths = [
+  '''(^|/)__tests__/''',
+  '''\.(test|spec)\.(ts|js)$''',
+  '''^apps/native-host/tests/''',
+  '''^apps/extension/wxt\.config\.ts$''',
+  '''^apps/desktop/src/lib/components/_reference/DesignGallery\.svelte$''',
+  '''Cargo\.lock$''',
+]
+
 [[rules]]
 id = "tauri-minisign-secret-key"
 description = "Tauri/minisign encrypted secret key header (TAURI_SIGNING_PRIVATE_KEY leak, raw file form)"
