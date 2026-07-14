@@ -1,0 +1,13 @@
+diff --git a/apps/desktop/vite.config.ts b/apps/desktop/vite.config.ts
+index 580be05..b074b9e 100644
+--- a/apps/desktop/vite.config.ts
++++ b/apps/desktop/vite.config.ts
+@@ -65,7 +65,7 @@ export default defineConfig({
+   },
+ 
+   // Env variables starting with `VITE_` are exposed to the renderer.
+-  envPrefix: ['VITE_', 'TAURI_ENV_*'],
++  envPrefix: ['VITE_', 'TAURI_'],
+ 
+   build: {
+     target: 'chrome111', // Tauri webview floor on Windows (WebView2 evergreen, but pin a floor)

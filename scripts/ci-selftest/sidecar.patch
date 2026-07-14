@@ -1,0 +1,17 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index dabbfe6..c099d7b 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -56,12 +56,6 @@ jobs:
+         with:
+           components: clippy
+ 
+-      # CI-01: tauri-build's build script resolves `externalBin` entries DURING
+-      # `cargo check` itself (not only at bundle time) — staging MUST precede any
+-      # cargo step in this job, not just precede `tauri build`.
+-      - name: Stage native-host sidecar (externalBin — MUST precede any cargo step)
+-        run: pnpm --filter @cryptiq/desktop stage:nmhost
+-
+       - name: cargo check (Tauri)
+         working-directory: apps/desktop/src-tauri
+         run: cargo check

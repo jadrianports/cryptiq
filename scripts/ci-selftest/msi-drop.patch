@@ -1,0 +1,13 @@
+diff --git a/apps/desktop/src-tauri/tauri.conf.json b/apps/desktop/src-tauri/tauri.conf.json
+index 4f0a930..2759fcd 100644
+--- a/apps/desktop/src-tauri/tauri.conf.json
++++ b/apps/desktop/src-tauri/tauri.conf.json
+@@ -31,7 +31,7 @@
+   },
+   "bundle": {
+     "active": true,
+-    "targets": ["nsis", "dmg"],
++    "targets": ["msi", "nsis", "dmg"],
+     "icon": ["icons/icon.ico", "icons/icon.icns", "icons/icon.png"],
+     "externalBin": ["binaries/cryptiq-nmhost"],
+     "resources": {

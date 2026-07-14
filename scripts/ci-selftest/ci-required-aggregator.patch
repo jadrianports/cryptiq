@@ -1,0 +1,15 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index dabbfe6..fdd933b 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -90,6 +90,10 @@ jobs:
+     name: node
+     runs-on: windows-2025
+     timeout-minutes: 30
++    # CI-07 selftest: forces this job to be SKIPPED on every run (DELETE post
++    # red-run capture). Proves ci-required treats a skipped dependency as a
++    # failure of the required status check, not a silent pass.
++    if: false
+     steps:
+       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+ 

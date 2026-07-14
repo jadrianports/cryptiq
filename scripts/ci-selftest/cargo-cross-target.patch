@@ -1,0 +1,15 @@
+diff --git a/apps/desktop/scripts/copy-nmhost-binary.mjs b/apps/desktop/scripts/copy-nmhost-binary.mjs
+index 5facb7b..2bcc799 100644
+--- a/apps/desktop/scripts/copy-nmhost-binary.mjs
++++ b/apps/desktop/scripts/copy-nmhost-binary.mjs
+@@ -56,9 +56,7 @@ const ext = triple.includes('-windows-') ? '.exe' : '';
+ // passed — even when the triple matches the host — so the source dir must branch:
+ //   no --target  -> target/release/
+ //   --target X   -> target/X/release/
+-const releaseDir = explicitTarget
+-  ? path.join(nativeHostDir, 'target', explicitTarget, 'release')
+-  : path.join(nativeHostDir, 'target', 'release');
++const releaseDir = path.join(nativeHostDir, 'target', 'release');
+ 
+ const srcBinary = path.join(releaseDir, `cryptiq-nmhost${ext}`);
+ if (!existsSync(srcBinary)) {

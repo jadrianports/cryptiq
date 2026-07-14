@@ -1,0 +1,15 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index dabbfe6..d64dca1 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -140,6 +140,10 @@ jobs:
+       - name: Custom lint — Vite key-leak guard
+         run: node scripts/lint/lint-vite-key-leak.mjs
+ 
++      - name: "CI-04 selftest: stray cargo step with no preceding staging (DELETE post red-run capture)"
++        working-directory: apps/desktop/src-tauri
++        run: cargo check
++
+       - name: svelte-check + tsc --noEmit
+         run: pnpm run typecheck
+ 

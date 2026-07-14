@@ -1,0 +1,12 @@
+diff --git a/apps/native-host/Cargo.toml b/apps/native-host/Cargo.toml
+index c4f0e95..2edc01e 100644
+--- a/apps/native-host/Cargo.toml
++++ b/apps/native-host/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "cryptiq-nmhost"
+-version = "3.2.0"
++version = "3.2.1"
+ edition = "2021"
+ rust-version = "1.77.2"
+ description = "Cryptiq native-messaging bridge sidecar (spawned by Chrome, not the app)"
