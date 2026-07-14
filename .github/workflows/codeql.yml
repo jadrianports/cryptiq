@@ -1,0 +1,95 @@
+# Cryptiq CodeQL SAST (Phase 34, HARD-03 / D-06..D-08) — a DELIBERATELY separate
+# workflow from `ci.yml`.
+#
+# D-06 (why separate): CodeQL's minutes-scale extraction+analyze latency and any
+# GitHub-Advanced-Security infra flap must NOT sit on `ci-required`'s fast path —
+# that aggregator's tight/fast shape is Phase 33's hard-won result. A standalone
+# weekly `schedule:` (only reachable from a standalone workflow) also re-runs
+# updated CodeQL query packs against unchanged code, catching newly-disclosed
+# CVEs after the last commit.
+#
+# D-07 (why NOT in ci-required): these checks are required for merge via branch
+# protection instead. That still enforces the HARD-03 red-run requirement (a
+# planted vuln must fail the scan) without coupling `ci-required`'s skip=fail
+# semantics to a CodeQL outage. Do NOT add a `needs:` from ci-required to any
+# job here, and do NOT add this workflow's jobs to that aggregator.
+#
+# D-08 (build-mode: none is not a no-op for rust): `build-mode: none` is the
+# ONLY mode CodeQL's Rust extractor supports (GA since bundle 2.23.3), but the
+# extractor is built on rust-analyzer, which needs `cargo check`-equivalent
+# access to compile `build.rs` and expand proc-macros even in "no build" mode.
+# This repo's two Rust workspaces do not compile off-Windows (the same
+# Phase-14 ungated named-pipe bridge that keeps macOS build legs out of
+# ci.yml — see PROJECT.md), so the rust matrix leg runs on windows-2025 with
+# rustup/cargo on PATH and the native-host sidecar staged BEFORE
+# `codeql-action/init`, mirroring ci.yml's `rust` job CI-01 pattern
+# defensively (RESEARCH.md Pitfall 2 / Assumption A2 — the actual necessity
+# is confirmed empirically by the 34-04 red-run, not by this comment).
+#
+# Every `uses:` below is a 40-char commit SHA + `# tag` (CVE-2025-30066
+# defense), gated by `lint-workflow-sha-pins.mjs` same as ci.yml.
+
+name: codeql
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1' # weekly, standalone from ci.yml — catches newly-disclosed CVEs
+
+permissions:
+  contents: read
+  security-events: write # CodeQL uploads SARIF results
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+            os: ubuntu-latest
+          - language: actions
+            build-mode: none
+            os: ubuntu-latest
+          - language: rust
+            build-mode: none
+            os: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - if: matrix.language == 'rust'
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          run_install: false
+
+      - if: matrix.language == 'rust'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '20'
+
+      - if: matrix.language == 'rust'
+        name: pnpm install (frozen — needed for stage:nmhost below)
+        run: pnpm install --frozen-lockfile
+
+      # CI-01 (mirrored defensively, D-08 live risk #1): stage the native-host
+      # sidecar BEFORE codeql-action/init — the Tauri crate's build.rs resolves
+      # `externalBin` during a cargo-check-equivalent pass, same as ci.yml's
+      # `rust` job.
+      - if: matrix.language == 'rust'
+        name: Stage native-host sidecar (externalBin — MUST precede codeql-action/init)
+        run: pnpm --filter @cryptiq/desktop stage:nmhost
+
+      - uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
