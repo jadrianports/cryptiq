@@ -137,8 +137,14 @@ async function emitMessage(message: unknown): Promise<unknown> {
 
 let contexts: InstanceType<typeof ContentScriptContext>[] = [];
 
+// Deterministic uniqueness instead of Math.random() (project-wide ban, no-restricted-properties/
+// no-restricted-syntax) -- this id is a non-security test-fixture label only, so a module-scoped
+// monotonic counter is sufficient (contexts.length alone repeats across tests since `contexts`
+// is reset to [] in beforeEach; this counter is never reset, so it stays unique for the whole run).
+let ctxIdCounter = 0;
+
 function createCtx(): InstanceType<typeof ContentScriptContext> {
-  const ctx = new ContentScriptContext(`fill-test-${contexts.length}-${Math.random()}`);
+  const ctx = new ContentScriptContext(`fill-test-${contexts.length}-${ctxIdCounter++}`);
   contexts.push(ctx);
   return ctx;
 }

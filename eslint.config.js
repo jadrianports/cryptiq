@@ -166,8 +166,14 @@ export default [
   },
 
   // === Svelte file parsing ===
+  // Covers both apps/desktop AND apps/extension (v3.1 widened this to the extension's
+  // popup .svelte files — without parserOptions.parser: tseslint.parser here, any
+  // `<script lang="ts">` block in apps/extension/entrypoints/** fails with a bare
+  // "Parsing error: '>' expected", since svelte-eslint-parser needs an explicit TS
+  // sub-parser to understand the lang="ts" attribute; apps/desktop already worked
+  // because it was the only glob originally listed).
   {
-    files: ['apps/desktop/**/*.svelte'],
+    files: ['apps/desktop/**/*.svelte', 'apps/extension/**/*.svelte'],
     languageOptions: {
       parser: svelteParser,
       parserOptions: {
@@ -209,6 +215,12 @@ export default [
       'apps/desktop/playwright/.cache/**',
       'apps/desktop/playwright-report/**',
       'apps/desktop/test-results/**',
+      // WXT-generated build output/type dirs — gitignored, absent on a clean CI
+      // clone, but present locally after `wxt build`/`wxt prepare` and produce
+      // hundreds of spurious errors (minified bundles, triple-slash type refs)
+      // that make `pnpm lint` unusable for developers (Phase 33-04 deviation).
+      'apps/extension/.output/**',
+      'apps/extension/.wxt/**',
       'pnpm-lock.yaml',
       // GSD planning + tool harness — not Cryptiq source.
       '.planning/**',

@@ -902,6 +902,7 @@
         class="flex items-center gap-2 rounded-cryptiq bg-cryptiq-accent px-3 py-1.5 text-body font-medium text-cryptiq-accent-fg disabled:opacity-60"
       >
         {#if icon}
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -- icon is iconForType()'s hardcoded SVG constant (icons.ts TYPE_ICON), never entry/vault data; covered by icons.test.ts D-02/D-05. -->
           <span class="text-cryptiq-fg-muted">{@html icon}</span>
         {/if}
         {fillState.kind === 'pending' ? 'Filling…' : flow.fillAnyway ? 'Fill anyway' : 'Fill'}
@@ -922,6 +923,7 @@
               class="flex w-full items-center gap-2 rounded-cryptiq px-2.5 py-2 text-left text-body text-cryptiq-fg hover:bg-cryptiq-hover"
             >
               {#if icon}
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -- iconForType() is a hardcoded SVG constant, never entry/vault data (see Popup.svelte usage above). -->
                 <span class="shrink-0 text-cryptiq-fg-muted">{@html icon}</span>
               {/if}
               <span class="truncate">
@@ -979,6 +981,7 @@
           <li class="mb-1.5 flex items-center justify-between gap-1">
             <span class="flex min-w-0 items-center gap-1.5">
               {#if icon}
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -- iconForType() is a hardcoded SVG constant, never entry/vault data (see Popup.svelte usage above). -->
                 <span class="shrink-0 text-cryptiq-fg-muted">{@html icon}</span>
               {/if}
               <span class="overflow-hidden text-ellipsis whitespace-nowrap text-body text-cryptiq-fg">
