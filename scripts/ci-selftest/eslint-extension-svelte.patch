@@ -1,0 +1,13 @@
+diff --git a/apps/extension/entrypoints/popup/Popup.svelte b/apps/extension/entrypoints/popup/Popup.svelte
+index fd40eb8..2575e0f 100644
+--- a/apps/extension/entrypoints/popup/Popup.svelte
++++ b/apps/extension/entrypoints/popup/Popup.svelte
+@@ -750,6 +750,8 @@
+ </script>
+ 
+ <main class="bg-cryptiq-bg font-sans text-cryptiq-fg">
++  <!-- HARD-04 selftest: deliberate {@html} violation to trip svelte/no-at-html-tags (DELETE post red-run capture) -->
++  {@html '<!-- HARD-04 selftest fixture, never real vault data -->'}
+   <h1 class="m-0 mb-3 text-emphasis font-semibold text-cryptiq-fg">Cryptiq</h1>
+ 
+   {#if status.kind === 'loading'}

@@ -1,0 +1,8 @@
+diff --git a/scripts/ci-selftest/__fixtures__/minisign-secret-key-fixture.txt b/scripts/ci-selftest/__fixtures__/minisign-secret-key-fixture.txt
+new file mode 100644
+index 0000000..3c87f2b
+--- /dev/null
++++ b/scripts/ci-selftest/__fixtures__/minisign-secret-key-fixture.txt
+@@ -0,0 +1,2 @@
++untrusted comment: rsign encrypted secret key
++RWRTY0IyU1lOVEhFVElDLU5PTi1TRUNSRVQtRklYVFVSRS1CWVRFUy1GT1ItQ0ktU0VMRlRFU1QtRE8tTk9ULVRSRUFULUFTLVJFQUwtU1lOVEhFVElDLU5PTi1TRUNSRVQtRklYVFVSRS1CWVRFUy1GT1ItQ0ktU0VMRlRFU1QtRE8tTk9ULVRSRUFULUFTLVJFQUwtU1lOVEhFVElDLU5PTi1TRUNSRVQtRklYVFVSRS1CWVRFUy1GT1ItQ0ktU0VMRlRFU1QtRE8tTk9ULVRSRUFULUFTLVJFQUwt

@@ -43,6 +43,16 @@ since the pipeline might be red for unrelated reasons.
 | 8 | CI-07 `ci-required` aggregator (skip = fail) | `ci-required-aggregator.patch` | [29321812489](https://github.com/jadrianports/cryptiq/actions/runs/29321812489) | `node` **skipped**, `rust`+`build` succeeded, `CI Required` still **RED** |
 | 9 | CI-08 pwsh non-final-line exit propagation | `pwsh-exit-propagation.patch` | [29321809530](https://github.com/jadrianports/cryptiq/actions/runs/29321809530) | `rust` → `NativeCommandExitException` at **Line 3** (the non-final `cargo build`); the trailing `Write-Host` never ran |
 | 10 | CI-12 clean-clone `pnpm build` (root build routes through staging) | `clean-clone-smoke.patch` | [29322716256](https://github.com/jadrianports/cryptiq/actions/runs/29322716256) | `build` → `pnpm build`. First attempt came back GREEN — see "The fake gate" below. |
+| 11 | HARD-01 `secrets` job / gitleaks custom minisign rule | `gitleaks-minisign.patch` | pending | pending |
+| 12 | HARD-02a `cargo audit (Tauri)` — planted yanked dep in `apps/desktop/src-tauri` | `cargo-audit-tauri.patch` | pending | pending |
+| 13 | HARD-02b `cargo audit (native-host)` — planted yanked dep in `apps/native-host` | `cargo-audit-nativehost.patch` | pending | pending |
+| 14 | HARD-04 ESLint over an `apps/extension/**/*.svelte` `{@html}` violation | `eslint-extension-svelte.patch` | pending | pending |
+
+Rows 11-14 (Phase 34, HARD-01/HARD-02/HARD-04) are authored but not yet red-run — the live
+push→observe→revert ritual for these four (plus the HARD-06 `pnpm lint:custom` DRY-legibility
+reuse of an existing row-5 patch) is 34-03 Task 2, a `checkpoint:human-verify` gate. Until
+that task lands, treat these four rows' "pending" URLs as NOT proof of anything — per this
+file's own opening argument, an unexercised patch proves nothing.
 
 Attribution was checked on every row — the gate had to fail at *its own step*, not incidentally.
 
@@ -158,6 +168,30 @@ runner can exercise (a real `cargo check` externalBin resolution, a real cross-c
 build` output path, real `needs.*.result` semantics, real pwsh 7.6.3 exit-code propagation, a real
 clean-clone `pnpm install && pnpm build`) — those were genuinely CI-only, proven only via the live
 ritual above.
+
+## Phase 34 local pre-flight: `eslint-extension-svelte.patch` (HARD-04)
+
+Unlike the five `scripts/lint/lint-*.mjs` gates above, this patch's violation is checkable by
+running ESLint itself (no custom lint script involved), so it was pre-flighted locally exactly
+like them, on this machine, before authoring the placeholder ledger row:
+
+```bash
+git apply scripts/ci-selftest/eslint-extension-svelte.patch
+pnpm exec eslint .   # exit 1 — confirmed: svelte/no-at-html-tags at Popup.svelte:754
+git checkout -- apps/extension/entrypoints/popup/Popup.svelte   # revert
+pnpm exec eslint .   # exit 0 — confirmed, clean
+```
+
+`gitleaks-minisign.patch`, `cargo-audit-tauri.patch`, and `cargo-audit-nativehost.patch` have
+**no local pre-flight** — gitleaks isn't installed on this machine (CI downloads it fresh) and
+`cargo audit` isn't installed locally either (CI installs it via `taiki-e/install-action`). Their
+only proof is the live CI red-run in Task 2 below. Both cargo-audit patches WERE locally verified
+to still `cargo check` clean (the planted yanked dependency, `once_cell = "1"` pinned to the
+yanked `1.20.0`, compiles fine in both workspaces) — this isolates the eventual red to the
+`cargo audit (Tauri)` / `cargo audit (native-host)` step specifically, not a build failure.
+(An earlier attempt using a yanked `cfg-if 1.0.2` in `apps/desktop/src-tauri` was discarded
+after it broke `curve25519-dalek`'s compilation outright — see `once_cell`'s selection instead,
+chosen for being a genuinely unrelated, freshly-added leaf dependency in both workspaces.)
 
 ## The sharpest gate: `pwsh-exit-propagation.patch` (CI-08)
 
