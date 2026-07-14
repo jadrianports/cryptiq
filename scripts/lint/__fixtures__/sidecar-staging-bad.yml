@@ -1,0 +1,32 @@
+# Should-fail fixture for scripts/lint/lint-sidecar-staging.mjs (CI-04).
+#
+# `good-job` stages the sidecar before its cargo step (correct order) — this
+# also gives the FILE at least one staging occurrence, so the lint's grace
+# period (see header comment in lint-sidecar-staging.mjs) does not apply and
+# per-job ordering enforcement is active for every job in this file.
+#
+# `bad-job` runs a cargo step with NO staging step in that same job. Its
+# staging step being present in `good-job` must NOT satisfy `bad-job` — this
+# fixture proves the check is job-scoped, not file-scoped.
+
+name: sidecar-staging-bad-fixture
+
+on:
+  push:
+
+jobs:
+  good-job:
+    runs-on: windows-2025
+    steps:
+      - name: Stage native-host sidecar (externalBin — MUST precede any cargo step)
+        run: pnpm --filter @cryptiq/desktop stage:nmhost
+      - name: cargo check (Tauri)
+        working-directory: apps/desktop/src-tauri
+        run: cargo check
+
+  bad-job:
+    runs-on: windows-2025
+    steps:
+      - name: cargo check (Tauri) — no preceding staging step in this job
+        working-directory: apps/desktop/src-tauri
+        run: cargo check
