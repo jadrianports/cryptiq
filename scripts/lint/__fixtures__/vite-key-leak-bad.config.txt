@@ -1,0 +1,11 @@
+// scripts/lint/__fixtures__/vite-key-leak-bad.config.txt
+//
+// Deliberately vulnerable vite.config envPrefix shape for lint-vite-key-leak.mjs's
+// should-fail self-test (CI-10). Mirrors GHSA-2rcp-jvr4-r259: Tauri's own docs once
+// recommended exactly this envPrefix array, and because Vite's envPrefix match is a
+// literal startsWith check, a bare 'TAURI_' prefix bundles TAURI_SIGNING_PRIVATE_KEY
+// (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD) into shipped frontend JS via
+// import.meta.env. This file is never imported or built — only its text is regex-
+// scanned by lint-vite-key-leak.mjs when pointed here via VITE_KEY_LEAK_CONFIG.
+
+envPrefix: ['VITE_', 'TAURI_'],
