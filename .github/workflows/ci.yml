@@ -164,38 +164,15 @@ jobs:
       - name: ESLint
         run: pnpm exec eslint .
 
-      - name: Custom lint — workflow SHA pins
-        run: node scripts/lint/lint-workflow-sha-pins.mjs
-
-      - name: Custom lint — capability single-* globs
-        run: node scripts/lint/lint-capability-globs.mjs
-
-      - name: Custom lint — capability platforms
-        run: node scripts/lint/lint-capability-platforms.mjs
-
-      - name: Custom lint — CSP strictness
-        run: node scripts/lint/lint-csp.mjs
-
-      - name: Custom lint — supply chain
-        run: node scripts/lint/lint-supply-chain.mjs
-
-      - name: Custom lint — sync capabilities
-        run: node scripts/lint/lint-sync-capabilities.mjs
-
-      - name: Custom lint — TOTP wire-minimization
-        run: node scripts/lint/lint-totp-wire-minimization.mjs
-
-      - name: Custom lint — version consistency
-        run: node scripts/lint/lint-version-consistency.mjs
-
-      - name: Custom lint — sidecar staging order
-        run: node scripts/lint/lint-sidecar-staging.mjs
-
-      - name: Custom lint — workspace scripts
-        run: node scripts/lint/lint-workspace-scripts.mjs
-
-      - name: Custom lint — Vite key-leak guard
-        run: node scripts/lint/lint-vite-key-leak.mjs
+      # HARD-06/D-11: auto-discovers scripts/lint/lint-*.mjs (run-all.mjs, 34-01) —
+      # a new lint file is wired automatically, no hardcoded step list to drift out of
+      # sync. Prints a `▶ <lint-name>` banner per lint so a failure is still legibly
+      # named in the run log (the whole point of the collapse is DRY, not opacity).
+      # The Vite key-leak guard's Stage B (post-build dist grep) skips gracefully here
+      # since dist/ doesn't exist pre-build; its Stage B re-runs standalone in `build`
+      # below, unchanged, as its own separate step.
+      - name: Custom lints (auto-discovered)
+        run: pnpm lint:custom
 
       - name: svelte-check + tsc --noEmit
         run: pnpm run typecheck
