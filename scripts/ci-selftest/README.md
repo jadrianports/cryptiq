@@ -48,19 +48,20 @@ since the pipeline might be red for unrelated reasons.
 | 13 | HARD-02b `cargo audit (native-host)` — planted yanked dep in `apps/native-host` | `cargo-audit-nativehost.patch` | [29357285887](https://github.com/jadrianports/cryptiq/actions/runs/29357285887) | `rust` → **`cargo audit (native-host)`** — the historically-blind workspace, failing at its OWN named step |
 | 14 | HARD-04 ESLint over an `apps/extension/**/*.svelte` `{@html}` violation | `eslint-extension-svelte.patch` | [29357276756](https://github.com/jadrianports/cryptiq/actions/runs/29357276756) | `node` → **ESLint** (`svelte/no-at-html-tags`) |
 | 15 | HARD-06 `pnpm lint:custom` still NAMES the failing lint after the DRY collapse | `version-consistency.patch` (reused) | [29357290223](https://github.com/jadrianports/cryptiq/actions/runs/29357290223) | `node` → **Custom lints (auto-discovered)**; log reads `✖ 1/11 custom lint(s) failed: lint-version-consistency.mjs` — legibility survived |
-| 16 | HARD-03 CodeQL `javascript-typescript` — planted `eval(location.hash)` code-injection sink | `codeql-jsts.patch` | pending (34-04 Task 3) | CodeQL `analyze (javascript-typescript)` — `js/code-injection` |
-| 17 | HARD-03 CodeQL `actions` — planted `github.event.comment.body` expression-injection sink in a scratch workflow | `codeql-actions.patch` | pending (34-04 Task 3) | CodeQL `analyze (actions)` — `actions/code-injection/medium` |
-| 18 | HARD-03 CodeQL `rust` — planted cleartext-logging-of-sensitive-data sink in `apps/desktop/src-tauri` | `codeql-rust-tauri.patch` | pending (34-04 Task 3) | CodeQL `analyze (rust)` — `rust/cleartext-logging` |
-| 19 | HARD-03 CodeQL `rust` — planted cleartext-logging-of-sensitive-data sink in `apps/native-host` (the historically-blind workspace; proves the extractor walks it, or triggers a 2nd matrix entry if it doesn't) | `codeql-rust-nativehost.patch` | pending (34-04 Task 3) | CodeQL `analyze (rust)` — `rust/cleartext-logging`, native-host workspace |
+| 16 | HARD-03 CodeQL `javascript-typescript` — planted `eval(location.hash)` code-injection sink | `codeql-jsts.patch` | [29365157862](https://github.com/jadrianports/cryptiq/actions/runs/29365157862) | `CodeQL Gate` RED — alert `js/code-injection` **[critical]** @ `codeql-jsts-sink.mjs:14` |
+| 17 | HARD-03 CodeQL `actions` — planted `github.event.comment.body` expression-injection sink in a scratch workflow | `codeql-actions.patch` | [29365149841](https://github.com/jadrianports/cryptiq/actions/runs/29365149841) | `CodeQL Gate` RED — alert `actions/cache-poisoning/code-injection` **[high]** @ `ci-selftest-actions-scratch.yml:26` |
+| 18 | HARD-03 CodeQL `rust` — planted null-pointer-deref sink in `apps/desktop/src-tauri` | `codeql-rust-tauri.patch` | [29365153581](https://github.com/jadrianports/cryptiq/actions/runs/29365153581) | `CodeQL Gate` RED — alert `rust/access-invalid-pointer` **[high]** @ `apps/desktop/src-tauri/src/codeql_selftest.rs:15` |
+| 19 | HARD-03 CodeQL `rust` — planted null-pointer-deref sink in `apps/native-host` (the historically-blind workspace) | `codeql-rust-nativehost.patch` | [29365145847](https://github.com/jadrianports/cryptiq/actions/runs/29365145847) | `CodeQL Gate` RED — alert `rust/access-invalid-pointer` **[high]** @ **`apps/native-host/src/codeql_selftest.rs:15`** — proves the extractor walks the 2nd workspace (OQ#2 answered; no 2nd matrix entry needed) |
+| 20 | HARD-05 concurrency `cancel-in-progress` on ci.yml (never release.yml) | 2 rapid pushes to `selftest/hard05-concurrency` | [29365641308](https://github.com/jadrianports/cryptiq/actions/runs/29365641308) | run **cancelled** by the superseding push ([29365671150](https://github.com/jadrianports/cryptiq/actions/runs/29365671150)); release.yml has no concurrency block, so a tag build is never cancelled |
+| 21 | HARD-05 warm rust-cache speedup | natural experiment (lockfile = cache key) | cold [29357246295](https://github.com/jadrianports/cryptiq/actions/runs/29357246295) vs warm [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) | `rust` job **11m17s cold** (commit `41c0fad` changed Cargo.lock) → **3m07s warm** (unchanged lockfile) — ~3.5× |
 
 **Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
 Attribution was checked on every row — the gate had to fail at *its own step*, not incidentally.
 
-### Phase 34's fake gates: the ritual earned its keep twice more
+### Phase 34's fake gates: the ritual earned its keep FOUR more times
 
-The first red-run round "passed" — five branches, five red runs. Every one was worthless, and
-config-text review would have shipped all of it:
+Config-text review would have shipped every one of these. Each looked correct; none worked.
 
 1. **gitleaks never executed.** `Expand-Archive -DestinationPath .` unpacked the zip's own
    `LICENSE` into the repo root, colliding with ours. The `secrets` job was red on *every*
@@ -75,10 +76,24 @@ config-text review would have shipped all of it:
    back to full history — which contains `gitleaks-minisign.patch` itself. HARD-01's "red" was
    attributable to the patch file, not the planted key. Allowlisted `*.patch` (the `__fixtures__/`
    path it plants into is deliberately NOT allowlisted, or the gate would prove nothing).
+4. **CodeQL passed GREEN on a planted CRITICAL vuln** — the worst of the four, because it hid
+   inside the security tool itself. `codeql-action/analyze` uploads alerts to the Security tab
+   and exits 0; a planted `js/code-injection` (critical) left the workflow green (run 29361233154).
+   Fix: a `codeql-gate` job that reads back the alerts CodeQL filed for the just-analyzed SHA and
+   fails on any open critical/high — so a push actually reds. Its own green-on-real
+   ([29362564405](https://github.com/jadrianports/cryptiq/actions/runs/29362564405)) only came
+   after a real pre-existing high alert in `pairing.rs` (an FFI-provenance false positive CodeQL
+   cannot model) was reviewed and dismissed with justification.
 
-Rows 11-15 above are the *post-fix* runs. The lesson is the same one CI-12 taught: **a red run is
-not proof a gate works — only a red run that fails at the right step, paired with a green-on-real,
-is.** Colour alone is what "green but blind" looks like in the mirror.
+Also worth recording: the executor's first Rust CodeQL patches used `rust/cleartext-logging`,
+which produced **zero** alerts in either workspace — that query is not in the default suite. Had
+we trusted "the patch is a vuln" without observing detection, OQ#2 (does the extractor walk
+native-host?) would have stayed silently unanswered. Rewritten to `rust/access-invalid-pointer`
+(known-in-suite: it fired on real `pairing.rs`), both workspaces then went red at their own paths.
+
+Rows 11-21 above are the *post-fix* runs. The lesson is the same one CI-12 taught, now four times
+over: **a red run is not proof a gate works — only a red run that fails at the right step, paired
+with a green-on-real, is.** Colour alone is what "green but blind" looks like in the mirror.
 
 ## The fake gate — the ritual's most valuable catch (CI-12)
 
