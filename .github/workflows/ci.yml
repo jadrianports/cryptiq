@@ -1,14 +1,19 @@
 # Cryptiq CI — tiered job graph (Phase 33, CI-07/D-01) proving every gate actually
-# executes on a push: `rust` (cargo check/clippy/test for BOTH Rust workspaces), `node`
-# (ESLint + all 11 custom lints + typecheck + vitest + audit, once on Windows), `build`
-# (tauri build fanned across Windows + macOS arm64/x64, sidecar staged per leg), and
-# `ci-required` (the single required status check — fails if any of the above is
-# skipped, cancelled, or failed; a skipped job must never masquerade as a pass).
+# executes on a push: `rust` (cargo check/clippy/test + cargo-audit for BOTH Rust
+# workspaces), `node` (ESLint + one auto-discovered `pnpm lint:custom` step + typecheck
+# + vitest + audit, once on Windows), `build` (tauri build, sidecar staged per leg),
+# `secrets` (SHA-verified gitleaks binary scanning the pushed commit range against
+# .gitleaks.toml), and `ci-required` (the single required status check — fails if any
+# of the above is skipped, cancelled, or failed; a skipped job must never masquerade
+# as a pass).
 #
 # Every `uses:` is pinned to a 40-character commit SHA (DIST-03 / Pitfall 14 /
 # CVE-2025-30066 defense). Dependabot maintains these SHAs automatically because it
 # detects the existing SHA-pin format in this file (no `pinDigests` flag — that field
 # does not exist in the Dependabot config schema; see RESEARCH.md Open Question #6).
+# EXCEPTION: the `secrets` job's gitleaks binary is pinned by version + URL + SHA256,
+# not a `uses:` — deliberately NOT Dependabot-tracked (D-01/D-03, Phase 34); see that
+# job's own comment for the manual bump cadence.
 #
 # DIST-04: Phase 1 ships UNSIGNED installers. TAURI_SIGNING_PRIVATE_KEY is explicitly
 # empty so Tauri's build step knows not to attempt signing. Code-signing returns post-v1.
@@ -18,6 +23,13 @@
 # checks the LAST command's $LASTEXITCODE, so a native-command failure earlier in a
 # multi-line run: block can otherwise go green). Any surviving multi-line pwsh block
 # must carry `$PSNativeCommandUseErrorActionPreference = $true` as its first line.
+#
+# CACHING/CONCURRENCY (Phase 34, HARD-05/D-10a..c): all three jobs run
+# `pnpm/action-setup` BEFORE `actions/setup-node` with `cache: 'pnpm'` (setup-node's
+# cache resolution shells `pnpm store path --silent`, which needs pnpm on PATH first).
+# `rust`+`build` cache both Rust workspaces via `Swatinem/rust-cache` with distinct
+# `shared-key`s. A top-level `concurrency` block cancels superseded runs on this
+# workflow only — see release.yml for why that workflow deliberately has none.
 
 name: ci
 
@@ -30,6 +42,14 @@ on:
 permissions:
   contents: read
 
+# HARD-05/D-10c: cancel a superseded run on the same branch/PR so stale runs never
+# pile up gating the branch. `head_ref` first (only defined on pull_request events) so
+# push-runs and PR-runs on the same branch don't cross-cancel each other's groups; only
+# the newest run's `ci-required` aggregator ends up gating the branch either way.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
     name: rust
@@ -38,16 +58,20 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
-        with:
-          node-version: '20'
-
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
         # No `version:` — pnpm/action-setup v6 reads the pinned pnpm@10.5.0 from
         # package.json#packageManager. Specifying both conflicts (ERR_PNPM_BAD_PM_VERSION).
         # Single source of truth: package.json. Dependabot keeps it current.
         with:
           run_install: false
+
+      # HARD-05/D-10a: pnpm MUST be on PATH before setup-node's `cache: 'pnpm'` runs —
+      # it shells `pnpm store path --silent` to resolve the cache folder. Reordering
+      # this after pnpm/action-setup (was previously first) is the actual fix.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+          cache: 'pnpm'
 
       - name: pnpm install (frozen)
         run: pnpm install --frozen-lockfile
@@ -56,9 +80,21 @@ jobs:
         with:
           components: clippy
 
+      # HARD-05/D-10b: caches target/ + registry for BOTH Rust workspaces (auto-detect
+      # only covers cwd and would leave native-host cold). shared-key distinct from the
+      # `build` job's `rust-build` so dev-profile (check/clippy/test) and release-profile
+      # (tauri build) artifacts never evict each other.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          workspaces: |
+            apps/desktop/src-tauri
+            apps/native-host
+          shared-key: rust-checks
+
       # CI-01: tauri-build's build script resolves `externalBin` entries DURING
       # `cargo check` itself (not only at bundle time) — staging MUST precede any
-      # cargo step in this job, not just precede `tauri build`.
+      # cargo step in this job, not just precede `tauri build`. rust-cache does NOT
+      # cache the sidecar binary, so staging still runs every time.
       - name: Stage native-host sidecar (externalBin — MUST precede any cargo step)
         run: pnpm --filter @cryptiq/desktop stage:nmhost
 
@@ -93,13 +129,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
-        with:
-          node-version: '20'
-
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
         with:
           run_install: false
+
+      # HARD-05/D-10a: pnpm on PATH before setup-node's `cache: 'pnpm'` (see rust job).
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+          cache: 'pnpm'
 
       - name: pnpm install (frozen)
         run: pnpm install --frozen-lockfile
@@ -187,13 +225,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
-        with:
-          node-version: '20'
-
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
         with:
           run_install: false
+
+      # HARD-05/D-10a: pnpm on PATH before setup-node's `cache: 'pnpm'` (see rust job).
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+          cache: 'pnpm'
 
       - name: pnpm install (frozen)
         run: pnpm install --frozen-lockfile
@@ -201,6 +241,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      # HARD-05/D-10b: distinct shared-key (`rust-build`) from the `rust` job's
+      # `rust-checks` — release-profile tauri-build artifacts never evict dev-profile
+      # check/clippy/test artifacts, and vice versa.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          workspaces: |
+            apps/desktop/src-tauri
+            apps/native-host
+          shared-key: rust-build
 
       # CI-12 / CLEAN-CLONE SMOKE — deliberately does NOT pre-stage the sidecar.
       #

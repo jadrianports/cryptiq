@@ -14,6 +14,10 @@
 # Pitfall 14). scripts/lint/lint-workflow-sha-pins.mjs enforces this in CI.
 # Dependabot maintains SHAs automatically (no pinDigests flag — DIST-03 records that
 # pinDigests is not a valid Dependabot config field).
+#
+# No `concurrency:` block here, DELIBERATELY (HARD-05/D-10c, Phase 34). Cancelling a
+# mid-flight tag build would abort the RCE-by-design update channel — the update channel
+# IS this release funnel. Do not "helpfully" add one.
 
 name: release
 
