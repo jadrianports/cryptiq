@@ -33,7 +33,7 @@
 //   - Conflict arrays sorted by entryId before asserting (RESEARCH Anti-Patterns).
 
 import { describe, it, expect } from 'vitest';
-import type { InnerDoc, Entry, EntryTotp } from '../../entries/types';
+import type { InnerDoc, Entry, EntryTotp, EntryCard, EntryIdentity } from '../../entries/types';
 import type { MergeContext } from '../types';
 import { DEFAULT_RANDOM_OPTIONS } from '../../generator/types';
 import { mergeInnerDocs } from '../merge';
@@ -980,7 +980,7 @@ describe('v3 field-parity (SYNCP-01, Phase 22)', () => {
   it('validateEntry strictness: rejects malformed card/identity/equivalentUrls; accepts valid/absent', () => {
     const badCardShape = makeEntry({
       id: 'entry-bad-card-001',
-      card: 'not an object' as unknown as Entry['card'],
+      card: 'not an object' as unknown as EntryCard,
     });
     expect(() =>
       mergeInnerDocs(
@@ -1010,7 +1010,7 @@ describe('v3 field-parity (SYNCP-01, Phase 22)', () => {
 
     const badIdentity = makeEntry({
       id: 'entry-bad-identity-001',
-      identity: 'nope' as unknown as Entry['identity'],
+      identity: 'nope' as unknown as EntryIdentity,
     });
     expect(() =>
       mergeInnerDocs(
