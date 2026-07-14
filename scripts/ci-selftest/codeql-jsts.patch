@@ -1,0 +1,21 @@
+diff --git a/scripts/ci-selftest/__fixtures__/codeql-jsts-sink.mjs b/scripts/ci-selftest/__fixtures__/codeql-jsts-sink.mjs
+new file mode 100644
+index 0000000..ef7c2b6
+--- /dev/null
++++ b/scripts/ci-selftest/__fixtures__/codeql-jsts-sink.mjs
+@@ -0,0 +1,15 @@
++// HARD-03 selftest: deliberate code-injection sink (CWE-094) to trip CodeQL's
++// javascript-typescript default query `js/code-injection` (DELETE post red-run
++// capture). `location.hash` flowing into `eval()` is CodeQL's own canonical
++// DOM-based code-injection pattern (see the upstream test fixture at
++// javascript/ql/test/query-tests/Security/CWE-094/CodeInjection/webix/webix.html,
++// which uses the equivalent `document.location.hash` source into a dangerous
++// sink). Inert: this file is never imported by any real entrypoint, never
++// bundled, and never executed — it exists only to be scanned by the CodeQL
++// `javascript-typescript` extractor on a scratch branch
++// (scripts/ci-selftest/codeql-jsts.patch). See scripts/ci-selftest/README.md.
++
++export function selftestEvalLocationHash() {
++  // eslint-disable-next-line no-eval -- deliberate CodeQL selftest sink, not real code
++  eval(location.hash);
++}

@@ -1,0 +1,32 @@
+diff --git a/.github/workflows/ci-selftest-actions-scratch.yml b/.github/workflows/ci-selftest-actions-scratch.yml
+new file mode 100644
+index 0000000..9ff3228
+--- /dev/null
++++ b/.github/workflows/ci-selftest-actions-scratch.yml
+@@ -0,0 +1,26 @@
++# HARD-03 selftest: deliberate GitHub Actions expression-injection sink (CWE-094)
++# to trip CodeQL's `actions` default query `actions/code-injection/medium`
++# (DELETE post red-run capture). This is a SCRATCH, throwaway workflow file —
++# it is NEVER wired into ci.yml, release.yml, or codeql.yml, and its own
++# `issue_comment` trigger is never expected to fire in practice (selftest
++# scratch branches never receive issue-comment activity). CodeQL's `actions`
++# extractor statically analyzes every workflow file's YAML definition on the
++# push that triggers codeql.yml itself — it does not require this workflow's
++# own trigger to actually fire for the vulnerable pattern to be flagged.
++# See scripts/ci-selftest/README.md / scripts/ci-selftest/codeql-actions.patch.
++
++name: ci-selftest-actions-scratch
++
++on:
++  issue_comment:
++    types: [created]
++
++permissions:
++  contents: read
++
++jobs:
++  echo-body:
++    runs-on: ubuntu-latest
++    steps:
++      - run: |
++          echo '${{ github.event.comment.body }}'

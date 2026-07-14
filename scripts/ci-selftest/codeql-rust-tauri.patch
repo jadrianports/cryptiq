@@ -1,0 +1,61 @@
+diff --git a/apps/desktop/src-tauri/Cargo.lock b/apps/desktop/src-tauri/Cargo.lock
+index c2e8659..fa6fadd 100644
+--- a/apps/desktop/src-tauri/Cargo.lock
++++ b/apps/desktop/src-tauri/Cargo.lock
+@@ -775,6 +775,7 @@ dependencies = [
+  "blake2",
+  "crypto_box",
+  "libc",
++ "log",
+  "qrcode",
+  "reqwest",
+  "serde",
+diff --git a/apps/desktop/src-tauri/Cargo.toml b/apps/desktop/src-tauri/Cargo.toml
+index 922207e..1478896 100644
+--- a/apps/desktop/src-tauri/Cargo.toml
++++ b/apps/desktop/src-tauri/Cargo.toml
+@@ -21,6 +21,12 @@ tauri-plugin-clipboard-manager = "2"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ 
++# HARD-03 selftest: already resolved transitively via Tauri's own dependency tree
++# (verified in Cargo.lock at 0.4.29) — declaring it directly pins the SAME
++# already-resolved version, no new download, mirroring the blake2/base64 reuse
++# pattern below (DELETE post red-run capture).
++log = "=0.4.29"
++
+ # Clipboard read+write for the sensitive-copy path (LOCK-02/06).
+ # default-features = false drops the `image-data` feature (text-only — avoids pulling
+ # Gdi / core-graphics). 1Password-maintained (github.com/1Password/arboard), MIT/Apache-2.0.
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index 326c338..92f6b91 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -1,3 +1,4 @@
++mod codeql_selftest; // HARD-03 selftest fixture (DELETE post red-run capture)
+ mod commands;
+ 
+ use tauri::{Emitter, Manager};
+diff --git a/apps/desktop/src-tauri/src/codeql_selftest.rs b/apps/desktop/src-tauri/src/codeql_selftest.rs
+new file mode 100644
+index 0000000..e965b29
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/codeql_selftest.rs
+@@ -0,0 +1,17 @@
++//! HARD-03 selftest: deliberate cleartext-logging-of-sensitive-data sink
++//! (CWE-312/CWE-532) to trip CodeQL's `rust` default query
++//! `rust/cleartext-logging` on the `apps/desktop/src-tauri` workspace
++//! (see `scripts/ci-selftest/README.md`).
++//!
++//! DELETE post red-run capture. Never called by any real code path; never
++//! merged to `main` outside this patch file
++//! (`scripts/ci-selftest/codeql-rust-tauri.patch`).
++
++#![allow(dead_code)]
++
++use log::info;
++
++fn selftest_cleartext_logging() {
++    let password = "P@ssw0rd";
++    info!("User password changed to {password}");
++}

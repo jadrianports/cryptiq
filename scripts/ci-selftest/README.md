@@ -48,6 +48,10 @@ since the pipeline might be red for unrelated reasons.
 | 13 | HARD-02b `cargo audit (native-host)` — planted yanked dep in `apps/native-host` | `cargo-audit-nativehost.patch` | [29357285887](https://github.com/jadrianports/cryptiq/actions/runs/29357285887) | `rust` → **`cargo audit (native-host)`** — the historically-blind workspace, failing at its OWN named step |
 | 14 | HARD-04 ESLint over an `apps/extension/**/*.svelte` `{@html}` violation | `eslint-extension-svelte.patch` | [29357276756](https://github.com/jadrianports/cryptiq/actions/runs/29357276756) | `node` → **ESLint** (`svelte/no-at-html-tags`) |
 | 15 | HARD-06 `pnpm lint:custom` still NAMES the failing lint after the DRY collapse | `version-consistency.patch` (reused) | [29357290223](https://github.com/jadrianports/cryptiq/actions/runs/29357290223) | `node` → **Custom lints (auto-discovered)**; log reads `✖ 1/11 custom lint(s) failed: lint-version-consistency.mjs` — legibility survived |
+| 16 | HARD-03 CodeQL `javascript-typescript` — planted `eval(location.hash)` code-injection sink | `codeql-jsts.patch` | pending (34-04 Task 3) | CodeQL `analyze (javascript-typescript)` — `js/code-injection` |
+| 17 | HARD-03 CodeQL `actions` — planted `github.event.comment.body` expression-injection sink in a scratch workflow | `codeql-actions.patch` | pending (34-04 Task 3) | CodeQL `analyze (actions)` — `actions/code-injection/medium` |
+| 18 | HARD-03 CodeQL `rust` — planted cleartext-logging-of-sensitive-data sink in `apps/desktop/src-tauri` | `codeql-rust-tauri.patch` | pending (34-04 Task 3) | CodeQL `analyze (rust)` — `rust/cleartext-logging` |
+| 19 | HARD-03 CodeQL `rust` — planted cleartext-logging-of-sensitive-data sink in `apps/native-host` (the historically-blind workspace; proves the extractor walks it, or triggers a 2nd matrix entry if it doesn't) | `codeql-rust-nativehost.patch` | pending (34-04 Task 3) | CodeQL `analyze (rust)` — `rust/cleartext-logging`, native-host workspace |
 
 **Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
@@ -268,6 +272,49 @@ pnpm build     # must SUCCEED on the un-patched (fixed) tree, FAIL on the patche
 The CI-hosted red/green runs above already exercise this exact scenario on a real GitHub-hosted
 clean checkout, which is what makes the fake-gate discovery meaningful: the local re-run pattern
 above is available for anyone verifying this gate again in the future.
+
+## Phase 34-04 local pre-flight: the 4 CodeQL break-patches (HARD-03)
+
+CodeQL is not installed locally (its extractor/query-pack toolchain is CI-only, downloaded
+fresh by `codeql-action/init`), so none of these four can be pre-flighted by actually running
+CodeQL on this machine. What WAS verified locally, on this machine, before authoring the
+placeholder ledger rows above:
+
+- **All four apply cleanly and revert cleanly** against current `main`:
+  `git apply scripts/ci-selftest/codeql-<x>.patch` followed by
+  `git apply -R scripts/ci-selftest/codeql-<x>.patch` leaves `git status --short` empty for
+  every one (new-file patches are fully removed on revert, not just content-reverted).
+- **Both Rust patches (`codeql-rust-tauri.patch`, `codeql-rust-nativehost.patch`) `cargo check`
+  clean** in their respective workspace after applying: the planted sink is a genuine *semantic*
+  vulnerability (a `log::info!` call that interpolates a local `password` literal — CodeQL's
+  `rust/cleartext-logging` pattern, confirmed via Context7 against `codeql-query-help/rust/
+  rust-cleartext-logging`), not a compile error. This isolates the eventual red to the CodeQL
+  `rust` analyze step specifically, exactly the same discipline the two `cargo-audit-*.patch`
+  files above already established for HARD-02. Both patches add `log = "=0.4.29"` as a direct
+  dependency — already resolved transitively in `apps/desktop/src-tauri/Cargo.lock` at that exact
+  version, so `codeql-rust-tauri.patch` pulls no new download; `codeql-rust-nativehost.patch`
+  pins the SAME version deliberately, for a genuinely new (but trivial, dependency-free, widely
+  audited) direct dependency in that workspace.
+- **`codeql-jsts.patch`** plants `eval(location.hash)` in a new, never-imported fixture file
+  (`scripts/ci-selftest/__fixtures__/codeql-jsts-sink.mjs`) — CodeQL's own canonical
+  DOM-based `js/code-injection` demonstration pattern (mirrors the upstream test fixture at
+  `javascript/ql/test/query-tests/Security/CWE-094/CodeInjection/webix/webix.html`, which uses
+  the equivalent `document.location.hash` source into a dangerous sink).
+- **`codeql-actions.patch`** adds a new scratch workflow file,
+  `.github/workflows/ci-selftest-actions-scratch.yml` — NEVER `ci.yml`, `release.yml`, or
+  `codeql.yml` — containing `echo '${{ github.event.comment.body }}'` in a `run:` block, the
+  exact pattern CodeQL's `actions/code-injection/medium` query help documents as vulnerable.
+  Its `issue_comment` trigger is never expected to fire on a selftest scratch branch; CodeQL's
+  `actions` extractor analyzes the workflow's YAML definition statically on the push that
+  triggers `codeql.yml`, independent of whether this workflow's own trigger ever fires.
+
+All four query-pattern choices (severity/inclusion in CodeQL's DEFAULT query suite, not only
+`security-extended`) were selected from current CodeQL documentation fetched live via Context7
+(`/github/codeql` and `/websites/codeql_github`), not from training-data recall — per the plan's
+critical guidance that `security-extended` is not enabled on this repo's `codeql.yml`.
+
+The live CI red-run for all four (Task 3) is where each gets its actual proof and a real URL,
+replacing the "pending" placeholders above.
 
 ## Full ledger
 
