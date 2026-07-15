@@ -1,0 +1,18 @@
+diff --git a/scripts/native-host/register-native-host.ps1 b/scripts/native-host/register-native-host.ps1
+index a1b2c3d..e4f5a6b 100644
+--- a/scripts/native-host/register-native-host.ps1
++++ b/scripts/native-host/register-native-host.ps1
+@@ -37,7 +37,12 @@ Set-Content -Path $manifestPath -Value $manifest -Encoding UTF8
+ foreach ($browser in @('Google\Chrome', 'Microsoft\Edge')) {
+   $keyPath = "HKCU:\Software\$browser\NativeMessagingHosts\$hostName"
+   New-Item -Path $keyPath -Force | Out-Null
+-  Set-ItemProperty -Path $keyPath -Name '(default)' -Value $manifestPath
++  # install-smoke-red (REL-03 break-patch, scripts/ci-selftest/README.md ritual):
++  # writes a WRONG registry value while Set-ItemProperty still succeeds (no
++  # throw, installer still exits 0) - install-smoke.ps1's registry read-back
++  # assertion must catch this, not the installer's own exit code (the DIST-02
++  # -196608 lesson this phase exists to prevent).
++  Set-ItemProperty -Path $keyPath -Name '(default)' -Value "$manifestPath.broken"
+ }
+ 
+ Write-Host "Registered $hostName -> $manifestPath (sidecar: $SidecarPath, extension: $ExtensionId)"

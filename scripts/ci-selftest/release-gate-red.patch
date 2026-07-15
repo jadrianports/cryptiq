@@ -1,0 +1,14 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index f1e2d3c..a9b8c7d 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -213,6 +213,9 @@ jobs:
+       - name: pnpm install (frozen)
+         run: pnpm install --frozen-lockfile
+ 
++      - name: "REL-01 selftest: deterministic early node-job failure (DELETE post red-run capture)"
++        run: exit 1
++
+       - name: ESLint
+         run: pnpm exec eslint .
+ 
