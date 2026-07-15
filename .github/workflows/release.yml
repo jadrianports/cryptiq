@@ -27,11 +27,25 @@ on:
       - 'v*'
 
 # contents:write is required for creating the GitHub Release and uploading installer assets.
+# id-token:write is required for Sigstore OIDC (attest-build-provenance/attest-sbom, Phase 35).
+# attestations:write is required to publish those attestations to the repo attestation store.
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
+  # REL-01 (Phase 35): a FRESH run of the entire ci.yml job graph on the tagged commit,
+  # gating `release` below. A red/skipped gate means `release` is skipped entirely — see
+  # D-01b/c. This calls ci.yml ONLY (not the separate security-scan workflow) — Phase 34's
+  # D-07 deliberately keeps that scan's minutes-scale latency off this fast release path;
+  # do not add a dependency on it here.
+  gate:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
   release:
+    needs: [gate]
     # PLATFORM SCOPE (Phase 33, 2026-07-14) — Windows-only, in LOCKSTEP with ci.yml's
     # `build` matrix. See the long-form rationale on that job: macOS has not compiled
     # since Phase 14 (ungated Windows named pipes in the v3.0 extension bridge), and
@@ -89,5 +103,8 @@ jobs:
           tagName: 'v__VERSION__'
           releaseName: 'Cryptiq v__VERSION__'
           releaseDraft: true
-          prerelease: false
+          # D-04c: ONLY the throwaway v0.0.0-ci dry-run tag is doubly-excluded from
+          # releases/latest (releaseDraft:true already excludes it once; prerelease:true
+          # excludes it a second, independent way). Real tags evaluate to false here.
+          prerelease: ${{ github.ref_name == 'v0.0.0-ci' }}
           args: ${{ matrix.args }}
