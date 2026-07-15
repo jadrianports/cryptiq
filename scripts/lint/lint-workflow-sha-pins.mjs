@@ -13,7 +13,7 @@
 // Once Plan 01-06 lands the workflow file, the lint becomes active.
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const WORKFLOW_DIR = join(
@@ -40,8 +40,11 @@ function checkFile(path) {
     const m = trimmed.match(USES_REGEX);
     if (!m) return;
     const ref = m[1];
-    // Local actions and reusable workflows in same repo are allowed unpinned.
-    if (ref.startsWith('./') || ref.startsWith('../')) return;
+    // D-01d (Phase 35): narrow the local-ref allowlist to reusable WORKFLOWS specifically —
+    // ./.github/workflows/<name>.yml or .yaml — rather than any ./ or ../ prefixed uses:.
+    // Defense-in-depth tightening; the broader `./`/`../` allowlist previously here already
+    // passed `uses: ./.github/workflows/ci.yml` before this patch (verified, RESEARCH.md item 2).
+    if (/^\.\/\.github\/workflows\/.*\.ya?ml$/.test(ref)) return;
     // Docker actions are out of scope for SHA pinning.
     if (ref.startsWith('docker://')) return;
 
@@ -74,18 +77,28 @@ function walk(dir) {
   }
 }
 
-try {
-  walk(WORKFLOW_DIR);
-} catch (e) {
-  if (e.code === 'ENOENT') {
-    // Plan 01-05 override: workflows not yet authored (Plan 01-06 lands them).
-    // Exiting 0 here keeps the lint chain green during Wave 3 dependency order.
-    console.log(
-      'lint-workflow-sha-pins: no .github/workflows directory yet — skipping (Plan 01-06 will land it).',
-    );
-    process.exit(0);
+// D-01d (Phase 35): fixtureArg CLI branch, mirroring lint-sidecar-staging.mjs — lints a single
+// fixture path directly (used by the sha-pins-good.yml / sha-pins-bad.yml proof pair) instead of
+// walking .github/workflows/. No-arg invocation (the run-all.mjs auto-discovery / CI path, D-11)
+// is unchanged below.
+const fixtureArg = process.argv[2];
+
+if (fixtureArg) {
+  checkFile(resolve(fixtureArg));
+} else {
+  try {
+    walk(WORKFLOW_DIR);
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      // Plan 01-05 override: workflows not yet authored (Plan 01-06 lands them).
+      // Exiting 0 here keeps the lint chain green during Wave 3 dependency order.
+      console.log(
+        'lint-workflow-sha-pins: no .github/workflows directory yet — skipping (Plan 01-06 will land it).',
+      );
+      process.exit(0);
+    }
+    throw e;
   }
-  throw e;
 }
 
 if (violations > 0) {
