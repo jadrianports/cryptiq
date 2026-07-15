@@ -1,0 +1,58 @@
+# Cryptiq assert-latest — post-publish positive assertion (Phase 35, REL-06/D-04d).
+#
+# Deliberately a SEPARATE, standalone workflow from release.yml — it fires only on a
+# human clicking "Publish" on a REAL, non-draft, non-prerelease release, which is an
+# event release.yml's own `on: push: tags: v*` trigger never sees (publishing is a
+# GitHub Releases UI/API action, not a git push). It is also independent of the
+# `ci-required` fast path and the funnel entirely, mirroring codeql.yml/gitleaks-full.yml's
+# "why a separate file" convention: this check has nothing to do with build correctness,
+# only with the release *lifecycle* — did the thing that was just published actually
+# become the thing `releases/latest` resolves to.
+#
+# Why `on: release: types: [released]` and NOT `prereleased` or `published`:
+# GitHub's own docs confirm the `released` activity type fires ONLY for a stable
+# (non-prerelease) publish. Subtly, `prereleased` does NOT fire when a *draft*
+# prerelease is published (only `published` does) — so even in a worst-case accidental
+# "Publish" click on the disposable `v0.0.0-ci` draft (created with `prerelease: true`
+# per D-04c), this trigger would not fire at all. That is a second, independent layer
+# of defense-in-depth on top of D-04c's own draft/prerelease exclusion — this workflow
+# structurally cannot assert against the throwaway CI tag.
+#
+# The `latest.json` half of REL-06 (asserting the eventual updater manifest's `.version`
+# matches) is Phase-37 scope — this phase produces no updater artifacts (no signing key
+# exists yet), so that assertion ships COMMENTED below, never executed, until Phase 37
+# lands the updater build. Do NOT uncomment it early; doing so would silently import
+# Phase-37 scope into this phase (D-04a boundary).
+
+name: assert-latest
+
+on:
+  release:
+    types: [released]
+
+permissions:
+  contents: read
+
+jobs:
+  assert:
+    name: assert releases/latest resolves to the just-published tag
+    runs-on: ubuntu-latest # OS-agnostic gh api call; no Windows-specific work here
+    timeout-minutes: 5
+    steps:
+      - name: Assert releases/latest matches the just-published tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LATEST=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
+          if [ "$LATEST" != "${{ github.event.release.tag_name }}" ]; then
+            echo "::error::releases/latest ($LATEST) != just-published tag (${{ github.event.release.tag_name }})"
+            exit 1
+          fi
+          echo "releases/latest correctly resolves to ${{ github.event.release.tag_name }}"
+
+      # Phase 37 ADDITION (do NOT enable before updater artifacts exist):
+      # - name: Assert latest.json points at the published version
+      #   run: |
+      #     curl -sf "https://github.com/${{ github.repository }}/releases/latest/download/latest.json" \
+      #       | jq -e '.version == "${{ github.event.release.tag_name }}"'
