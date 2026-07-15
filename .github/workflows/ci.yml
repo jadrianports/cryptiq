@@ -329,6 +329,15 @@ jobs:
       - name: Vite key-leak dist grep
         run: node scripts/lint/lint-vite-key-leak.mjs
 
+      # REL-03 (build-job half) / D-02d: install-smokes the *-setup.exe this same
+      # runner just built — the earliest point the DIST-02 `-196608` class of bug
+      # could be caught. Local to this runner (same job that just ran `pnpm build`),
+      # so no actions/download-artifact needed. Gates on registry read-back inside
+      # the script, never on the installer's own exit code (see script header).
+      - name: Install-smoke (silent install -> registry read-back -> silent uninstall)
+        shell: pwsh
+        run: ./scripts/ci/install-smoke.ps1
+
   secrets:
     name: secrets
     runs-on: windows-2025
