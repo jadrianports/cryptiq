@@ -36,7 +36,7 @@
   IntCmp $0 0 postinstall_ok postinstall_warn postinstall_warn
   postinstall_warn:
     DetailPrint "WARNING: native-messaging host registration failed (exit code $0)."
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not register its browser extension bridge (exit code $0). The browser extension will not be able to connect to Cryptiq until this is fixed. You can retry by running scripts\native-host\register-native-host.ps1 manually."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not register its browser extension bridge (exit code $0). The browser extension will not be able to connect to Cryptiq until this is fixed. You can retry by running scripts\native-host\register-native-host.ps1 manually." /SD IDOK
   postinstall_ok:
 !macroend
 
@@ -46,6 +46,6 @@
   IntCmp $0 0 preuninstall_ok preuninstall_warn preuninstall_warn
   preuninstall_warn:
     DetailPrint "WARNING: native-messaging host unregistration failed (exit code $0)."
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not fully remove its browser extension bridge registration (exit code $0). You may need to manually remove the registry keys under NativeMessagingHosts\com.cryptiq.bridge."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not fully remove its browser extension bridge registration (exit code $0). You may need to manually remove the registry keys under NativeMessagingHosts\com.cryptiq.bridge." /SD IDOK
   preuninstall_ok:
 !macroend
