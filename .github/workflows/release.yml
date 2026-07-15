@@ -158,3 +158,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload ${{ github.ref_name }} SHA256SUMS sbom.spdx.json --clobber --repo ${{ github.repository }}
+
+      # REL-06 (negative half, D-04b): prove the draft never resolves as releases/latest.
+      # A 404 (no non-draft/non-prerelease release exists yet — expected when v0.0.0-ci is
+      # the only release) IS the passing assertion. If a real release already exists,
+      # assert its tag_name != v0.0.0-ci instead. The POSITIVE post-publish half lives in
+      # assert-latest.yml (35-03), NOT here. Deliberately does NOT fetch the updater
+      # manifest (Phase-37 boundary — no updater artifacts exist yet).
+      - name: Assert releases/latest does not resolve to the v0.0.0-ci draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RESPONSE=$(gh api repos/${{ github.repository }}/releases/latest 2>&1) && STATUS=0 || STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            echo "releases/latest: no non-draft/non-prerelease release exists yet (expected) — pass."
+          else
+            TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
+            echo "releases/latest currently resolves to tag: $TAG"
+            if [ "$TAG" = "v0.0.0-ci" ]; then
+              echo "::error::releases/latest resolved to the v0.0.0-ci draft — REL-06 violated"
+              exit 1
+            fi
+          fi
