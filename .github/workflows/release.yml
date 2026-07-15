@@ -108,3 +108,53 @@ jobs:
           # excludes it a second, independent way). Real tags evaluate to false here.
           prerelease: ${{ github.ref_name == 'v0.0.0-ci' }}
           args: ${{ matrix.args }}
+
+      # REL-03: install-smoke the SHIPPABLE artifact — same script/glob/runner as
+      # ci.yml's build-job smoke (D-02d), now run against the real *-setup.exe this
+      # job just built and drafted a release for. Gates on registry/manifest/sidecar
+      # read-back, never on the installer's own exit code.
+      - name: Install-smoke (silent install -> registry read-back -> silent uninstall)
+        shell: pwsh
+        run: ./scripts/ci/install-smoke.ps1
+
+      # REL-02/D-03d: human-convenience checksums, NOT the attestation subject
+      # (attest-build-provenance/attest-sbom compute the subject digest internally).
+      - name: Generate SHA256SUMS
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          Get-ChildItem 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe' |
+            ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
+            Set-Content SHA256SUMS
+
+      # REL-04/D-03b: directory-scan SBOM (syft) — sees BOTH Cargo.lock workspaces AND
+      # pnpm-lock.yaml in one pass. Both upload flags false: this phase uploads assets
+      # via one explicit `gh release upload` step below, not this action's own defaults
+      # (which would otherwise open a second, ordering-dependent asset-upload path).
+      - name: Generate SBOM (syft, directory scan)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      # REL-04/D-03a: SLSA build provenance, bound to the installer's digest.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe'
+
+      # REL-04/D-03c: SBOM attestation over the SAME subject digest — one
+      # `gh attestation verify` call returns both predicates.
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e  # v4.1.0
+        with:
+          subject-path: 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe'
+          sbom-path: sbom.spdx.json
+
+      - name: Upload SHA256SUMS + SBOM to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} SHA256SUMS sbom.spdx.json --clobber --repo ${{ github.repository }}
