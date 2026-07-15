@@ -36,6 +36,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_call:
 
 # Least-privilege per OWASP CI/CD hardening. Any job that needs write access must
 # override explicitly (none here).
