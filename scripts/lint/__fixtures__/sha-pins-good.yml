@@ -1,0 +1,29 @@
+# PASS fixture for scripts/lint/lint-workflow-sha-pins.mjs (D-01d).
+#
+# Proves both halves of the narrowed local-workflow allowlist stay correct
+# together:
+#   - `uses: ./.github/workflows/ci.yml` — the local reusable-workflow ref
+#     REL-01's `gate` job introduces — must PASS the narrowed regex
+#     (^\./\.github/workflows/.*\.ya?ml$).
+#   - `uses: actions/checkout@<40-char-sha>  # v6.0.2` — a properly
+#     SHA-pinned external ref — must ALSO pass, so a PASS here is not a false
+#     pass on an empty/trivial file.
+#
+# Run directly via the fixtureArg CLI branch:
+#   node scripts/lint/lint-workflow-sha-pins.mjs scripts/lint/__fixtures__/sha-pins-good.yml
+
+name: sha-pins-good-fixture
+
+on:
+  push:
+
+jobs:
+  gate:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  release:
+    needs: [gate]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

@@ -1,0 +1,20 @@
+# BLOCK fixture for scripts/lint/lint-workflow-sha-pins.mjs (D-01d).
+#
+# Proves the narrowed local-workflow allowlist did NOT accidentally widen
+# the SHA-pin requirement for everything else: `uses: actions/checkout@v6`
+# is an UNPINNED external ref (a tag, not a 40-char SHA) and must still
+# BLOCK the lint.
+#
+# Run directly via the fixtureArg CLI branch (expected exit 1):
+#   node scripts/lint/lint-workflow-sha-pins.mjs scripts/lint/__fixtures__/sha-pins-bad.yml
+
+name: sha-pins-bad-fixture
+
+on:
+  push:
+
+jobs:
+  release:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
