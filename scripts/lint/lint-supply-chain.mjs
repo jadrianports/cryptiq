@@ -17,7 +17,7 @@
 // would silently grant nothing while LOOKING like it granted something. That is a
 // silent-failure footgun, so it is a hard lint violation here.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +25,11 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PKG_JSON = join(REPO_ROOT, 'package.json');
 const WORKSPACE_YAML = join(REPO_ROOT, 'pnpm-workspace.yaml');
 const GITIGNORE = join(REPO_ROOT, '.gitignore');
+const WORKFLOWS_DIR = join(REPO_ROOT, '.github', 'workflows');
+
+// pnpm 11 imports `node:sqlite`, a Node 22+ builtin. Raising the pnpm pin
+// without raising this (and every CI node-version) is a guaranteed red run.
+const MIN_NODE_MAJOR = 22;
 
 let violations = 0;
 
@@ -79,13 +84,34 @@ if (typeof nodeEngine !== 'string') {
   console.error('package.json: missing engines.node — SEC-15 requires Node 20+.');
   violations++;
 } else {
-  // Accept ">=20", ">=20.0.0", ">=21", "^20", etc. Reject "<20" etc.
+  // Accept ">=22.13", ">=24", "^22", etc. Reject anything below 22.
+  // pnpm 11 requires Node >=22.13 (it imports the `node:sqlite` builtin); on
+  // Node 20 it dies with ERR_UNKNOWN_BUILTIN_MODULE. See MIN_CI_NODE below.
   const minMatch = nodeEngine.match(/(\d+)/);
-  if (!minMatch || Number(minMatch[1]) < 20) {
+  if (!minMatch || Number(minMatch[1]) < MIN_NODE_MAJOR) {
     console.error(
-      `package.json: engines.node "${nodeEngine}" must allow Node >=20 (SEC-15 / pnpm 10 requirement).`,
+      `package.json: engines.node "${nodeEngine}" must allow Node >=${MIN_NODE_MAJOR} (pnpm 11 requires node:sqlite).`,
     );
     violations++;
+  }
+}
+
+// 2b. Every workflow `node-version:` must satisfy the same floor.
+// THIS GUARD EXISTS BECAUSE OF A REAL FAILURE (2026-07-16): the pnpm 11 bump was
+// verified locally on Node 24 and pushed, but CI pinned node-version: '20', so
+// every job died on `node:sqlite`. Local dev Node != CI Node, and nothing caught
+// the skew until a red run. Now it fails locally, before the push.
+for (const wf of readdirSync(WORKFLOWS_DIR).filter((f) => /\.ya?ml$/.test(f))) {
+  const wfPath = join(WORKFLOWS_DIR, wf);
+  const wfText = readFileSync(wfPath, 'utf8');
+  for (const m of wfText.matchAll(/^\s*node-version:\s*['"]?(\d+)/gm)) {
+    if (Number(m[1]) < MIN_NODE_MAJOR) {
+      console.error(
+        `.github/workflows/${wf}: node-version '${m[1]}' is below Node ${MIN_NODE_MAJOR} — ` +
+          `pnpm ${pkg.packageManager} cannot run on it (node:sqlite is a Node ${MIN_NODE_MAJOR}+ builtin).`,
+      );
+      violations++;
+    }
   }
 }
 
