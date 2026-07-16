@@ -160,11 +160,21 @@ jobs:
 
       # REL-02/D-03d: human-convenience checksums, NOT the attestation subject
       # (attest-build-provenance/attest-sbom compute the subject digest internally).
+      #
+      # Get-ChildItem with a WILDCARD that matches nothing emits no output AND no error
+      # (unlike a literal missing path), so this pipeline would produce zero objects,
+      # Set-Content would write an EMPTY SHA256SUMS, the step would exit 0, and the upload
+      # step below would publish it. For an unsigned-installer project (DIST-04) these
+      # checksums are the only integrity signal a user has, so an empty file is a real
+      # integrity regression that reads as success. Today only the preceding install-smoke
+      # throwing first prevents it — step ordering is not a substitute for the assertion.
       - name: Generate SHA256SUMS
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          Get-ChildItem 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe' |
+          $bundles = @(Get-ChildItem 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe')
+          if ($bundles.Count -eq 0) { throw 'No *-setup.exe found — refusing to write an empty SHA256SUMS.' }
+          $bundles |
             ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
             Set-Content SHA256SUMS
 
