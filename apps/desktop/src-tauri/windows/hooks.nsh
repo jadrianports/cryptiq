@@ -56,7 +56,13 @@
   IntCmp $0 0 postinstall_ok postinstall_warn postinstall_warn
   postinstall_warn:
     DetailPrint "WARNING: native-messaging host registration failed (exit code $0)."
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not register its browser extension bridge (exit code $0). The browser extension will not be able to connect to Cryptiq until this is fixed. You can retry by running scripts\native-host\register-native-host.ps1 manually." /SD IDOK
+    ; The retry instruction MUST name $INSTDIR\register-native-host.ps1, not the
+    ; repo-relative scripts\native-host\ source path: an end user who installed the NSIS
+    ; bundle has no such directory, and the copy this hook actually invokes — the only one
+    ; on their disk — is the one bundle.resources stages to $INSTDIR (see header). This is
+    ; the sole recovery instruction on the only user-visible failure path of the extension
+    ; bridge, so an unfollowable one is worth nothing.
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not register its browser extension bridge (exit code $0). The browser extension will not be able to connect to Cryptiq until this is fixed.$\r$\n$\r$\nYou can retry by running this command:$\r$\npowershell -ExecutionPolicy Bypass -File $\"$INSTDIR\register-native-host.ps1$\" -SidecarPath $\"$INSTDIR\cryptiq-nmhost.exe$\" -ExtensionId pmnfhbonekjokipcfeklbajepnjppnca" /SD IDOK
   postinstall_ok:
   Pop $0
 !macroend
