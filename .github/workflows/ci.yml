@@ -36,12 +36,27 @@ name: ci
 on:
   push:
     # v* tags run this ENTIRE graph via release.yml's `gate` job (REL-01), so they must not
-    # ALSO trigger it standalone. Without this filter every tag ran two complete copies of
+    # ALSO trigger it standalone: every tag would otherwise run two complete copies of
     # rust+node+build+secrets (two full Windows builds, two installer smokes) plus the
-    # release job's own third build — and produced two independent red/green signals for one
+    # release job's own third build — and produce two independent red/green signals for one
     # tag on the Actions tab, poor legibility for the funnel Phase 35 exists to make legible.
-    tags-ignore:
-      - 'v*'
+    #
+    # This is a BRANCH filter, not `tags-ignore`, and that distinction is load-bearing.
+    # Per GitHub's push-filter semantics: "If you define only one type of filter, such as
+    # tags, the workflow will not run for events affecting the undefined ref type." So a
+    # lone `tags-ignore: [v*]` silently stopped ci from running on BRANCH pushes entirely —
+    # main included. It was caught on the push of the very commit that introduced it: only
+    # codeql ran, ci was absent from the Actions tab. That is exactly the green-looking,
+    # structurally-dead CI this milestone exists to kill, so it is stated here explicitly.
+    #
+    # Defining only `branches` excludes ALL tag events, which is the intent: v* tags reach
+    # this graph via release.yml's `gate` (a workflow_call — a separate trigger that push
+    # filters do not govern), and non-v* tags have no standalone ci story.
+    #
+    # Verify after touching this block: push a commit to any branch and confirm a `ci` run
+    # appears. `gh run list --limit 5` — a green Actions tab that never ran is the bug.
+    branches:
+      - '**'
   pull_request:
   workflow_call:
 
