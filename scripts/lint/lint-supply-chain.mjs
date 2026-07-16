@@ -29,7 +29,10 @@ const WORKFLOWS_DIR = join(REPO_ROOT, '.github', 'workflows');
 
 // pnpm 11 imports `node:sqlite`, a Node 22+ builtin. Raising the pnpm pin
 // without raising this (and every CI node-version) is a guaranteed red run.
+// The minor matters too: node:sqlite landed in 22.13, so ">=22.0.0" is below
+// the real floor even though its major is correct.
 const MIN_NODE_MAJOR = 22;
+const MIN_NODE_MINOR = 13;
 
 let violations = 0;
 
@@ -84,13 +87,30 @@ if (typeof nodeEngine !== 'string') {
   console.error('package.json: missing engines.node — SEC-15 requires Node 20+.');
   violations++;
 } else {
-  // Accept ">=22.13", ">=24", "^22", etc. Reject anything below 22.
+  // Require an EXPLICIT lower bound (">=22.13") and validate major AND minor.
   // pnpm 11 requires Node >=22.13 (it imports the `node:sqlite` builtin); on
-  // Node 20 it dies with ERR_UNKNOWN_BUILTIN_MODULE. See MIN_CI_NODE below.
-  const minMatch = nodeEngine.match(/(\d+)/);
-  if (!minMatch || Number(minMatch[1]) < MIN_NODE_MAJOR) {
+  // Node 20 it dies with ERR_UNKNOWN_BUILTIN_MODULE.
+  //
+  // The previous `nodeEngine.match(/(\d+)/)` grabbed the first digit run and
+  // DISCARDED the comparison operator, so it asserted almost nothing: "<22"
+  // extracted 22, compared 22 < 22 => false => PASSED, while declaring the exact
+  // opposite of the requirement. "<=22" passed identically, and "22.0.0" passed
+  // despite being below the 22.13 node:sqlite floor. A version-skew lint
+  // defeatable by a one-character edit, in the phase whose point is catching skew.
+  const m = /^>=\s*(\d+)(?:\.(\d+))?/.exec(nodeEngine.trim());
+  if (!m) {
     console.error(
-      `package.json: engines.node "${nodeEngine}" must allow Node >=${MIN_NODE_MAJOR} (pnpm 11 requires node:sqlite).`,
+      `package.json: engines.node "${nodeEngine}" must be an explicit lower bound ` +
+        `(">=${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}") — any other form leaves the floor unasserted.`,
+    );
+    violations++;
+  } else if (
+    Number(m[1]) < MIN_NODE_MAJOR ||
+    (Number(m[1]) === MIN_NODE_MAJOR && Number(m[2] ?? 0) < MIN_NODE_MINOR)
+  ) {
+    console.error(
+      `package.json: engines.node "${nodeEngine}" must allow Node >=${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} ` +
+        '(pnpm 11 requires the node:sqlite builtin).',
     );
     violations++;
   }
