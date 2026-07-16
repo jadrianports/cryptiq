@@ -133,9 +133,20 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # Alerts are indexed asynchronously after the SARIF upload; poll briefly rather than
-          # racing it. A race here would read zero alerts and pass a vulnerable commit — the
-          # failure mode that matters, so it fails closed on exhaustion below.
+          # WHAT CLOSES THE INDEXING RACE: `codeql-action/analyze` above, NOT this loop.
+          # Its `wait-for-processing` input defaults to "true" ("the Action will wait for the
+          # uploaded SARIF to be processed before completing" — verified against action.yml at
+          # the pinned SHA 99df26d4, v4.37.0), and the step does not override it. So by the
+          # time this job runs, `analyze` has already blocked on SARIF processing.
+          #
+          # This loop therefore defends ONLY against the alerts API being unavailable (5xx,
+          # rate-limit, transient network) — it retries on HTTP failure and fails closed on
+          # exhaustion below. It is deliberately NOT a defense against not-yet-indexed alerts:
+          # the endpoint returns `200 []` while indexing is pending, which is a SUCCESS, so the
+          # loop would break on it immediately. An earlier version of this comment claimed the
+          # loop handled that race; it never did. If `wait-for-processing` is ever disabled,
+          # this loop will NOT save you — poll
+          # `repos/{owner}/{repo}/code-scanning/analyses?ref=${REF}` for ${SHA} instead.
           for attempt in $(seq 1 10); do
             # --paginate: without it this read exactly ONE page. The gate's own policy is
             # that medium/low/note alerts are reported but do not gate — meaning they
