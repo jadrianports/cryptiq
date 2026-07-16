@@ -264,3 +264,32 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The draft-gate's entire safety story is "a human reviews before clicking Publish".
+      # But tauri-action creates the draft AND uploads the installer BEFORE the install-smoke
+      # (REL-03) can fail, and a failed job leaves that draft standing with no marker on the
+      # release object itself — only in the Actions log. A human who clicks Publish without
+      # cross-referencing the Actions tab ships a smoke-failed installer, and
+      # assert-latest.yml would then happily confirm it as releases/latest. The human is the
+      # gate, so the failure signal belongs where the human is looking. `--prerelease` also
+      # buys the D-04c double-exclusion from releases/latest for free.
+      - name: Mark the draft DO-NOT-PUBLISH if any prior step failed
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          # Deliberately NOT `set -e` before this guard: the job may have failed before
+          # tauri-action ever created the draft (e.g. at the version-match guard), in which
+          # case there is nothing to mark and that is not itself an error.
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "No release exists for $TAG — nothing to mark (the job failed before the draft was created)."
+            exit 0
+          fi
+          gh release edit "$TAG" --repo "$REPO" \
+            --title "DO NOT PUBLISH — release job FAILED — Cryptiq $TAG" \
+            --prerelease
+          echo "Draft $TAG marked DO NOT PUBLISH (and flagged prerelease, excluding it from releases/latest)."
