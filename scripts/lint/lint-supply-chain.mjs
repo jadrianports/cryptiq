@@ -101,18 +101,53 @@ if (typeof nodeEngine !== 'string') {
 // verified locally on Node 24 and pushed, but CI pinned node-version: '20', so
 // every job died on `node:sqlite`. Local dev Node != CI Node, and nothing caught
 // the skew until a red run. Now it fails locally, before the push.
+//
+// The loop only ever RAISED on lines it matched, and never asserted it matched
+// anything — so zero matches across every workflow was indistinguishable from a
+// fully-correct pin. Silent-bypass forms that all reported OK: `node-version-file:
+// .nvmrc` (never matches `node-version:`), `node-version: ${{ matrix.node }}` (the
+// `(\d+)` cannot match `${{`), and a workflow with no pin at all riding the
+// runner's preinstalled Node. All three are now explicit violations, and a
+// zero-site run refuses to report a false pass — the same idiom run-all.mjs
+// already uses.
+let nodeVersionSites = 0;
 for (const wf of readdirSync(WORKFLOWS_DIR).filter((f) => /\.ya?ml$/.test(f))) {
   const wfPath = join(WORKFLOWS_DIR, wf);
   const wfText = readFileSync(wfPath, 'utf8');
-  for (const m of wfText.matchAll(/^\s*node-version:\s*['"]?(\d+)/gm)) {
-    if (Number(m[1]) < MIN_NODE_MAJOR) {
+
+  if (/^\s*node-version-file:/m.test(wfText)) {
+    console.error(
+      `.github/workflows/${wf}: node-version-file: bypasses the Node ${MIN_NODE_MAJOR} skew guard — ` +
+        'pin node-version: literally so this lint can evaluate it.',
+    );
+    violations++;
+  }
+
+  for (const m of wfText.matchAll(/^\s*node-version:\s*(.+)$/gm)) {
+    nodeVersionSites++;
+    const raw = m[1].trim().replace(/^['"]|['"]$/g, '');
+    const major = /^(\d+)/.exec(raw);
+    if (!major) {
       console.error(
-        `.github/workflows/${wf}: node-version '${m[1]}' is below Node ${MIN_NODE_MAJOR} — ` +
+        `.github/workflows/${wf}: node-version '${raw}' is not a literal version — ` +
+          'the skew guard cannot evaluate it (no expressions/indirection here).',
+      );
+      violations++;
+    } else if (Number(major[1]) < MIN_NODE_MAJOR) {
+      console.error(
+        `.github/workflows/${wf}: node-version '${raw}' is below Node ${MIN_NODE_MAJOR} — ` +
           `pnpm ${pkg.packageManager} cannot run on it (node:sqlite is a Node ${MIN_NODE_MAJOR}+ builtin).`,
       );
       violations++;
     }
   }
+}
+if (nodeVersionSites === 0) {
+  console.error(
+    'No node-version: pins found in .github/workflows/ — refusing to report a false pass ' +
+      `(the Node ${MIN_NODE_MAJOR} skew guard would be silently inert).`,
+  );
+  violations++;
 }
 
 // 3. pnpm-workspace.yaml has minimumReleaseAge: 1440
