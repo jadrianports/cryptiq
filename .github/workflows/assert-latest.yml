@@ -39,17 +39,24 @@ jobs:
     runs-on: ubuntu-latest # OS-agnostic gh api call; no Windows-specific work here
     timeout-minutes: 5
     steps:
+      # ${{ }} expressions are expanded by TEXTUAL SUBSTITUTION before the shell sees the
+      # script, and a release tag_name can legally contain ; & | $ ` ( ) ' " — so every
+      # expression is routed through env: and referenced as a quoted shell var rather than
+      # interpolated into the run: block. (This job is contents:read only, but it is the
+      # canonical Actions anti-pattern codeql.yml's `actions` matrix leg exists to catch.)
       - name: Assert releases/latest matches the just-published tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PUBLISHED_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          LATEST=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
-          if [ "$LATEST" != "${{ github.event.release.tag_name }}" ]; then
-            echo "::error::releases/latest ($LATEST) != just-published tag (${{ github.event.release.tag_name }})"
+          LATEST=$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name')
+          if [ "$LATEST" != "$PUBLISHED_TAG" ]; then
+            echo "::error::releases/latest ($LATEST) != just-published tag ($PUBLISHED_TAG)"
             exit 1
           fi
-          echo "releases/latest correctly resolves to ${{ github.event.release.tag_name }}"
+          echo "releases/latest correctly resolves to $PUBLISHED_TAG"
 
       # Phase 37 ADDITION (do NOT enable before updater artifacts exist):
       # - name: Assert latest.json points at the published version

@@ -188,10 +188,18 @@ jobs:
           subject-path: 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe'
           sbom-path: sbom.spdx.json
 
+      # ${{ }} expressions are expanded by TEXTUAL SUBSTITUTION before the shell sees the
+      # script, so interpolating them into a run: block is a command-injection sink — and
+      # git ref names legally permit ; & | $ ` ( ) ' ". This job holds contents:write +
+      # id-token:write + attestations:write (the Sigstore release-signing identity), so the
+      # expressions are routed through env: and referenced as quoted shell vars instead —
+      # the same pattern the version guard above already uses via $env:GITHUB_REF_NAME.
       - name: Upload SHA256SUMS + SBOM to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.ref_name }} SHA256SUMS sbom.spdx.json --clobber --repo ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" SHA256SUMS sbom.spdx.json --clobber --repo "$REPO"
 
       # REL-06 (negative half, D-04b): prove the draft THIS RUN just created never resolves
       # as releases/latest. The invariant is tag-agnostic — "the draft this run created is
