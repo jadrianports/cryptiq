@@ -220,7 +220,25 @@ jobs:
       # id-token:write + attestations:write (the Sigstore release-signing identity), so the
       # expressions are routed through env: and referenced as quoted shell vars instead —
       # the same pattern the version guard above already uses via $env:GITHUB_REF_NAME.
+      #
+      # `shell: bash` is NOT decoration — it is what makes `"$TAG"` mean anything. This job
+      # runs on windows-2025, where the DEFAULT shell is pwsh, and in pwsh `$TAG` is an
+      # undefined *PowerShell* variable that silently expands to the empty string — it does
+      # NOT read the env: block. Without this line the command degrades to
+      # `gh release upload "" SHA256SUMS sbom.spdx.json --clobber --repo ""`, which fails
+      # with "release not found" while the env: block in the run log still shows a perfectly
+      # correct `TAG: v0.0.0-ci`. That log is a red herring: the variable was set, the script
+      # just could not read it. Worse, "release not found" is the SAME string the earlier
+      # `tagName: v__VERSION__` defect produced, so this reads as a regression of an
+      # already-fixed bug. Caught by the v0.0.0-ci dry run on 2026-07-16 (run 29499858362).
+      #
+      # The two steps below (`Assert releases/latest…`, `Mark the draft DO-NOT-PUBLISH…`)
+      # already declare `shell: bash` — that is why they kept working when this one broke,
+      # and why the draft still got marked. If you add another env:-routed step to this job,
+      # give it a shell: too. Pick ONE idiom per step and match the shell to it: bash `$VAR`
+      # needs `shell: bash`; pwsh needs `$env:VAR` (as the version guard above does).
       - name: Upload SHA256SUMS + SBOM to the draft release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
