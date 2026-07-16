@@ -137,8 +137,14 @@ jobs:
           # racing it. A race here would read zero alerts and pass a vulnerable commit — the
           # failure mode that matters, so it fails closed on exhaustion below.
           for attempt in $(seq 1 10); do
-            if gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?ref=${REF}&state=open&per_page=100" \
-                 > alerts.json 2>/dev/null; then
+            # --paginate: without it this read exactly ONE page. The gate's own policy is
+            # that medium/low/note alerts are reported but do not gate — meaning they
+            # consume the same 100-item budget, so once the repo accumulates >100 open
+            # alerts a `critical` could land on page 2 and this gate would pass a
+            # vulnerable commit while printing "No critical/high CodeQL alerts on this ref."
+            if gh api --paginate \
+                 "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?ref=${REF}&state=open&per_page=100" \
+                 --jq '.[]' | jq -s '.' > alerts.json; then
               break
             fi
             echo "alerts API not ready (attempt ${attempt}/10) — retrying in 15s"
