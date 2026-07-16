@@ -30,22 +30,48 @@
 ; dependency on whether LogicLib.nsh happens to be included by Tauri's
 ; generated installer template — IntCmp/Goto/labels are always available.
 
+; ExecWait sets its output variable to the exit code ONLY IF the process actually
+; launches. If powershell.exe cannot be launched at all (missing, blocked by
+; policy/AppLocker, PATH stripped), NSIS sets the ERROR FLAG and leaves $0 untouched —
+; and NSIS registers initialize to "", which IntCmp coerces to 0, so a total launch
+; failure jumped straight to *_ok: no DetailPrint, no MessageBox. That is the DIST-02
+; silent-failure class re-entering through the very hook written to prevent it. (It
+; survived DIST-02's smoke because that bug was -196608: powershell DID launch and
+; returned a real non-zero code.) Hence, in both hooks below:
+;   Push/Pop $0  — $0-$9 are process-GLOBAL and these macros are inlined into Tauri's
+;                  generated installer sections; clobbering $0 could silently corrupt a
+;                  value the template holds across the insertion point.
+;   ClearErrors  — the error flag is sticky; clear it before ExecWait so IfErrors below
+;                  reflects THIS call only.
+;   StrCpy $0 "-1" — poison the register so a never-written $0 can never read as success.
+;   IfErrors     — catch "could not launch at all", which the exit code cannot express.
+
 !macro NSIS_HOOK_POSTINSTALL
+  Push $0
   DetailPrint "Registering Cryptiq native-messaging host..."
+  ClearErrors
+  StrCpy $0 "-1"
   ExecWait '"powershell.exe" -ExecutionPolicy Bypass -File "$INSTDIR\register-native-host.ps1" -SidecarPath "$INSTDIR\cryptiq-nmhost.exe" -ExtensionId "pmnfhbonekjokipcfeklbajepnjppnca"' $0
+  IfErrors postinstall_warn
   IntCmp $0 0 postinstall_ok postinstall_warn postinstall_warn
   postinstall_warn:
     DetailPrint "WARNING: native-messaging host registration failed (exit code $0)."
     MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not register its browser extension bridge (exit code $0). The browser extension will not be able to connect to Cryptiq until this is fixed. You can retry by running scripts\native-host\register-native-host.ps1 manually." /SD IDOK
   postinstall_ok:
+  Pop $0
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  Push $0
   DetailPrint "Unregistering Cryptiq native-messaging host..."
+  ClearErrors
+  StrCpy $0 "-1"
   ExecWait '"powershell.exe" -ExecutionPolicy Bypass -File "$INSTDIR\unregister-native-host.ps1"' $0
+  IfErrors preuninstall_warn
   IntCmp $0 0 preuninstall_ok preuninstall_warn preuninstall_warn
   preuninstall_warn:
     DetailPrint "WARNING: native-messaging host unregistration failed (exit code $0)."
     MessageBox MB_OK|MB_ICONEXCLAMATION "Cryptiq could not fully remove its browser extension bridge registration (exit code $0). You may need to manually remove the registry keys under NativeMessagingHosts\com.cryptiq.bridge." /SD IDOK
   preuninstall_ok:
+  Pop $0
 !macroend
