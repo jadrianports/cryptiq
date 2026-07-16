@@ -39,7 +39,7 @@ Pinned versions (full rationale, alternatives, and sources in `.planning/researc
 | Tailwind | `tailwindcss@^4.1.7` + `@tailwindcss/vite@^4.1.7` (NOT the v3 PostCSS plugin) |
 | Crypto | `libsodium-wrappers-sumo@^0.7.15` (stay on 0.7.x — do not chase 0.8.x) |
 | Strength / CSV | `@zxcvbn-ts/{core,language-common,language-en}@^3` / `papaparse@^5.5.3` |
-| Pkg mgr / tests | `pnpm@^10` (Node ≥20) / `vitest@^3.2.4` (pin 3.x for crypto suite) |
+| Pkg mgr / tests | `pnpm@^11` (Node ≥20) / `vitest@^3.2.4` (pin 3.x for crypto suite) |
 | E2E | `webdriverio@^9` + `mocha@^11` + `chai@^5` + `tauri-driver` (cargo) |
 
 **Never use:** `libsodium-wrappers` (non-sumo — no Argon2id) · `bcrypt`/`scrypt`/PBKDF2 for the
@@ -115,7 +115,7 @@ for new code · `Math.random()` near secrets · `nodeLinker: hoisted` · global 
 
 ```
 cryptiq/
-├── package.json / pnpm-workspace.yaml   # workspace root; pnpm@10; minimumReleaseAge: 1440
+├── package.json / pnpm-workspace.yaml   # workspace root; pnpm@11 (allowBuilds); minimumReleaseAge: 1440
 ├── eslint.config.js / tsconfig.base.json # forbidden-imports + Math.random + console rules; strict TS
 ├── .github/{workflows,dependabot.yml}    # Windows CI matrix; SHA-pinned actions
 ├── scripts/lint/*.mjs                    # 5 custom zero-dep Node lints (sha-pins, globs, platforms, csp, supply-chain)

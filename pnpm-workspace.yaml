@@ -16,3 +16,25 @@ minimumReleaseAgeExclude:
 
 # Keep pnpm's default isolated linker — DO NOT add nodeLinker: hoisted
 # or shamefully-hoist=true. Isolation is what enforces the core purity rule.
+
+# Allow-list of packages permitted to run install lifecycle scripts.
+# Everything NOT listed here is disallowed by default (pnpm's own default) —
+# combined with .npmrc `ignore-scripts=true`, this is the SEC-15 supply-chain
+# defense: a hijacked transitive dep cannot execute a postinstall.
+#
+# MIGRATED FROM pnpm 10 (2026-07-15): this replaces the old
+# `package.json#pnpm.onlyBuiltDependencies` list, which pnpm 11 no longer reads.
+# pnpm 11 consolidates onlyBuiltDependencies/neverBuiltDependencies/
+# ignoredBuiltDependencies into this single { name: true | false } map.
+#
+# The port is FAITHFUL — no package gained script rights it lacked under pnpm 10:
+#   - esbuild + @tauri-apps/cli  : true  — were the entire pnpm-10 allow-list.
+#   - @swc/core + spawn-sync     : false — pnpm 11 surfaces them for an explicit
+#     decision, but they were ALREADY blocked under pnpm 10 (absent from the
+#     allow-list). Recorded as `false` to keep the posture identical and to stop
+#     pnpm re-prompting. Do NOT flip to true without a supply-chain review.
+allowBuilds:
+  esbuild: true
+  '@tauri-apps/cli': true
+  '@swc/core': false
+  spawn-sync: false

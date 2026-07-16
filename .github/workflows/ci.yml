@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
-        # No `version:` — pnpm/action-setup v6 reads the pinned pnpm@10.5.0 from
+        # No `version:` — pnpm/action-setup v6 reads the pinned pnpm@11.13.0 from
         # package.json#packageManager. Specifying both conflicts (ERR_PNPM_BAD_PM_VERSION).
         # Single source of truth: package.json. Dependabot keeps it current.
         with:
