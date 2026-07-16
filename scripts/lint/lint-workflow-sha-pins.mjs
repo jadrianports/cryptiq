@@ -7,10 +7,16 @@
 // Defends against CVE-2025-30066 (tj-actions/changed-files retag attack) and
 // Pitfall 14. Exit 0 = clean. Exit 1 = violations found (CI fails the job).
 //
-// NOTE: Plan 01-05 explicitly overrides Snippet 5's ENOENT behavior. If
-// .github/workflows/ does NOT exist (Plan 01-06 hasn't landed yet — Wave 3
-// dependency order), this script exits 0 with a notice rather than failing.
-// Once Plan 01-06 lands the workflow file, the lint becomes active.
+// FAILS CLOSED on a missing/unreadable .github/workflows/. Plan 01-05 originally
+// overrode Snippet 5's ENOENT behavior to exit 0 with a notice while Wave 3 had
+// not yet landed the workflow files (Plan 01-06). That scaffold long outlived its
+// purpose and became a permanent fail-open: a typo'd path, a directory rename, or
+// a checkout that didn't fetch .github/ would print "skipping", exit 0, and
+// `pnpm lint:custom` would go green having verified NOTHING. Its catch was also
+// broader than intended — wrapping walk() meant an ENOENT from readFileSync inside
+// checkFile (a file removed mid-walk) short-circuited the whole lint to a green
+// skip too. lint-supply-chain.mjs calls readdirSync bare and correctly explodes;
+// the two lints must not disagree about whether a missing workflow dir is a pass.
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -86,19 +92,9 @@ const fixtureArg = process.argv[2];
 if (fixtureArg) {
   checkFile(resolve(fixtureArg));
 } else {
-  try {
-    walk(WORKFLOW_DIR);
-  } catch (e) {
-    if (e.code === 'ENOENT') {
-      // Plan 01-05 override: workflows not yet authored (Plan 01-06 lands them).
-      // Exiting 0 here keeps the lint chain green during Wave 3 dependency order.
-      console.log(
-        'lint-workflow-sha-pins: no .github/workflows directory yet — skipping (Plan 01-06 will land it).',
-      );
-      process.exit(0);
-    }
-    throw e;
-  }
+  // No ENOENT catch: .github/workflows MUST exist. A missing/unreadable directory is a
+  // violation of the CVE-2025-30066 gate, not a reason to report a pass (see header).
+  walk(WORKFLOW_DIR);
 }
 
 if (violations > 0) {
