@@ -1,0 +1,19 @@
+diff --git a/scripts/native-host/unregister-native-host.ps1 b/scripts/native-host/unregister-native-host.ps1
+--- a/scripts/native-host/unregister-native-host.ps1
++++ b/scripts/native-host/unregister-native-host.ps1
+@@ -25,9 +25,12 @@
+ $manifestPath = "$env:APPDATA\Cryptiq\$hostName.json"
+
+ $targets = @($manifestPath)
+-foreach ($browser in @('Google\Chrome', 'Microsoft\Edge')) {
+-  $targets += "HKCU:\Software\$browser\NativeMessagingHosts\$hostName"
+-}
++# unregister-red (REL-03 break-patch, scripts/ci-selftest/README.md ritual):
++# drops BOTH browser registry keys from the removal set, leaving them ORPHANED
++# while the script still exits 0 and still prints a success line. Nothing on the
++# uninstall path can catch this except install-smoke.ps1's post-uninstall
++# read-back (lines 65-69) -- which is the whole point: that half of the smoke
++# previously shipped with no break-patch proving it can fail (WR-04).
+
+ $removed = 0
+ $absent = 0

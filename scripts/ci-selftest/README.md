@@ -54,6 +54,7 @@ since the pipeline might be red for unrelated reasons.
 | 19 | HARD-03 CodeQL `rust` — planted null-pointer-deref sink in `apps/native-host` (the historically-blind workspace) | `codeql-rust-nativehost.patch` | [29365145847](https://github.com/jadrianports/cryptiq/actions/runs/29365145847) | `CodeQL Gate` RED — alert `rust/access-invalid-pointer` **[high]** @ **`apps/native-host/src/codeql_selftest.rs:15`** — proves the extractor walks the 2nd workspace (OQ#2 answered; no 2nd matrix entry needed) |
 | 20 | HARD-05 concurrency `cancel-in-progress` on ci.yml (never release.yml) | 2 rapid pushes to `selftest/hard05-concurrency` | [29365641308](https://github.com/jadrianports/cryptiq/actions/runs/29365641308) | run **cancelled** by the superseding push ([29365671150](https://github.com/jadrianports/cryptiq/actions/runs/29365671150)); release.yml has no concurrency block, so a tag build is never cancelled |
 | 21 | HARD-05 warm rust-cache speedup | natural experiment (lockfile = cache key) | cold [29357246295](https://github.com/jadrianports/cryptiq/actions/runs/29357246295) vs warm [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) | `rust` job **11m17s cold** (commit `41c0fad` changed Cargo.lock) → **3m07s warm** (unchanged lockfile) — ~3.5× |
+| 22 | REL-03 install-smoke **post-uninstall** read-back (orphan registry keys survive uninstall) | `unregister-red.patch` | **pending — authored, not yet red-run** | See "Honest gap: REL-03 post-uninstall" below |
 
 **Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
@@ -120,6 +121,40 @@ with no `tauri:build` wrapper to stage for it — CI-01), and `release.yml` keep
 **Without the red-run ritual, this gate would have shipped as protection that protects nothing.**
 That is the entire argument for D-05, demonstrated on its first outing. If you only read one
 section of this README, read this one.
+
+## Honest gap: REL-03 post-uninstall (`unregister-red.patch`) — authored, red-run pending
+
+Phase 35's `install-smoke-red.patch` breaks only the **register** path (a wrong `(default)`
+registry value), proving `scripts/ci/install-smoke.ps1:42-50`. Nothing exercised lines 65-69 —
+the **post-uninstall orphan assertions**. Since `hooks.nsh`'s PREUNINSTALL hook cannot itself
+surface a failure the user will act on, those four lines are the *only* thing in the entire
+pipeline that can catch a broken unregister, and they shipped unproven — exactly the shape of
+gate this directory exists to disallow (WR-04, Phase 35 review).
+
+`unregister-red.patch` closes that: it drops both browser registry keys from the removal set,
+leaving them **orphaned while the script still exits 0 and still prints a success line** — so
+the installer's exit code and the NSIS hook both stay happy, and only the post-uninstall
+read-back can catch it. Same shape as `install-smoke-red.patch`'s "succeeds but writes the
+wrong value" (the DIST-02 lesson), applied to the uninstall half.
+
+**Local pre-flight (done, on this machine).** Not a substitute for a red run — recorded per the
+"proven locally ≠ proven in CI" discipline above:
+
+- `git apply --check` passes; apply → `git apply -R` leaves `git status --short` clean.
+- Running the **patched** script with its two path expressions redirected to a throwaway dir +
+  test registry hive (shipped control flow otherwise intact): **exit code 0**, prints
+  `Unregistered com.cryptiq.bridge (1 removed, 0 already absent)`, and leaves **2 orphaned
+  registry keys**, with the manifest correctly removed (the patch is surgical — it breaks only
+  the registry half). That is precisely the silent failure lines 65-69 must catch.
+- The developer's real `com.cryptiq.bridge` registration was deliberately not touched.
+
+**Still required:** the live red run. This gate needs a real `windows-2025` runner to install
+the built `*-setup.exe` and uninstall it, which local pre-flight cannot substitute for. Run the
+standard ritual below on a `ci-selftest/unregister-red` branch, confirm `build` → **Install-smoke**
+is RED and names the orphan key (`install-smoke: orphan registry key survived uninstall: ...`),
+then replace row 22's "pending" with the URL here and in `35-VERIFICATION.md`. **Until that URL
+exists, REL-03's post-uninstall half is delivered-in-code but not red-run-verified, and must not
+be represented otherwise.**
 
 ## Honest gap: CI-02 (cross-target staging) — currently unexercisable
 
