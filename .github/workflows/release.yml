@@ -91,6 +91,31 @@ jobs:
       - name: Stage native-host sidecar (per-leg target)
         run: pnpm --filter @cryptiq/desktop stage:nmhost -- --target ${{ matrix.rust-target || '' }}
 
+      # REL-02 GUARD (added after the v0.0.0-ci dry run, 2026-07-16). The release tag
+      # is `github.ref_name` (see tauri-action `tagName` below), so a REAL tag must
+      # match the app version in tauri.conf.json — otherwise we would publish
+      # "v9.9.9" containing a 3.2.0 build, with nothing to catch it. The throwaway
+      # dry-run tag is the ONE deliberate exception (it exists precisely to be a
+      # non-matching tag), so it is skipped.
+      #
+      # This guard exists because the dry run caught the inverse bug: tagName was
+      # 'v__VERSION__' (the APP version), while every later step used
+      # `github.ref_name`. They silently agreed only while the pushed tag happened
+      # to equal the app version; `v0.0.0-ci` vs 3.2.0 was the first divergence and
+      # it drafted a bogus "v3.2.0" release. Tag is now the single source of truth,
+      # and this asserts the app version agrees with it.
+      - name: Assert pushed tag matches app version (real tags only)
+        if: github.ref_name != 'v0.0.0-ci'
+        shell: pwsh
+        run: |
+          $appVersion = (Get-Content apps/desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $expected = "v$appVersion"
+          if ($env:GITHUB_REF_NAME -ne $expected) {
+            Write-Error "Tag '$env:GITHUB_REF_NAME' does not match tauri.conf.json version '$appVersion' (expected '$expected'). Bump the app version to match the tag, or push the correct tag."
+            exit 1
+          }
+          Write-Host "OK: tag '$env:GITHUB_REF_NAME' matches app version '$appVersion'."
+
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -100,8 +125,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ''
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
-          tagName: 'v__VERSION__'
-          releaseName: 'Cryptiq v__VERSION__'
+          # REL-02/REL-05 FIX (2026-07-16, found by the v0.0.0-ci dry run): these were
+          # 'v__VERSION__', which tauri-action substitutes with the APP version from
+          # tauri.conf.json — NOT the pushed git tag. Every downstream step
+          # (`gh release upload`, the REL-06 assertion) addresses the release by
+          # `github.ref_name`, so the two only agreed while the pushed tag happened to
+          # equal the app version. Pushing v0.0.0-ci against app version 3.2.0 drafted a
+          # bogus "v3.2.0" release and the upload then failed with "release not found".
+          # The pushed tag is now the single source of truth; the version-match guard
+          # above keeps the app version honest for real tags.
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Cryptiq ${{ github.ref_name }}'
           releaseDraft: true
           # D-04c: ONLY the throwaway v0.0.0-ci dry-run tag is doubly-excluded from
           # releases/latest (releaseDraft:true already excludes it once; prerelease:true
