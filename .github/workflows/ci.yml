@@ -35,6 +35,13 @@ name: ci
 
 on:
   push:
+    # v* tags run this ENTIRE graph via release.yml's `gate` job (REL-01), so they must not
+    # ALSO trigger it standalone. Without this filter every tag ran two complete copies of
+    # rust+node+build+secrets (two full Windows builds, two installer smokes) plus the
+    # release job's own third build — and produced two independent red/green signals for one
+    # tag on the Actions tab, poor legibility for the funnel Phase 35 exists to make legible.
+    tags-ignore:
+      - 'v*'
   pull_request:
   workflow_call:
 
@@ -47,9 +54,20 @@ permissions:
 # pile up gating the branch. `head_ref` first (only defined on pull_request events) so
 # push-runs and PR-runs on the same branch don't cross-cancel each other's groups; only
 # the newest run's `ci-required` aggregator ends up gating the branch either way.
+#
+# `cancel-in-progress` is REF-SCOPED, not a bare `true`, because THIS BLOCK ALSO APPLIES
+# WHEN release.yml CALLS THIS WORKFLOW as its `gate` job: a called workflow's own
+# concurrency governs the jobs it defines, and `github.workflow` resolves to the CALLER's
+# name, so the group becomes `release-refs/tags/vX`. With a bare `true`, deleting and
+# re-pushing the same tag — exactly the v0.0.0-ci dry-run ritual — would cancel an
+# in-flight gate, contradicting release.yml's stated "a tag build is never cancelled"
+# (D-10c). Keying off github.ref makes that invariant actually hold, in both the
+# standalone and workflow_call contexts (github.event_name would NOT work here: in a
+# reusable workflow it reports the CALLER's event, i.e. 'push' on a tag, not
+# 'workflow_call').
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   rust:

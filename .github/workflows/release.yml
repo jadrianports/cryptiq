@@ -18,6 +18,15 @@
 # No `concurrency:` block here, DELIBERATELY (HARD-05/D-10c, Phase 34). Cancelling a
 # mid-flight tag build would abort the RCE-by-design update channel — the update channel
 # IS this release funnel. Do not "helpfully" add one.
+#
+# NOTE, because "no concurrency block here" is only half the story: the `gate` job below
+# runs ci.yml, and a called workflow's OWN concurrency block applies to the jobs it
+# defines. Since `github.workflow` resolves to the CALLER's name inside a reusable
+# workflow, ci.yml's group evaluates to `release-refs/tags/vX` on a tag build. ci.yml's
+# `cancel-in-progress` is therefore ref-scoped (false for refs/tags/*) so that the D-10c
+# invariant actually holds for the gate too — it was a bare `true`, which meant deleting
+# and re-pushing the same tag WOULD have cancelled an in-flight gate. If you touch
+# ci.yml's concurrency block, you are touching this workflow's tag builds.
 
 name: release
 
