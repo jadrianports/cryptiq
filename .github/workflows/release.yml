@@ -42,7 +42,14 @@ jobs:
   # do not add a dependency on it here.
   gate:
     uses: ./.github/workflows/ci.yml
-    secrets: inherit
+    # No `secrets: inherit` — ci.yml references no `secrets.*` context anywhere (its only
+    # credential is the automatic GITHUB_TOKEN, which a called workflow receives regardless).
+    # `inherit` would hand the ENTIRE repo/org secret set to a workflow that runs
+    # `pnpm install`, a full cargo build of two workspaces, and an NSIS installer — all
+    # third-party code execution — for no benefit. This matters at the Phase-37 boundary:
+    # once TAURI_SIGNING_PRIVATE_KEY exists as a repo secret, `inherit` would silently
+    # expose the updater signing key to the gate's build steps. Same least-privilege posture
+    # ci.yml's own `permissions:` block cites OWASP CI/CD hardening for.
 
   release:
     needs: [gate]
