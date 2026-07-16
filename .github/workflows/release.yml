@@ -193,26 +193,49 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload ${{ github.ref_name }} SHA256SUMS sbom.spdx.json --clobber --repo ${{ github.repository }}
 
-      # REL-06 (negative half, D-04b): prove the draft never resolves as releases/latest.
-      # A 404 (no non-draft/non-prerelease release exists yet — expected when v0.0.0-ci is
-      # the only release) IS the passing assertion. If a real release already exists,
-      # assert its tag_name != v0.0.0-ci instead. The POSITIVE post-publish half lives in
-      # assert-latest.yml (35-03), NOT here. Deliberately does NOT fetch the updater
-      # manifest (Phase-37 boundary — no updater artifacts exist yet).
-      - name: Assert releases/latest does not resolve to the v0.0.0-ci draft
+      # REL-06 (negative half, D-04b): prove the draft THIS RUN just created never resolves
+      # as releases/latest. The invariant is tag-agnostic — "the draft this run created is
+      # not latest" — so it is compared against `github.ref_name`, the same single source of
+      # truth `tagName` above uses. It was previously hardcoded to the throwaway `v0.0.0-ci`
+      # tag, which made it a structural no-op on every real tag (a regressed draft gate on
+      # v3.3.0 would compare "v3.3.0" != "v0.0.0-ci" and pass green). The POSITIVE
+      # post-publish half lives in assert-latest.yml (35-03), NOT here. Deliberately does
+      # NOT fetch the updater manifest (Phase-37 boundary — no updater artifacts exist yet).
+      #
+      # A 404 (no non-draft/non-prerelease release exists yet) IS the passing assertion, but
+      # ONLY a 404: this previously branched on `$STATUS -ne 0`, so a 403 rate-limit, a 5xx,
+      # an expired GH_TOKEN, or a missing `gh` all printed "expected — pass" while asserting
+      # nothing. Everything that is not a definitive 404/200 now fails closed, matching
+      # codeql.yml's gate and CLAUDE.md's project-wide fail-closed contract.
+      - name: Assert releases/latest does not resolve to this run's draft
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          RESPONSE=$(gh api repos/${{ github.repository }}/releases/latest 2>&1) && STATUS=0 || STATUS=$?
-          if [ "$STATUS" -ne 0 ]; then
-            echo "releases/latest: no non-draft/non-prerelease release exists yet (expected) — pass."
-          else
-            TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
-            echo "releases/latest currently resolves to tag: $TAG"
-            if [ "$TAG" = "v0.0.0-ci" ]; then
-              echo "::error::releases/latest resolved to the v0.0.0-ci draft — REL-06 violated"
+          # `gh api` exits non-zero on ANY HTTP >= 400, so the 404-vs-everything-else
+          # distinction cannot come from its exit code — it is read from the `-i` status
+          # line instead (`--silent` drops the body, headers still print). The `|| true`
+          # defuses only that HTTP-error exit; the status code itself still comes from the
+          # response, and an absent/unparseable status falls through to `*` (fail closed).
+          HEADERS=$(gh api "repos/${REPO}/releases/latest" -i --silent 2>/dev/null || true)
+          HTTP=$(printf '%s\n' "$HEADERS" | head -1 | grep -oE '[0-9]{3}' | head -1 || true)
+          case "${HTTP:-000}" in
+            404)
+              echo "releases/latest: 404 — no non-draft/non-prerelease release exists yet (expected) — pass."
+              ;;
+            200)
+              LATEST=$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name')
+              echo "releases/latest currently resolves to tag: $LATEST"
+              if [ "$LATEST" = "$TAG" ]; then
+                echo "::error::releases/latest resolved to the draft this run just created ($TAG) — REL-06 violated"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::releases/latest returned HTTP ${HTTP:-<none>} — cannot assert REL-06, failing closed."
               exit 1
-            fi
-          fi
+              ;;
+          esac
