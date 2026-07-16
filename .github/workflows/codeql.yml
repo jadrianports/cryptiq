@@ -155,9 +155,16 @@ jobs:
             fi
           done
 
+          # NO `|| true` here. jq already exits 0 with empty output when nothing matches, so
+          # it bought nothing for the intended case — all it did was swallow genuine
+          # failures (malformed JSON, a truncated download, or an error-shaped response body
+          # like {"message": "..."} on which `.[]` iterates object values and select throws).
+          # In every one of those blocking.tsv is empty, `[ -s blocking.tsv ]` is false, and
+          # the gate passes. Under `set -euo pipefail` the `|| true` was the ONLY thing
+          # converting those into a green run. Let set -e fail closed instead.
           jq -r '.[] | select(.rule.security_severity_level == "critical" or .rule.security_severity_level == "high")
                  | "\(.rule.security_severity_level | ascii_upcase)\t\(.rule.id)\t\(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"' \
-            alerts.json > blocking.tsv || true
+            alerts.json > blocking.tsv
 
           if [ -s blocking.tsv ]; then
             echo "::error::CodeQL found blocking (critical/high) alerts on this ref:"
