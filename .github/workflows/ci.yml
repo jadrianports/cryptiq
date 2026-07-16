@@ -215,6 +215,9 @@ jobs:
       - name: pnpm install (frozen)
         run: pnpm install --frozen-lockfile
 
+      - name: "REL-01 selftest: deterministic early node-job failure (DELETE post red-run capture)"
+        run: exit 1
+
       - name: ESLint
         run: pnpm exec eslint .
 
