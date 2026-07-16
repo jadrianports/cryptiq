@@ -25,7 +25,37 @@ $ErrorActionPreference = 'Stop'
 $setupExe = (Get-ChildItem -Path 'apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe' `
   -ErrorAction Stop | Select-Object -First 1).FullName
 $instDir  = Join-Path $env:LOCALAPPDATA 'Cryptiq'   # currentUser install mode default ($LOCALAPPDATA\<ProductName>)
+$manifestPath = Join-Path $env:APPDATA 'Cryptiq\com.cryptiq.bridge.json'
+$sidecarPath  = Join-Path $instDir 'cryptiq-nmhost.exe'
 
+# --- ASSERT: CLEAN SLATE BEFORE INSTALL (D-02a corollary) ---
+# Without this, the read-back below cannot distinguish "the POSTINSTALL hook wrote this"
+# from "this was already here". The registry (default) assertion compares against
+# $manifestPath, a DETERMINISTIC CONSTANT (%APPDATA%\Cryptiq\com.cryptiq.bridge.json) —
+# identical whether the hook ran or not. So on a machine that already has Cryptiq
+# registered (the documented dev workflow runs register-native-host.ps1 directly, and a
+# prior real install leaves the same keys), this smoke would pass every assertion below
+# against a COMPLETELY INERT installer. Only manifest.path partially saves it, and only
+# when the stale registration happens to point at target/debug rather than $INSTDIR.
+#
+# CI runners are ephemeral so the shipping gate is sound today, but this script is also
+# the project's designated LOCAL reproduction tool for the DIST-02 bug class — and in
+# exactly that local use it was the "green but blind" pathology it exists to kill.
+# (Confirmed real: the dev machine this was written on has a live registration.)
+foreach ($browser in @('Google\Chrome', 'Microsoft\Edge')) {
+  $keyPath = "HKCU:\Software\$browser\NativeMessagingHosts\com.cryptiq.bridge"
+  if (Test-Path $keyPath) {
+    throw "install-smoke: pre-existing registration at $keyPath — refusing to run, because a pass here would not prove the installer did anything. Run scripts/native-host/unregister-native-host.ps1 first."
+  }
+}
+if (Test-Path $manifestPath) {
+  throw "install-smoke: pre-existing manifest at $manifestPath — refusing to run (see above). Run scripts/native-host/unregister-native-host.ps1 first."
+}
+if (Test-Path $instDir) {
+  throw "install-smoke: pre-existing install at $instDir — uninstall first (a leftover $INSTDIR would let the sidecar assertion pass on a stale binary)."
+}
+
+Write-Host "install-smoke: clean slate confirmed (no registration, manifest, or install dir)."
 Write-Host "install-smoke: installing $setupExe silently..."
 
 # --- INSTALL (bounded wait; NEVER gate on exit code) ---
@@ -36,9 +66,7 @@ if (-not $installProc.WaitForExit(120000)) {
 }
 
 # --- ASSERT: registry + manifest + sidecar, BOTH browsers (D-02b) ---
-$manifestPath = Join-Path $env:APPDATA 'Cryptiq\com.cryptiq.bridge.json'
-$sidecarPath  = Join-Path $instDir 'cryptiq-nmhost.exe'
-
+# ($manifestPath / $sidecarPath are hoisted above the install for the clean-slate check.)
 foreach ($browser in @('Google\Chrome', 'Microsoft\Edge')) {
   $keyPath = "HKCU:\Software\$browser\NativeMessagingHosts\com.cryptiq.bridge"
   $val = (Get-ItemProperty -Path $keyPath -Name '(default)' -ErrorAction Stop).'(default)'
