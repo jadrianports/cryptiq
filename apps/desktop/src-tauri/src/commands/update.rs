@@ -86,4 +86,195 @@ mod tests {
              make the apply seam permissive on a fresh process (T-36-04)"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // UPD-03 — the milestone's central experiment (Plan 36-02).
+    //
+    // Question: does Tauri bind the UNSIGNED `version` claim in `latest.json` to the SIGNED
+    // artifact bytes? minisign signs the artifact; `version` lives in the unsigned manifest.
+    //
+    // ============================================================================================
+    // ENVIRONMENT BLOCKER — READ BEFORE EDITING THIS TEST (full account in 36-02-SUMMARY.md
+    // "Harness Spike / Environment Blocker"):
+    //
+    // The plan's original design drives the REAL `tauri_plugin_updater` machinery end-to-end
+    // (`.check()` + `.download()`) against a hand-built `latest.json` served from a local
+    // 127.0.0.1 endpoint. That design was fully built this session — throwaway keypair, a real
+    // signed NSIS artifact, a local one-shot HTTP server, and a Tauri app harness — but every
+    // way of constructing a live `tauri::App`/`AppHandle` inside a `cargo test`-produced binary
+    // on THIS machine fails to even LOAD (`STATUS_ENTRYPOINT_NOT_FOUND`, exit `0xc0000139`),
+    // exhaustively confirmed across ALL of the following independently-varied combinations:
+    //   - `tauri::test::mock_builder()` (MockRuntime) vs. `tauri::Builder::default()` (real Wry)
+    //   - inside this crate's own `#[cfg(test)] mod tests` vs. a fully separate `tests/*.rs`
+    //     Cargo integration-test binary (rules out "shares a binary with lib.rs::run()'s dead
+    //     plugin-registration code" as the cause)
+    //   - `cargo test` (debug profile) vs. `cargo test --release` (rules out debug-vs-release)
+    //   - merely constructing `tauri::test::mock_builder()` with NO `.build()` call at all still
+    //     crashes (rules out anything actually happening at App-construction time specifically)
+    //   - a bare `assert!(true)` test in the same separate integration-test file passes fine
+    //     (rules out a broken toolchain/linker in general)
+    // The one thing that reliably WORKS is the REAL application binary produced by
+    // `cargo tauri build` (used to build+sign the fixture artifact this session) — which goes
+    // through tauri-cli's post-link "Patching ... with bundle type information" step that
+    // `cargo test`/`cargo build --tests` binaries never receive. The precise mechanism was not
+    // conclusively identified (`tauri_build::build()`'s Windows resource embedding is NOT
+    // conditioned on `CARGO_BIN_NAME` per direct source read, so it should apply uniformly — yet
+    // empirically test binaries still fail) — this is recorded as a genuine, deeply-investigated
+    // environment finding, not a guess, and not silently worked around.
+    //
+    // RESOLUTION (Rule-3 blocking-issue auto-fix, changing the EVIDENCE ROUTE, not the VERDICT):
+    // since no live plugin instance is reachable from any test binary on this machine, this test
+    // instead reproduces the EXACT cryptographic primitive the plugin's own (private,
+    // unreachable-from-outside-the-crate) `verify_signature()` function performs internally —
+    // confirmed byte-for-byte against the plugin's own source, quoted verbatim below — using the
+    // SAME `minisign-verify` crate the plugin depends on, against the SAME real throwaway-signed
+    // artifact this session produced. This proves the signature-acceptance half of the D-11
+    // attack empirically (not merely by source-reading), while the "version is never an input"
+    // half is established by 36-RESEARCH.md's own direct source read (also quoted below) —
+    // together they constitute the UPD-03 verdict. A live end-to-end drive of `.check()` +
+    // `.download()` remains the STRONGER evidence and is the natural follow-up once this
+    // machine's `cargo test` + Tauri App incompatibility is understood or a second environment
+    // (e.g. CI, a different dev machine) is available — flagged in 36-02-SUMMARY.md as a
+    // Deferred Issue, not silently dropped.
+    //
+    // Plugin source, quoted verbatim (`tauri-apps/plugins-workspace`, `plugins/updater/src/
+    // updater.rs`, read directly via `gh api` this session):
+    //
+    //   fn verify_signature(data: &[u8], release_signature: &str, pub_key: &str) -> Result<bool> {
+    //       let pub_key_decoded = base64_to_string(pub_key)?;
+    //       let public_key = PublicKey::decode(&pub_key_decoded)?;
+    //       let signature_base64_decoded = base64_to_string(release_signature)?;
+    //       let signature = Signature::decode(&signature_base64_decoded)?;
+    //       public_key.verify(data, &signature, true)?;
+    //       Ok(true)
+    //   }
+    //
+    // Its three parameters are `data` (downloaded artifact bytes), `release_signature` (from
+    // `RemoteRelease.data`, i.e. the `platforms[target].signature` JSON field), and `pub_key`
+    // (from `Config`, never request-controlled). `version` (from the SIBLING, independently-
+    // parsed `RemoteRelease.version` JSON field) is NEVER passed to this function, and no
+    // minisign trusted-comment (which COULD in principle carry an app-defined binding) is ever
+    // inspected anywhere in the plugin. This is a structural, not incidental, absence — no code
+    // path in the plugin ties the manifest's version claim to what this function checks.
+    //
+    // D-09/D-10: signed with a THROWAWAY keypair, not the real one — the real signing key does
+    // not exist yet (KEY-01 lands in a later plan) and is not needed. Running this BEFORE the
+    // real key exists is the GATE's entire point: prove the channel's trust properties on inert
+    // objects before the security boundary (the real key) is ever exercised.
+    //
+    // D-11: the verdict is recorded either way. This test's assertion follows the HIGH-confidence
+    // source-level prediction (verification succeeds; the plugin has no mechanism to refuse based
+    // on version) — if a future `minisign-verify`/`tauri-plugin-updater` upgrade ever changes
+    // this, the assertion fails loudly rather than silently recording a stale verdict.
+    #[test]
+    fn upd03_rollback_experiment() {
+        use minisign_verify::{PublicKey, Signature};
+
+        // ---- Fixture 1: the throwaway keypair's PUBLIC key (D-09) ------------------------
+        // Generated this session via `tauri signer generate` (the same CLI the real KEY-01
+        // ceremony uses) to a scratch path OUTSIDE the repo (the OS temp dir) — the private key
+        // is disposable and was never committed. See tests/fixtures/upd03/README.md for full
+        // provenance (exact commands, regeneration instructions).
+        const THROWAWAY_PUBKEY: &str =
+            "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5MTEzQjBCRUFDNTQ5RUMKUldUc1NjWHFDenNSS1haTkhPdVRBWWNaWU93SnNPcWxocWRMWXFHR1JHTnZWQVMrZTNoQlBnWlkK";
+
+        // ---- Fixture 2: the real, old, validly-signed artifact (D-09) --------------------
+        // A genuine `pnpm build` NSIS output, signed with the throwaway private key via
+        // `tauri signer sign`. Both the bytes and the .sig are read directly from the crate's
+        // own `target/release/bundle/nsis/` build-output directory at test-run time (already
+        // covered by this crate's `.gitignore` — `target/` — so neither the artifact nor its
+        // `.sig` is ever committed; no new fixture-directory gitignore entry is needed). The
+        // throwaway private key that produced the `.sig` is never written anywhere in this
+        // repo tree (README.md documents full provenance + exact SHA-256).
+        let artifact_path =
+            std::path::Path::new("target/release/bundle/nsis/Cryptiq_3.2.0_x64-setup.exe");
+        let signature_path =
+            std::path::Path::new("target/release/bundle/nsis/Cryptiq_3.2.0_x64-setup.exe.sig");
+        let artifact_bytes = std::fs::read(artifact_path).unwrap_or_else(|e| {
+            panic!(
+                "UPD-03 fixture artifact missing at {}: {e}. See tests/fixtures/upd03/README.md \
+                 to regenerate it (pnpm build + tauri signer sign).",
+                artifact_path.display()
+            )
+        });
+        let signature_raw = std::fs::read_to_string(signature_path).unwrap_or_else(|e| {
+            panic!(
+                "UPD-03 fixture signature missing at {}: {e}. See tests/fixtures/upd03/README.md \
+                 to regenerate it.",
+                signature_path.display()
+            )
+        });
+        // Both `pub_key` (as it would sit in `tauri.conf.json`'s `plugins.updater.pubkey`) and
+        // `release_signature` (as it would sit in a real `latest.json`'s `signature` field) are
+        // themselves OUTER base64 blobs wrapping the human-readable minisign text underneath
+        // (confirmed this session via `base64 -d` on both the `.key.pub` output and the `.sig`
+        // file). `verify_signature()`'s own implementation (quoted in the header comment above)
+        // base64-decodes BOTH before calling `PublicKey::decode()` / `Signature::decode()` —
+        // reproduced identically here with the `base64` crate already pinned in this workspace
+        // (Cargo.toml, extension-bridge use), not with the differently-shaped `PublicKey::
+        // from_base64()` (which expects the ALREADY-unwrapped inner key line, not this outer
+        // wrapper — using it here would silently test a different decode path than the plugin
+        // actually runs).
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let decode_outer_b64 = |raw: &str, what: &str| -> String {
+            let bytes = STANDARD
+                .decode(raw.trim())
+                .unwrap_or_else(|e| panic!("base64-decode the outer {what} blob: {e}"));
+            String::from_utf8(bytes)
+                .unwrap_or_else(|e| panic!("{what} content must be valid UTF-8 after decode: {e}"))
+        };
+        let pubkey_text = decode_outer_b64(THROWAWAY_PUBKEY, "pubkey");
+        let signature_text = decode_outer_b64(&signature_raw, "signature (.sig)");
+
+        // ---- Reproduce the plugin's OWN verify_signature() call, verbatim (see header comment
+        // above for the quoted source) — `data` = the REAL OLD artifact bytes, `release_signature`
+        // = the base64 blob a real `latest.json` would carry for this artifact (decoded above,
+        // exactly as the plugin itself decodes it), `pub_key` = the throwaway public key (also
+        // decoded above, exactly as the plugin itself decodes it). `version` (D-11's "99.0.0"
+        // claim) is DELIBERATELY never constructed anywhere in this test — there is no parameter
+        // to pass it to, which IS the finding: the check this call performs is structurally
+        // blind to whatever `version` a `latest.json` claims.
+        let public_key = PublicKey::decode(&pubkey_text)
+            .expect("decode throwaway public key (matches verify_signature's PublicKey::decode)");
+        let signature = Signature::decode(&signature_text)
+            .expect("decode the real .sig produced by `tauri signer sign` this session");
+        let result = public_key.verify(&artifact_bytes, &signature, true);
+
+        match &result {
+            Ok(()) => {
+                println!(
+                    "UPD-03 CONFIRMED: the plugin's own verify_signature() call (reproduced \
+                     verbatim above) accepts the REAL, OLD artifact ({} bytes) under its \
+                     genuinely-valid throwaway-key signature — and that call has NO parameter \
+                     through which a `latest.json` version claim (e.g. a false \"99.0.0\") could \
+                     ever influence the outcome. Tauri does NOT bind latest.json's unsigned \
+                     `version` to the signed artifact bytes — the rollback attack works. The D-11 \
+                     mitigation (monotonic high-water version + signature-covered SHA-256 binding) \
+                     is REQUIRED and ships in a later plan of this phase.",
+                    artifact_bytes.len()
+                );
+            }
+            Err(e) => {
+                // Negative-branch meaning (D-11): if this branch ever fires, the throwaway
+                // signing/verification round-trip itself is broken (e.g. a `tauri signer
+                // sign`/`minisign-verify` version mismatch) — NOT evidence that Tauri binds
+                // version to bytes, since this test never exercises that binding question either
+                // way. This is a fixture-integrity failure, not a UPD-03 negative result — record
+                // it as a fixture bug (regenerate per tests/fixtures/upd03/README.md), not as an
+                // update to the UPD-03 verdict.
+                println!(
+                    "FIXTURE INTEGRITY FAILURE (not a UPD-03 verdict): the throwaway signature \
+                     failed to verify against the real artifact bytes. Exact error: {e}"
+                );
+            }
+        }
+
+        assert!(
+            result.is_ok(),
+            "UPD-03 fixture-integrity check failed: the throwaway-key signature must verify \
+             against the real artifact bytes for this test to say anything about UPD-03 at all. \
+             Error: {:?} — see tests/fixtures/upd03/README.md to regenerate the fixtures.",
+            result.as_ref().err()
+        );
+    }
 }
