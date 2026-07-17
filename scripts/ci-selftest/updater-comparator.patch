@@ -1,0 +1,15 @@
+diff --git a/apps/desktop/src-tauri/src/commands/update.rs b/apps/desktop/src-tauri/src/commands/update.rs
+index a548c73..100afb4 100644
+--- a/apps/desktop/src-tauri/src/commands/update.rs
++++ b/apps/desktop/src-tauri/src/commands/update.rs
+@@ -112,7 +112,9 @@ pub(crate) fn is_strictly_newer(current: &semver::Version, candidate: &semver::V
+ pub(crate) fn with_explicit_comparator(
+     builder: tauri_plugin_updater::UpdaterBuilder,
+ ) -> tauri_plugin_updater::UpdaterBuilder {
+-    builder.version_comparator(|current, update| is_strictly_newer(&current, &update.version))
++    // CI-06 selftest break: the explicit comparator call is gone — this reverts to the
++    // plugin's implicit default, exactly the opt-out UPD-02 forbids relying on.
++    builder
+ }
+ 
+ // ---------------------------------------------------------------------------

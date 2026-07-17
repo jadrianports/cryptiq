@@ -1,0 +1,12 @@
+diff --git a/apps/desktop/src-tauri/capabilities/default.json b/apps/desktop/src-tauri/capabilities/default.json
+index 1685c7c..e4b4166 100644
+--- a/apps/desktop/src-tauri/capabilities/default.json
++++ b/apps/desktop/src-tauri/capabilities/default.json
+@@ -15,6 +15,7 @@
+     "dialog:allow-message",
+     "dialog:allow-ask",
+     "dialog:allow-confirm",
++    "updater:allow-check",
+ 
+     {
+       "identifier": "fs:allow-read-file",

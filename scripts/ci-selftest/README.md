@@ -55,6 +55,9 @@ since the pipeline might be red for unrelated reasons.
 | 20 | HARD-05 concurrency `cancel-in-progress` on ci.yml (never release.yml) | 2 rapid pushes to `selftest/hard05-concurrency` | [29365641308](https://github.com/jadrianports/cryptiq/actions/runs/29365641308) | run **cancelled** by the superseding push ([29365671150](https://github.com/jadrianports/cryptiq/actions/runs/29365671150)); release.yml has no concurrency block, so a tag build is never cancelled |
 | 21 | HARD-05 warm rust-cache speedup | natural experiment (lockfile = cache key) | cold [29357246295](https://github.com/jadrianports/cryptiq/actions/runs/29357246295) vs warm [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) | `rust` job **11m17s cold** (commit `41c0fad` changed Cargo.lock) → **3m07s warm** (unchanged lockfile) — ~3.5× |
 | 22 | REL-03 install-smoke **post-uninstall** read-back (orphan registry keys survive uninstall) | `unregister-red.patch` | **pending — authored, not yet red-run** | See "Honest gap: REL-03 post-uninstall" below |
+| 23 | UPD-01 tampered-artifact-byte signature-verification proof | `updater-signature.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
+| 24 | UPD-02 explicit anti-rollback `version_comparator` lint | `updater-comparator.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
+| 25 | UPD-04 capability/CSP byte-identity golden-snapshot lint | `updater-capability-diff.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
 
 **Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
@@ -365,6 +368,55 @@ critical guidance that `security-extended` is not enabled on this repo's `codeql
 
 The live CI red-run for all four (Task 3) is where each gets its actual proof and a real URL,
 replacing the "pending" placeholders above.
+
+## Phase 36-04 local pre-flight: `updater-signature.patch` / `updater-comparator.patch` / `updater-capability-diff.patch`
+
+All three of this phase's gates are locally checkable (a Rust `#[test]` and two `lint-*.mjs`
+scripts) — no live-CI-only surface (no `windows-2025` runner behavior, no gitleaks/CodeQL
+toolchain) is involved, so all three were fully pre-flighted on this machine before authoring the
+ledger rows above. **The live CI red-run URLs are still OUTSTANDING** — recorded honestly as
+`pending` per rows 23-25, to be closed by `/gsd-verify-work` at phase close (repair→prove→arm; this
+plan does not push a scratch branch or a `v*` tag).
+
+**`updater-signature.patch`** (UPD-01) — makes the tamper a no-op (`^= 0x01` → `^= 0x00`), so the
+"tampered" bytes are actually unchanged and the test's failure assertion no longer holds:
+```bash
+git apply scripts/ci-selftest/updater-signature.patch
+cd apps/desktop/src-tauri && cargo test commands::update::tests::signature_verification_fails_on_tampered_byte -- --exact
+# applied: exit 101 (FAILED — 0 passed; 1 failed), panic at the "first" position assertion
+cd ../../.. && git checkout -- apps/desktop/src-tauri/src/commands/update.rs
+cd apps/desktop/src-tauri && cargo test commands::update::tests::signature_verification_fails_on_tampered_byte -- --exact
+# reverted: exit 0 (ok — 1 passed; 0 failed)
+```
+
+**`updater-comparator.patch`** (UPD-02) — deletes the `.version_comparator(` call from
+`with_explicit_comparator`, reverting to the plugin's implicit default (the exact opt-out UPD-02
+bans). Breaks the LINT layer, not `comparator_is_strictly_greater` itself (that test exercises
+`is_strictly_newer` directly and is unaffected by this specific deletion) — the lint is the
+cheaper, deterministic gate to pin the red run against, and it is the one that actually asserts
+"the comparator call exists at all", which is the property this patch removes:
+```bash
+git apply scripts/ci-selftest/updater-comparator.patch
+node scripts/lint/lint-updater-opt-outs.mjs
+# applied: exit 1 — "no `.version_comparator(` call found outside comments"
+git checkout -- apps/desktop/src-tauri/src/commands/update.rs
+node scripts/lint/lint-updater-opt-outs.mjs
+# reverted: exit 0 — "OK: updater opt-outs absent; version_comparator is explicit."
+```
+
+**`updater-capability-diff.patch`** (UPD-04) — adds a single benign-looking permission token
+(`"updater:allow-check"`) to `capabilities/default.json`, simulating exactly the capability-surface
+creep UPD-04 exists to catch:
+```bash
+git apply scripts/ci-selftest/updater-capability-diff.patch
+node scripts/lint/lint-updater-capability-diff.mjs
+# applied: exit 1 — "DRIFT DETECTED: capabilities/default.json" (SHA-256 mismatch)
+git checkout -- apps/desktop/src-tauri/capabilities/default.json
+node scripts/lint/lint-updater-capability-diff.mjs
+# reverted: exit 0 — "OK: capability surface + production CSP byte-identical to the pre-updater snapshot."
+```
+
+`git status --short` was empty after every one of the three revert steps above.
 
 ## Full ledger
 

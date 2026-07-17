@@ -1,0 +1,13 @@
+diff --git a/apps/desktop/src-tauri/src/commands/update.rs b/apps/desktop/src-tauri/src/commands/update.rs
+index a548c73..bc0e08b 100644
+--- a/apps/desktop/src-tauri/src/commands/update.rs
++++ b/apps/desktop/src-tauri/src/commands/update.rs
+@@ -350,7 +350,7 @@ mod tests {
+         let positions: [(&str, usize); 3] = [("first", 0), ("middle", len / 2), ("last", len - 1)];
+         for (label, pos) in positions {
+             let mut tampered = artifact_bytes.clone();
+-            tampered[pos] ^= 0x01;
++            tampered[pos] ^= 0x00;
+             assert!(
+                 public_key.verify(&tampered, &signature, true).is_err(),
+                 "UPD-01: flipping the byte at the {label} position (index {pos}) must FAIL \
