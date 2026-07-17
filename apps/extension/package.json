@@ -4,6 +4,12 @@
   "private": true,
   "license": "GPL-3.0-only",
   "type": "module",
+  "exports": {
+    "./fieldDetection": {
+      "types": "./src/lib/fieldDetection.ts",
+      "default": "./src/lib/fieldDetection.ts"
+    }
+  },
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
