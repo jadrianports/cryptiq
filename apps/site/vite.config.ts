@@ -46,5 +46,15 @@ export default defineConfig({
     commonjsOptions: {
       include: [/libsodium-wrappers-sumo/, /node_modules/],
     },
+
+    // D-07 (38-03): Vite's default modulePreload polyfill unconditionally
+    // embeds a literal `fetch(i.href, s)` call in the shipped bundle (dead
+    // code on this single-chunk build with no <link rel=modulepreload> to
+    // trigger it, but the byte string is still there) — which trips
+    // lint-demo-containment.mjs's forbidden-API scan and, more importantly,
+    // violates "structurally, not by promise": a network call must not exist
+    // in the shipped bytes at all, reachable or not. apps/site has no code
+    // splitting to preload, so disabling this outright costs nothing.
+    modulePreload: false,
   },
 });
