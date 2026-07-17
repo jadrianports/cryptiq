@@ -75,10 +75,14 @@ pub fn config_bool_field(app: &tauri::AppHandle, field: &str, default_if_absent:
 
 /// Pure decision core — zero I/O, zero `AppHandle`. `value: None` stands in for every
 /// "cannot determine" case (unresolvable config dir / unreadable file / corrupt JSON); the
-/// public `config_bool_field` collapses all three onto `None` before calling this. Kept private
-/// and exercised directly by the `#[cfg(test)] mod tests` below, mirroring `hibp.rs`'s
+/// public `config_bool_field` collapses all three onto `None` before calling this. `pub(crate)`
+/// (not `pub`) so sibling modules' own test suites (e.g. `extension_bridge.rs`'s
+/// `extension_bridge_enabled_is_fail_open`) can exercise the exact polarity decision their
+/// delegating call site relies on, without exposing a second public entry point — the crate's
+/// only PUBLIC config-reading function remains `config_bool_field` (D-15: built once). Exercised
+/// directly by the `#[cfg(test)] mod tests` below too, mirroring `hibp.rs`'s
 /// `build_hibp_request` "test the pure part with no I/O" discipline.
-fn resolve_bool(value: Option<&serde_json::Value>, field: &str, default_if_absent: bool) -> bool {
+pub(crate) fn resolve_bool(value: Option<&serde_json::Value>, field: &str, default_if_absent: bool) -> bool {
     match value.and_then(|v| v.get(field)).and_then(|v| v.as_bool()) {
         Some(b) => b,
         None => default_if_absent,

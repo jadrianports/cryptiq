@@ -897,25 +897,16 @@ pub async fn stop_extension_bridge_listener(app: tauri::AppHandle) -> Result<(),
 /// error all fail OPEN to `true` — preserving Phase-14's always-on behavior so a missing/corrupt
 /// config never silently disables the feature. Only a deliberate `false` disables. The real
 /// per-request auth is Phase-15's crypto_box pairing token, unchanged here.
+///
+/// Phase 36 (D-13/D-15): delegates to the shared `config_guard::config_bool_field` seam-guard,
+/// passing `default_if_absent: true` to express the fail-OPEN direction above as an explicit
+/// argument rather than bespoke inline logic. The polarity is deliberate and specific to THIS
+/// flag — a reader copying this call site for a network-egress consent flag (e.g. a future HIBP
+/// or updater guard) must pass `false` instead. See `config_guard.rs`'s own doc-comment for the
+/// full W-1 rationale; passing `true` there for an egress flag is precisely the trap this helper
+/// exists to make impossible to inherit silently.
 pub fn extension_bridge_enabled(app: &tauri::AppHandle) -> bool {
-    let config_dir = match app.path().app_config_dir() {
-        Ok(p) => p,
-        Err(_) => return true, // cannot resolve config dir — fail open
-    };
-    let config_path = config_dir.join("cryptiq").join("config.json");
-    let bytes = match std::fs::read(&config_path) {
-        Ok(b) => b,
-        Err(_) => return true, // missing/unreadable config — fail open
-    };
-    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(v) => v,
-        Err(_) => return true, // corrupt config — fail open
-    };
-    // Only an explicit JSON `false` disables; Some(true), absent, or non-bool → fail open to true.
-    !matches!(
-        value.get("extensionBridgeEnabled").and_then(|v| v.as_bool()),
-        Some(false)
-    )
+    crate::commands::config_guard::config_bool_field(app, "extensionBridgeEnabled", true)
 }
 
 /// Handle a single connected pipe client: read one framed envelope, validate it, and respond.
@@ -1583,6 +1574,34 @@ mod tests {
                 got: CURRENT_PROTOCOL_VERSION + 1,
             }
         );
+    }
+
+    /// Phase 36 (D-13/D-15/T-36-13): `extension_bridge_enabled`'s BODY now delegates to
+    /// `config_guard::config_bool_field` (see its definition above) — this cannot be driven
+    /// with a real `AppHandle` from a unit test, so it drives the same pure
+    /// `config_guard::resolve_bool` decision core the delegation ultimately calls, with the
+    /// exact `default_if_absent` argument value `extension_bridge_enabled` passes (`true`), and
+    /// pins that the fail-OPEN polarity survived the refactor byte-for-byte: an absent field
+    /// still yields `true`, and only an explicit JSON `false` yields `false`.
+    #[test]
+    fn extension_bridge_enabled_is_fail_open() {
+        use crate::commands::config_guard::resolve_bool;
+
+        let absent = serde_json::json!({ "otherField": true });
+        assert!(
+            resolve_bool(Some(&absent), "extensionBridgeEnabled", true),
+            "absent field must fail OPEN to true, matching extension_bridge_enabled's pre-refactor behavior"
+        );
+
+        let explicit_false = serde_json::json!({ "extensionBridgeEnabled": false });
+        assert!(
+            !resolve_bool(Some(&explicit_false), "extensionBridgeEnabled", true),
+            "only a deliberate JSON false may disable — T-20-04"
+        );
+
+        // Unresolvable config (dir/file/JSON) collapses to None in config_bool_field — same
+        // fail-OPEN guarantee must hold there too.
+        assert!(resolve_bool(None, "extensionBridgeEnabled", true));
     }
 
     #[tokio::test]
