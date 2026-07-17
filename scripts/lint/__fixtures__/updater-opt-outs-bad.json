@@ -1,0 +1,17 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Cryptiq",
+  "version": "3.2.0",
+  "identifier": "com.cryptiq.app",
+  "plugins": {
+    "updater": {
+      "pubkey": "SYNTHETIC_FIXTURE_NOT_A_REAL_KEY",
+      "endpoints": ["https://example.invalid/latest.json"],
+      "allowDowngrades": true,
+      "windows": {
+        "installMode": "passive"
+      },
+      "dangerousInsecureTransportProtocol": true
+    }
+  }
+}
