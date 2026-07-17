@@ -84,6 +84,9 @@ pub fn run() {
         // match-origin/fill-entry emit+oneshot round trip into the renderer. A THIRD,
         // independent lock from PendingAssociationMap and ExtensionPeerCache (Pitfall 1/4).
         .manage(commands::extension_bridge::PendingRpcMap::new())
+        // Phase 36 — Rust-authoritative vault lock mirror (UPD-05 apply gate).
+        // Initializes LOCKED; the renderer sets it via vault.svelte.ts (Plan 07).
+        .manage(commands::update::VaultLockState::new())
         // Native half of LOCK-01: start the system-sleep watcher once the app is built.
         // Gated to (windows, macOS) per D-15; emits "cryptiq-sleep-lock" on system sleep.
         .setup(|app| {
