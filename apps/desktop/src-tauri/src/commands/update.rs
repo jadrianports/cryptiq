@@ -72,6 +72,50 @@ impl Default for VaultLockState {
 }
 
 // ---------------------------------------------------------------------------
+// UPD-02 — the explicit, pinned anti-rollback comparator.
+//
+// The plugin's own DEFAULT comparator is already `release.version > self.current_version` and
+// is CORRECT (36-RESEARCH.md §"Code Examples" — direct source read of
+// `tauri-plugin-updater@2.10.1`'s `updater.rs`, quoted verbatim there). UPD-02 does not exist to
+// build a *better* comparator; it exists so the rule is written down in Cryptiq's OWN source,
+// where `comparator_is_strictly_greater` below pins it with a test and a silent upstream default
+// change can no longer move it out from under us. `allowDowngrades` and a permissive custom
+// comparator are two of the three opt-outs `scripts/lint/lint-updater-opt-outs.mjs` bans; the
+// third (`dangerousInsecureTransportProtocol`) is unrelated to this function.
+// ---------------------------------------------------------------------------
+
+/// Strictly-greater anti-rollback comparator (UPD-02). Returns `true` only when `candidate` is
+/// strictly greater than `current` — equal and lower versions (the anti-rollback property) both
+/// return `false`, and so does a prerelease compared against its own release (semver ordering:
+/// `3.2.0-rc.1 < 3.2.0`). Pinned by `comparator_is_strictly_greater` below.
+pub(crate) fn is_strictly_newer(current: &semver::Version, candidate: &semver::Version) -> bool {
+    candidate > current
+}
+
+/// The ONE call site in this crate that attaches `.version_comparator(...)` to an
+/// `UpdaterBuilder`. Every future updater construction — the live `update_check` command
+/// (landing in a later plan) and any future live-drive UPD-03 harness (see
+/// `tests/fixtures/upd03-harness/`, preserved for a future follow-up per 36-02-SUMMARY.md) —
+/// MUST route through this function rather than calling `.version_comparator(...)` a second
+/// time, so the explicit comparator can never drift between production and test call sites
+/// (mirrors D-15's "built once, used twice" discipline, applied here to the comparator instead
+/// of the consent guard).
+///
+/// Not yet called by any live path this plan: `update_check`/`update_apply` land in a later
+/// plan, and Plan 02's shipped `upd03_rollback_experiment` bypasses the plugin's public
+/// `UpdaterBuilder` entirely (its own header comment documents the `cargo test` + live
+/// `tauri::App` environment blocker that forced that substitution). `#[allow(dead_code)]`
+/// matches the existing forward-declared-for-a-later-plan precedent already in this codebase
+/// (`VaultLockState` above; `sync.rs`'s `SYNC_CONNECT_DEADLINE` et al.; `pairing.rs`'s
+/// `sas_raw`/`transport`/`local_device_id`).
+#[allow(dead_code)]
+pub(crate) fn with_explicit_comparator(
+    builder: tauri_plugin_updater::UpdaterBuilder,
+) -> tauri_plugin_updater::UpdaterBuilder {
+    builder.version_comparator(|current, update| is_strictly_newer(&current, &update.version))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 #[cfg(test)]
@@ -84,6 +128,40 @@ mod tests {
             !VaultLockState::new().is_unlocked(),
             "a fresh VaultLockState must initialize LOCKED — an init-to-unlocked default would \
              make the apply seam permissive on a fresh process (T-36-04)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // UPD-02 — comparator matrix (equal/lower/prerelease ARE the anti-rollback property; assert
+    // them explicitly rather than relying on the greater-than case alone).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn comparator_is_strictly_greater() {
+        use semver::Version;
+
+        assert!(
+            is_strictly_newer(&Version::parse("3.2.0").unwrap(), &Version::parse("3.2.1").unwrap()),
+            "3.2.1 must be strictly newer than 3.2.0"
+        );
+        assert!(
+            !is_strictly_newer(&Version::parse("3.2.0").unwrap(), &Version::parse("3.2.0").unwrap()),
+            "ANTI-ROLLBACK: equal versions must NOT be treated as an update"
+        );
+        assert!(
+            !is_strictly_newer(&Version::parse("3.2.0").unwrap(), &Version::parse("3.1.9").unwrap()),
+            "ANTI-ROLLBACK: a lower version must NOT be treated as an update"
+        );
+        assert!(
+            !is_strictly_newer(
+                &Version::parse("3.2.0").unwrap(),
+                &Version::parse("3.2.0-rc.1").unwrap()
+            ),
+            "a prerelease must NOT be treated as newer than its own release (semver ordering: \
+             3.2.0-rc.1 < 3.2.0)"
+        );
+        assert!(
+            is_strictly_newer(&Version::parse("3.99.99").unwrap(), &Version::parse("4.0.0").unwrap()),
+            "4.0.0 must be strictly newer than 3.99.99 (major-version rollover)"
         );
     }
 
@@ -166,41 +244,51 @@ mod tests {
     // source-level prediction (verification succeeds; the plugin has no mechanism to refuse based
     // on version) — if a future `minisign-verify`/`tauri-plugin-updater` upgrade ever changes
     // this, the assertion fails loudly rather than silently recording a stale verdict.
-    #[test]
-    fn upd03_rollback_experiment() {
-        use minisign_verify::{PublicKey, Signature};
 
-        // ---- Fixture 1: the throwaway keypair's PUBLIC key (D-09) ------------------------
-        // Generated this session via `tauri signer generate` (the same CLI the real KEY-01
-        // ceremony uses) to a scratch path OUTSIDE the repo (the OS temp dir) — the private key
-        // is disposable and was never committed. See tests/fixtures/upd03/README.md for full
-        // provenance (exact commands, regeneration instructions).
+    // -----------------------------------------------------------------------
+    // Shared fixture loader (Plan 04 Task 1: reuse Plan 02's throwaway keypair + real signed
+    // artifact for the UPD-01 tampered-byte proof too — do NOT generate a second throwaway
+    // keypair). Returns `(artifact_bytes, pubkey_text, signature_text)` where the pubkey/
+    // signature strings are ALREADY outer-base64-unwrapped to the inner minisign text, exactly
+    // as `verify_signature()` itself does before calling `PublicKey::decode`/`Signature::decode`
+    // (see `upd03_rollback_experiment`'s header comment above for the plugin source quote this
+    // mirrors). Returns owned `String`s rather than decoded `PublicKey`/`Signature` values so
+    // each caller can decode independently without requiring those types to implement `Clone`.
+    // -----------------------------------------------------------------------
+    fn load_upd03_fixture_strings() -> (Vec<u8>, String, String) {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        // The throwaway keypair's PUBLIC key (D-09). Generated this session via
+        // `tauri signer generate` (the same CLI the real KEY-01 ceremony uses) to a scratch path
+        // OUTSIDE the repo (the OS temp dir) — the private key is disposable and was never
+        // committed. See tests/fixtures/upd03/README.md for full provenance.
         const THROWAWAY_PUBKEY: &str =
             "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5MTEzQjBCRUFDNTQ5RUMKUldUc1NjWHFDenNSS1haTkhPdVRBWWNaWU93SnNPcWxocWRMWXFHR1JHTnZWQVMrZTNoQlBnWlkK";
 
-        // ---- Fixture 2: the real, old, validly-signed artifact (D-09) --------------------
-        // A genuine `pnpm build` NSIS output, signed with the throwaway private key via
-        // `tauri signer sign`. Both the bytes and the .sig are read directly from the crate's
-        // own `target/release/bundle/nsis/` build-output directory at test-run time (already
-        // covered by this crate's `.gitignore` — `target/` — so neither the artifact nor its
-        // `.sig` is ever committed; no new fixture-directory gitignore entry is needed). The
-        // throwaway private key that produced the `.sig` is never written anywhere in this
-        // repo tree (README.md documents full provenance + exact SHA-256).
+        // The real, old, validly-signed artifact (D-09). A genuine `pnpm build` NSIS output,
+        // signed with the throwaway private key via `tauri signer sign`. Both the bytes and the
+        // .sig are read directly from the crate's own `target/release/bundle/nsis/` build-output
+        // directory at test-run time (already covered by this crate's `.gitignore` — `target/`
+        // — so neither the artifact nor its `.sig` is ever committed; no new fixture-directory
+        // gitignore entry is needed). The throwaway private key that produced the `.sig` is
+        // never written anywhere in this repo tree (README.md documents full provenance + exact
+        // SHA-256).
         let artifact_path =
             std::path::Path::new("target/release/bundle/nsis/Cryptiq_3.2.0_x64-setup.exe");
         let signature_path =
             std::path::Path::new("target/release/bundle/nsis/Cryptiq_3.2.0_x64-setup.exe.sig");
         let artifact_bytes = std::fs::read(artifact_path).unwrap_or_else(|e| {
             panic!(
-                "UPD-03 fixture artifact missing at {}: {e}. See tests/fixtures/upd03/README.md \
-                 to regenerate it (pnpm build + tauri signer sign).",
+                "UPD-01/03 fixture artifact missing at {}: {e}. See \
+                 tests/fixtures/upd03/README.md to regenerate it (pnpm build + tauri signer \
+                 sign).",
                 artifact_path.display()
             )
         });
         let signature_raw = std::fs::read_to_string(signature_path).unwrap_or_else(|e| {
             panic!(
-                "UPD-03 fixture signature missing at {}: {e}. See tests/fixtures/upd03/README.md \
-                 to regenerate it.",
+                "UPD-01/03 fixture signature missing at {}: {e}. See \
+                 tests/fixtures/upd03/README.md to regenerate it.",
                 signature_path.display()
             )
         });
@@ -215,7 +303,6 @@ mod tests {
         // from_base64()` (which expects the ALREADY-unwrapped inner key line, not this outer
         // wrapper — using it here would silently test a different decode path than the plugin
         // actually runs).
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
         let decode_outer_b64 = |raw: &str, what: &str| -> String {
             let bytes = STANDARD
                 .decode(raw.trim())
@@ -225,6 +312,59 @@ mod tests {
         };
         let pubkey_text = decode_outer_b64(THROWAWAY_PUBKEY, "pubkey");
         let signature_text = decode_outer_b64(&signature_raw, "signature (.sig)");
+
+        (artifact_bytes, pubkey_text, signature_text)
+    }
+
+    // -----------------------------------------------------------------------
+    // UPD-01 — a single flipped artifact byte flips signature verification to FAIL, proven by a
+    // test, not asserted. Asserts BOTH directions: the unmodified bytes verify OK (the control —
+    // a verifier that rejects everything would also "pass" a flip-fails-only test), AND a clone
+    // with exactly one byte flipped FAILS at three distinct positions (first/middle/last — a
+    // verifier that only checks a prefix would pass a first-byte-only test).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn signature_verification_fails_on_tampered_byte() {
+        use minisign_verify::{PublicKey, Signature};
+
+        let (artifact_bytes, pubkey_text, signature_text) = load_upd03_fixture_strings();
+        let public_key = PublicKey::decode(&pubkey_text)
+            .expect("decode throwaway public key (matches verify_signature's PublicKey::decode)");
+        let signature = Signature::decode(&signature_text)
+            .expect("decode the real .sig produced by `tauri signer sign` this session");
+
+        // Control: the UNMODIFIED bytes verify OK against the throwaway pubkey. Without this,
+        // the flip-fails assertions below would prove nothing — a verifier that rejects every
+        // input (a broken, not a working, verifier) would also make those pass.
+        assert!(
+            public_key.verify(&artifact_bytes, &signature, true).is_ok(),
+            "control failed: the unmodified artifact bytes must verify OK against the real, \
+             valid signature — if this fails, the tampered-byte assertions below cannot prove \
+             UPD-01 at all."
+        );
+
+        // UPD-01: flip exactly one byte at three distinct positions (first, middle, last) and
+        // assert verification FAILS at each.
+        let len = artifact_bytes.len();
+        assert!(len >= 2, "fixture artifact must be non-trivially sized");
+        let positions: [(&str, usize); 3] = [("first", 0), ("middle", len / 2), ("last", len - 1)];
+        for (label, pos) in positions {
+            let mut tampered = artifact_bytes.clone();
+            tampered[pos] ^= 0x01;
+            assert!(
+                public_key.verify(&tampered, &signature, true).is_err(),
+                "UPD-01: flipping the byte at the {label} position (index {pos}) must FAIL \
+                 signature verification — a flipped byte that still verifies means artifact \
+                 integrity is not actually checked."
+            );
+        }
+    }
+
+    #[test]
+    fn upd03_rollback_experiment() {
+        use minisign_verify::{PublicKey, Signature};
+
+        let (artifact_bytes, pubkey_text, signature_text) = load_upd03_fixture_strings();
 
         // ---- Reproduce the plugin's OWN verify_signature() call, verbatim (see header comment
         // above for the quoted source) — `data` = the REAL OLD artifact bytes, `release_signature`
