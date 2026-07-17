@@ -166,6 +166,9 @@ pub fn run() {
             commands::extension_bridge::stop_extension_bridge_listener,
             // Phase 30 — HIBP k-anonymity range lookup shuttle
             commands::hibp::hibp_range_lookup,
+            // Phase 36 — update-channel trust (UPD-01..05 gate)
+            commands::update::vault_lock_state_set,
+            commands::update::update_apply,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cryptiq");

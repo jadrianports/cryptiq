@@ -5,11 +5,20 @@
 // destroys the zero-capability/zero-CSP-diff property UPD-04 asserts.
 //
 // Responsibilities:
-//   VaultLockState  — Rust-authoritative mirror of the renderer's vault lock state (managed
-//                      Tauri state, `.manage(...)` in lib.rs). This module is otherwise INERT
-//                      this plan: no #[tauri::command] exists yet, no network call is made, and
-//                      no install path is reachable. update_check/update_apply land in later
-//                      plans, following hibp.rs's pure-builder/async-executor split.
+//   VaultLockState       — Rust-authoritative mirror of the renderer's vault lock state
+//                           (managed Tauri state, `.manage(...)` in lib.rs).
+//   vault_lock_state_set — #[tauri::command] glue (Plan 07): the renderer's ONE call site for
+//                           mutating VaultLockState. One command with a boolean, not two
+//                           commands, so the BEFORE-derive/AFTER-wipe call sites in
+//                           vault.svelte.ts stay symmetrical and impossible to half-implement.
+//   should_apply          — the pure apply-seam decision (Plan 07, UPD-05 gate): no AppHandle,
+//                           no Tauri, no I/O — unit-testable by constructing Option<bool>
+//                           directly, mirroring hibp.rs's build_hibp_request "assert on the
+//                           unfired state" discipline.
+//   update_apply           — #[tauri::command] glue: resolves VaultLockState, calls
+//                           should_apply, and — on Ok — does NOT yet install (Phase 37 wires
+//                           the real install() path). update_check is NOT added this plan;
+//                           its runtime belongs to Phase 37 alongside its consent gate.
 //
 // Security invariants:
 //   - The update endpoint is a Rust `const` (when it lands, in a later plan); no `url`/`host`/
@@ -18,9 +27,13 @@
 //   - `VaultLockState` is Rust-authoritative and initializes to LOCKED at process start — a
 //     fresh process must never read as "safe to apply" before the renderer has explicitly
 //     unlocked.
-//   - The apply seam (landing in a later plan) refuses on uncertainty, not only on a known-
-//     unlocked vault — an ambiguous read is treated as unsafe, never as an implicit "proceed".
-//   - Nothing in this module calls `.install()` or `.download_and_install()` yet.
+//   - `should_apply` refuses on uncertainty (`None`), not only on a known-unlocked vault
+//     (`Some(true)`) — an ambiguous read is treated as unsafe, never as an implicit "proceed".
+//     `update_apply` resolves a MISSING managed state via `try_state` to `None` (uncertain),
+//     never to `Some(false)` (locked) — a missing guard must never read as "safe".
+//   - Nothing in this module calls `.install()` or `.download_and_install()` yet — `update_apply`
+//     returns `Ok(())` on a permitted apply and stops; Phase 37 lands the real install() call,
+//     marked with an explicit comment at its landing site.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -35,12 +48,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// the refusing direction for the apply seam (an apply gate that refuses on `unlocked` never
 /// mistakenly proceeds over a live key), so the failure mode of a mistimed crash is "the
 /// updater correctly declines to apply", not "the updater applies over a live vault key".
-// Not read/called yet this plan (registered as managed state only; the apply-seam guard and
-// the renderer's set() call sites land in later plans). #[allow] rather than removal: no
-// architectural change intended — mirrors the existing forward-declared-for-a-later-plan
-// precedent already in this codebase (sync.rs SYNC_CONNECT_DEADLINE et al., pairing.rs
-// sas_raw/transport/local_device_id).
-#[allow(dead_code)]
 pub struct VaultLockState(pub AtomicBool);
 
 impl VaultLockState {
@@ -52,14 +59,12 @@ impl VaultLockState {
 
     /// Reads the current lock state. `true` means the renderer has reported the vault as
     /// unlocked; `false` (including the initial/never-set state) means locked.
-    #[allow(dead_code)]
     pub fn is_unlocked(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
 
     /// Sets the lock state. Callers must respect the ordering documented on the struct:
     /// `set(true)` before key derivation, `set(false)` after `secureWipe()`.
-    #[allow(dead_code)]
     pub fn set(&self, unlocked: bool) {
         self.0.store(unlocked, Ordering::SeqCst);
     }
@@ -106,7 +111,7 @@ pub(crate) fn is_strictly_newer(current: &semver::Version, candidate: &semver::V
 /// `UpdaterBuilder` entirely (its own header comment documents the `cargo test` + live
 /// `tauri::App` environment blocker that forced that substitution). `#[allow(dead_code)]`
 /// matches the existing forward-declared-for-a-later-plan precedent already in this codebase
-/// (`VaultLockState` above; `sync.rs`'s `SYNC_CONNECT_DEADLINE` et al.; `pairing.rs`'s
+/// (`sync.rs`'s `SYNC_CONNECT_DEADLINE` et al.; `pairing.rs`'s
 /// `sas_raw`/`transport`/`local_device_id`).
 #[allow(dead_code)]
 pub(crate) fn with_explicit_comparator(
@@ -116,11 +121,96 @@ pub(crate) fn with_explicit_comparator(
 }
 
 // ---------------------------------------------------------------------------
+// vault_lock_state_set — the renderer's ONE call site for mutating VaultLockState (Plan 07).
+//
+// ONE command with a boolean, deliberately preferred over two separate commands: it keeps the
+// two renderer call sites (BEFORE-derive unlock=true in unlock()/create(), AFTER-wipe
+// unlock=false in lock()) symmetrical and impossible to half-implement — a reviewer sees one
+// call shape at both sites, not two divergent ones that could drift.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn vault_lock_state_set(state: tauri::State<VaultLockState>, unlocked: bool) {
+    state.set(unlocked);
+}
+
+// ---------------------------------------------------------------------------
+// UPD-05 apply seam (Plan 07) — should_apply + update_apply, refusing on unlocked AND on
+// uncertainty. Windows `installMode: "passive"` FORCE-QUITS the app; if that happens while the
+// vault is unlocked, the process dies with the 32-byte key live in #vaultKey (never wiped —
+// process death frees the page, it does not zero it) and possibly mid-vault_write_atomic. This
+// seam is what refuses that. Phase 37 wires the real install() call; this plan proves the seam
+// is INERT via a zero-install-IPC spy (T-36-32/T-36-33/T-36-34).
+// ---------------------------------------------------------------------------
+
+/// Typed refusal reasons for the apply seam — the project's fail-closed typed-error contract:
+/// every failure surfaces a stable `code`, never a bare `Err(String)` with no distinguishable
+/// reason.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UpdateApplyRefusal {
+    /// The vault is known to be UNLOCKED — applying now risks a Windows passive-mode
+    /// force-quit killing the process with a live 32-byte key in memory (T-36-32).
+    VaultUnlocked,
+    /// The lock state cannot be determined at all (e.g. the managed `VaultLockState` is
+    /// missing). LOAD-BEARING: uncertainty refuses too, not only a known-unlocked vault
+    /// (T-36-33) — see `should_apply`'s doc comment for why `Option<bool>` is required here.
+    LockStateUnknown,
+}
+
+impl UpdateApplyRefusal {
+    /// Stable short-code, consistent with `hibp.rs`'s `hibp_*` short-code style.
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            UpdateApplyRefusal::VaultUnlocked => "update_refused_vault_unlocked",
+            UpdateApplyRefusal::LockStateUnknown => "update_refused_lock_state_unknown",
+        }
+    }
+}
+
+/// Pure decision function — no `AppHandle`, no Tauri, no I/O; unit-testable by constructing
+/// `Option<bool>` directly, mirroring `hibp.rs`'s `build_hibp_request` "assert on the unfired
+/// state" discipline (RESEARCH.md Pattern 1).
+///
+///   - `Some(false)` (locked)    → `Ok(())`
+///   - `Some(true)`  (unlocked)  → `Err(VaultUnlocked)`
+///   - `None` (cannot determine) → `Err(LockStateUnknown)`
+///
+/// The `None` arm is LOAD-BEARING: the seam must refuse on UNCERTAINTY too, not only on a
+/// known-unlocked vault. Taking `Option<bool>` rather than `bool` is what makes "uncertain"
+/// representable at all — a plain `bool` would silently collapse unknown into one of the two
+/// known states, and the safe collapse is not obvious enough to leave implicit.
+pub(crate) fn should_apply(lock_state: Option<bool>) -> Result<(), UpdateApplyRefusal> {
+    match lock_state {
+        Some(false) => Ok(()),
+        Some(true) => Err(UpdateApplyRefusal::VaultUnlocked),
+        None => Err(UpdateApplyRefusal::LockStateUnknown),
+    }
+}
+
+/// `#[tauri::command]` glue. Resolves the managed `VaultLockState` via `try_state` — a MISSING
+/// managed state resolves to `None` (uncertain), NOT to `Some(false)` (locked); a missing guard
+/// must never read as "safe to apply". On `Ok`, this does NOT yet install — Phase 37 wires the
+/// real install path. The comment below marks exactly where `install()` will land: it must
+/// NEVER be reached without `should_apply` returning `Ok` first.
+#[tauri::command]
+pub async fn update_apply(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let lock_state: Option<bool> = app.try_state::<VaultLockState>().map(|s| s.is_unlocked());
+    should_apply(lock_state).map_err(|refusal| refusal.code().to_string())?;
+
+    // Phase 37 lands the real install() call HERE. It must NEVER be reached without
+    // should_apply() returning Ok(()) above — that call IS the entire guard; do not move
+    // install() above it, and do not add a second code path that bypasses it.
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn lock_state_initializes_locked() {
@@ -128,6 +218,124 @@ mod tests {
             !VaultLockState::new().is_unlocked(),
             "a fresh VaultLockState must initialize LOCKED — an init-to-unlocked default would \
              make the apply seam permissive on a fresh process (T-36-04)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // UPD-05 apply seam (Plan 07) — should_apply refuses on unlocked AND on uncertainty,
+    // proven by a spy asserting EXACTLY ZERO install calls, against a passing
+    // permits-when-locked control (T-36-32/T-36-33/T-36-34). A `disabled` button is not a
+    // guard — the spy's zero is.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn apply_refuses_when_unlocked_zero_ipc() {
+        // Call-counting spy: a stub stand-in for the install call Phase 37 wires. The counter
+        // must remain exactly 0 — proving the install path was never entered, not merely that
+        // the decision returned an Err.
+        let install_calls = AtomicUsize::new(0);
+
+        let decision = should_apply(Some(true));
+        assert_eq!(
+            decision,
+            Err(UpdateApplyRefusal::VaultUnlocked),
+            "an unlocked vault must refuse with VaultUnlocked"
+        );
+        if decision.is_ok() {
+            install_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        // T-36-32: the install path must fire ZERO times when should_apply refuses on an
+        // unlocked vault — a disabled button is not a guard, this zero is.
+        assert_eq!(install_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn apply_refuses_when_lock_state_unknown() {
+        let install_calls = AtomicUsize::new(0);
+
+        let decision = should_apply(None);
+        assert_eq!(
+            decision,
+            Err(UpdateApplyRefusal::LockStateUnknown),
+            "an undeterminable lock state must refuse with LockStateUnknown, not silently pass"
+        );
+        if decision.is_ok() {
+            install_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        // T-36-33: the apply seam must refuse on UNCERTAINTY too, not only on a known-unlocked
+        // vault — zero install calls when the lock state cannot be determined.
+        assert_eq!(install_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn apply_permits_when_locked() {
+        // The control: a seam that refuses everything would also pass both refusal tests
+        // above. This confirms should_apply is a real gate, not a permanently-shut one.
+        assert_eq!(
+            should_apply(Some(false)),
+            Ok(()),
+            "a known-locked vault must be permitted to apply"
+        );
+    }
+
+    #[test]
+    fn refusal_codes_are_distinct() {
+        let vault_unlocked = UpdateApplyRefusal::VaultUnlocked.code();
+        let lock_state_unknown = UpdateApplyRefusal::LockStateUnknown.code();
+        assert_ne!(
+            vault_unlocked, lock_state_unknown,
+            "the two apply-refusal short-codes must be distinguishable from each other"
+        );
+
+        // Distinct from every hibp_* short-code too (hibp.rs) — a caller must never confuse an
+        // apply refusal with an HIBP failure/consent-denied code.
+        let hibp_codes = [
+            "hibp_timeout",
+            "hibp_transport_error",
+            "hibp_malformed_body",
+            "hibp_invalid_prefix",
+            "hibp_invalid_purpose",
+            "hibp_consent_denied",
+            "hibp_client_build_failed",
+            "hibp_request_build_failed",
+        ];
+        for code in hibp_codes {
+            assert_ne!(vault_unlocked, code);
+            assert_ne!(lock_state_unknown, code);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // T-36-35: the lock-state ordering composition IS the safety argument — pin it, not just
+    // the individual set()/is_unlocked() primitives.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn lock_state_ordering() {
+        let lock_state = VaultLockState::new();
+        assert!(!lock_state.is_unlocked(), "fresh state starts LOCKED");
+
+        // Normal round trip: set(true) then set(false) returns to locked.
+        lock_state.set(true);
+        assert!(lock_state.is_unlocked());
+        lock_state.set(false);
+        assert!(!lock_state.is_unlocked());
+
+        // Simulated crash-between window (T-36-35): set(true) NEVER followed by set(false) —
+        // the exact window the BEFORE-derive/AFTER-wipe ordering exists to make safe. Rust
+        // must read *unlocked*, and composed with should_apply, the seam must refuse — that
+        // composition IS the safety argument, not the raw AtomicBool read alone.
+        let crashed_mid_unlock = VaultLockState::new();
+        crashed_mid_unlock.set(true);
+        assert!(
+            crashed_mid_unlock.is_unlocked(),
+            "a crash between set(true) and set(false) must leave the state reading unlocked"
+        );
+        assert_eq!(
+            should_apply(Some(crashed_mid_unlock.is_unlocked())),
+            Err(UpdateApplyRefusal::VaultUnlocked),
+            "should_apply(Some(state.is_unlocked())) must refuse after a simulated \
+             crash-between-set(true)-and-set(false) window — a reordering that 'reads cleaner' \
+             is a security regression"
         );
     }
 
