@@ -78,6 +78,26 @@ function fieldType(el: HTMLInputElement): string {
 }
 
 /**
+ * Builds a `FieldDetectionResult` without ever assigning an explicit
+ * `undefined` to an optional property — required under
+ * `exactOptionalPropertyTypes: true` (a stricter tsconfig than this
+ * package's own, but one a consuming workspace member's cross-package
+ * subpath import can apply to this file's program). Omitting the key
+ * entirely is behaviourally identical to `{ user: undefined }` for every
+ * existing caller (plain property access on a missing key already yields
+ * `undefined`), so this is a pure type-level fix, not a behavior change.
+ */
+function buildFieldDetectionResult(
+  user: HTMLInputElement | undefined,
+  pass: HTMLInputElement | undefined,
+): FieldDetectionResult {
+  const result: FieldDetectionResult = {};
+  if (user) result.user = user;
+  if (pass) result.pass = pass;
+  return result;
+}
+
+/**
  * Recursively collects every `<select>` under `root`, descending into OPEN
  * shadow roots — mirrors `collectInputs`'s shadow-DOM-aware traversal
  * exactly, for the new card-field scanner (D-02: `cc-exp-month`/
@@ -246,7 +266,7 @@ function findByAutocomplete(inputs: HTMLInputElement[]): FieldDetectionResult {
     if (!user && tokens.some((t) => USERNAME_AUTOCOMPLETE_TOKENS.has(t))) user = el;
   }
 
-  return { user, pass };
+  return buildFieldDetectionResult(user, pass);
 }
 
 /**
@@ -314,7 +334,7 @@ function findUsernameOnlyCandidate(inputs: HTMLInputElement[]): FieldDetectionRe
 function findHeuristic(inputs: HTMLInputElement[]): FieldDetectionResult {
   const passwordInput = inputs.find((el) => fieldType(el) === 'password');
   if (passwordInput) {
-    return { user: findPairedUsername(passwordInput, inputs), pass: passwordInput };
+    return buildFieldDetectionResult(findPairedUsername(passwordInput, inputs), passwordInput);
   }
   return findUsernameOnlyCandidate(inputs);
 }
@@ -356,10 +376,10 @@ export function scanForLoginFields(root: ParentNode): FieldDetectionResult {
   // autocomplete match authoritative; the heuristic only supplies the gap, so
   // a genuine heuristic miss still leaves that half undefined (FILL-06 fallback).
   const heuristic = findHeuristic(inputs);
-  return {
-    user: byAutocomplete.user ?? heuristic.user,
-    pass: byAutocomplete.pass ?? heuristic.pass,
-  };
+  return buildFieldDetectionResult(
+    byAutocomplete.user ?? heuristic.user,
+    byAutocomplete.pass ?? heuristic.pass,
+  );
 }
 
 /**
