@@ -1,0 +1,17 @@
+diff --git a/apps/desktop/src-tauri/src/commands/high_water.rs b/apps/desktop/src-tauri/src/commands/high_water.rs
+index 2042700..0412ad1 100644
+--- a/apps/desktop/src-tauri/src/commands/high_water.rs
++++ b/apps/desktop/src-tauri/src/commands/high_water.rs
+@@ -266,7 +266,11 @@ pub(crate) fn passes_high_water(
+     match state {
+         HighWaterState::Known(hw) => candidate > hw,
+         HighWaterState::Absent => candidate > current_app,
+-        HighWaterState::Unreadable => false,
++        // CI-06 selftest break (scripts/ci-selftest/updater-rollback.patch): fail-OPEN on a
++        // corrupt store — the most plausible regression, since it is exactly what a
++        // well-meaning refactor does when it decides a corrupt sidecar "shouldn't block the
++        // user from updating".
++        HighWaterState::Unreadable => true,
+     }
+ }
+ 

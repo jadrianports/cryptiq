@@ -58,6 +58,7 @@ since the pipeline might be red for unrelated reasons.
 | 23 | UPD-01 tampered-artifact-byte signature-verification proof | `updater-signature.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
 | 24 | UPD-02 explicit anti-rollback `version_comparator` lint | `updater-comparator.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
 | 25 | UPD-04 capability/CSP byte-identity golden-snapshot lint | `updater-capability-diff.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
+| 26 | D-11 rollback mitigation fail-closed on a corrupt high-water store | `updater-rollback.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-09 local pre-flight" below |
 
 **Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
@@ -417,6 +418,32 @@ node scripts/lint/lint-updater-capability-diff.mjs
 ```
 
 `git status --short` was empty after every one of the three revert steps above.
+
+## Phase 36-09 local pre-flight: `updater-rollback.patch`
+
+The D-11 rollback mitigation (`high_water.rs`) is locally checkable (a Rust `#[test]`), no live-CI-
+only surface involved — pre-flighted on this machine before authoring the ledger row above (row
+26). **The live CI red-run URL is still OUTSTANDING** — recorded honestly as `pending`, to be
+closed by `/gsd-verify-work` at phase close (repair→prove→arm; this plan does not push a scratch
+branch or a `v*` tag).
+
+**`updater-rollback.patch`** — flips `passes_high_water`'s `Unreadable` arm from `false` to `true`,
+i.e. fail-OPEN on a corrupt high-water store. This is the highest-value break because it is the
+most PLAUSIBLE regression: exactly what a well-meaning refactor does when it decides a corrupt
+sidecar "shouldn't block the user from updating":
+
+```bash
+git apply scripts/ci-selftest/updater-rollback.patch
+cd apps\desktop\src-tauri && cargo test commands::high_water::tests::unreadable_high_water_fails_closed -- --exact
+# applied: exit 101 (FAILED — 0 passed; 1 failed), panic: "Unreadable must fail CLOSED regardless
+# of how high the candidate claims to be"
+cd ../../.. && git checkout -- apps/desktop/src-tauri/src/commands/high_water.rs
+cd apps\desktop\src-tauri && cargo test commands::high_water::tests::unreadable_high_water_fails_closed -- --exact
+# reverted: exit 0 (ok — 1 passed; 0 failed)
+```
+
+`git status --short` was empty after the revert step above (aside from the newly-authored, then
+committed, `.patch` file itself).
 
 ## Full ledger
 
