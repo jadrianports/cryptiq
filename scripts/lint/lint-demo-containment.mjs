@@ -33,7 +33,17 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const DIST_DIR = join(REPO_ROOT, 'apps', 'site', 'dist');
 
-// (a) Forbidden network/storage APIs — D-07's exact list.
+// (a) Forbidden network/storage APIs (D-07). This is a build-time backstop, NOT
+// the primary control — the meta-CSP `connect-src 'none'` (browser-enforced) is
+// what structurally guarantees zero egress. A substring denylist cannot be
+// exhaustive (WR-04), so it errs toward the vectors most likely to slip past a
+// reviewer; the CSP catches anything this list misses. Substring match is
+// intentionally conservative: a false positive fails safe (surface-and-decide),
+// never a silent allowlist.
+// NOTE: bare `import(` is deliberately NOT listed — dynamic import is legitimate
+// ESM the Vite bundle may emit; denylisting it would false-fire on valid output.
+// Code-loading egress is instead covered by `importScripts` (worker context) and
+// the CSP's `script-src 'self'`.
 const FORBIDDEN_API_STRINGS = [
   'localStorage',
   'sessionStorage',
@@ -44,10 +54,20 @@ const FORBIDDEN_API_STRINGS = [
   'sendBeacon',
   'WebSocket',
   'EventSource',
+  'RTCPeerConnection', // WebRTC data/media egress
+  'Worker(', // new Worker( / SharedWorker( — off-thread code that can itself egress
+  'importScripts', // worker-side code/network load
+  'ping="', // <a ping="…"> beacon on navigation
 ];
 
 // (b) DEMO-01 structural belt-and-suspenders — zero password input, zero form,
-// zero submit control, over the BUILT html (mirrors D-04's source-level lock).
+// zero submit control over the BUILT html. LIMITATION (WR-01): apps/site is a
+// client-rendered Svelte SPA, so the shell markup lives in the JS bundle, not in
+// the static dist/index.html — this HTML scan therefore only catches a
+// reintroduced SSR/prerendered/hand-authored form or password input, not one
+// added to App.svelte. The authoritative DEMO-01 control is the browser-mode
+// `containment.spec.ts` test that runs the real extension detector against the
+// rendered DOM; this string check is a cheap, additional static guard only.
 const FORBIDDEN_STRUCTURAL_STRINGS = ['type="password"', '<form', 'type="submit"'];
 
 const REQUIRED_CSP_SUBSTRING = "connect-src 'none'";

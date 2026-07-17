@@ -52,10 +52,44 @@ describe('containment — field-detector (DEMO-01, D-05)', () => {
   });
 });
 
-describe('containment — storage-throw setup (D-08, DEMO-02 backstop)', () => {
+// NOTE ON SCOPE (WR-02): this block proves the D-08 *test-harness* invariant —
+// that per-method storage patches throw when touched — which is the setup a
+// future persistence-exercising test would rely on. It is NOT itself a proof
+// that the demo avoids persistence (no App render / round-trip runs under these
+// throwing patches here); the load-bearing zero-persistence controls are the
+// meta-CSP `connect-src 'none'` and the post-build `lint-demo-containment.mjs`.
+describe('containment — storage-throw setup (D-08)', () => {
+  // Saved originals, restored in afterEach (WR-03). localStorage/sessionStorage/
+  // indexedDB are shared browser-realm host objects — a per-method patch left in
+  // place would leak a permanently-throwing API into every later test in the same
+  // realm, which is exactly what this teardown must prevent.
   let originalCookieDescriptor: PropertyDescriptor | undefined;
+  let saved: {
+    lsSetItem: Storage['setItem'];
+    lsGetItem: Storage['getItem'];
+    lsRemoveItem: Storage['removeItem'];
+    lsClear: Storage['clear'];
+    ssSetItem: Storage['setItem'];
+    ssGetItem: Storage['getItem'];
+    ssRemoveItem: Storage['removeItem'];
+    ssClear: Storage['clear'];
+    idbOpen: IDBFactory['open'];
+  };
 
   beforeEach(() => {
+    // Snapshot every method this block overrides so afterEach can restore it.
+    saved = {
+      lsSetItem: localStorage.setItem,
+      lsGetItem: localStorage.getItem,
+      lsRemoveItem: localStorage.removeItem,
+      lsClear: localStorage.clear,
+      ssSetItem: sessionStorage.setItem,
+      ssGetItem: sessionStorage.getItem,
+      ssRemoveItem: sessionStorage.removeItem,
+      ssClear: sessionStorage.clear,
+      idbOpen: indexedDB.open,
+    };
+
     // Per-method monkeypatch (Pitfall 4) — localStorage/sessionStorage are
     // real browser host objects; some engines make whole-object reassignment
     // silently no-op or throw a TypeError on the assignment itself. Patching
@@ -103,9 +137,18 @@ describe('containment — storage-throw setup (D-08, DEMO-02 backstop)', () => {
   });
 
   afterEach(() => {
-    // Restore the real cookie descriptor so this per-method monkeypatch
-    // never leaks a permanently-broken document.cookie into another test in
-    // the same browser realm/session.
+    // Restore EVERY patched method + the real cookie descriptor (WR-03), so no
+    // per-method monkeypatch leaks a permanently-throwing storage API or a
+    // broken document.cookie into another test in the same browser realm/session.
+    localStorage.setItem = saved.lsSetItem;
+    localStorage.getItem = saved.lsGetItem;
+    localStorage.removeItem = saved.lsRemoveItem;
+    localStorage.clear = saved.lsClear;
+    sessionStorage.setItem = saved.ssSetItem;
+    sessionStorage.getItem = saved.ssGetItem;
+    sessionStorage.removeItem = saved.ssRemoveItem;
+    sessionStorage.clear = saved.ssClear;
+    indexedDB.open = saved.idbOpen;
     if (originalCookieDescriptor) {
       Object.defineProperty(document, 'cookie', originalCookieDescriptor);
     }
