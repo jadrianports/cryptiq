@@ -76,6 +76,26 @@ base64 = "=0.22.1"
 # system-proxy bloat in reqwest's full default feature set (Windows-first; macOS via CI).
 reqwest = { version = "=0.13.3", default-features = false, features = ["rustls"] }
 
+# Phase 36: Rust-only auto-updater (UPD-01..05 gate). Human-verified on crates.io 2026-07-17
+# (checkpoint:human-verify approved by user — Package Legitimacy Audit in 36-RESEARCH.md):
+#   tauri-plugin-updater 2.10.1 — first-party github.com/tauri-apps/plugins-workspace,
+#   Apache-2.0 OR MIT. Verified live via `cargo search` 2026-07-17 AND by reading the actual
+#   Rust source directly (verify_signature/download/check/version_comparator) — not merely
+#   registry-existence, the plugin's real behavior was confirmed. default-features = false +
+#   features = ["rustls-tls"] matches the existing `reqwest = "=0.13.3"` rustls choice above so
+#   the binary never mixes rustls with schannel/native-tls.
+tauri-plugin-updater = { version = "2.10.1", default-features = false, features = ["rustls-tls"] }
+
+# Phase 36: Plan 04's `is_strictly_newer` names `semver::Version` directly in its own signature
+# and its tests construct `semver::Version` values — Rust requires a direct declaration to `use`
+# a crate; a transitive Cargo.lock entry is not sufficient. Already resolved transitively at
+# 1.0.28 (verified in Cargo.lock, pulled in via `tauri-utils`) — declaring it directly pins the
+# SAME already-resolved version, no new download, mirroring the blake2/base64 reuse pattern
+# above. Declared even though tauri-plugin-updater may also re-export semver::Version: depending
+# on another crate's re-export for a type in our own signature breaks silently the day that
+# crate stops re-exporting it.
+semver = "=1.0.28"
+
 # DEV/TEST INFRA — PERMANENT, dev-only. hypothesi MCP bridge drives the running app over a
 # localhost WebSocket during UAT (e.g. the v2.0 single-device sync checks). Registered ONLY
 # under #[cfg(debug_assertions)] in lib.rs, so the WebSocket server never starts in a release
@@ -121,6 +141,16 @@ windows-sys = { version = "0.59", features = [
 # libc 0.2 is already resolved transitively by Tauri — no new download needed.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# Phase 36: Plan 04's UPD-01 test calls `minisign_verify::PublicKey::decode(..).verify(..)`
+# directly, to exercise the SAME code path tauri-plugin-updater runs internally. NOT declared
+# directly by Cryptiq before this phase (verified absent from Cargo.lock pre-Phase-36); it
+# arrives transitively via the updater plugin above. Pinned to the EXACT version the plugin
+# actually resolved (confirmed via `cargo tree -i`, run after adding the updater dependency
+# above, per the Task 1 instruction to never guess a version the plugin did not resolve):
+#   v0.2.5, pulled in solely by tauri-plugin-updater v2.10.1 → cryptiq v3.2.0.
+minisign-verify = "=0.2.5"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
