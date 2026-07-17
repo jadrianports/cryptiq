@@ -1,0 +1,18 @@
+diff --git a/apps/desktop/src-tauri/src/commands/update.rs b/apps/desktop/src-tauri/src/commands/update.rs
+index ce5831f..2607b99 100644
+--- a/apps/desktop/src-tauri/src/commands/update.rs
++++ b/apps/desktop/src-tauri/src/commands/update.rs
+@@ -195,7 +195,12 @@ impl UpdateApplyRefusal {
+ pub(crate) fn should_apply(lock_state: Option<bool>) -> Result<(), UpdateApplyRefusal> {
+     match lock_state {
+         Some(false) => Ok(()),
+-        Some(true) => Err(UpdateApplyRefusal::VaultUnlocked),
++        // CI-06 selftest break (scripts/ci-selftest/updater-apply-seam.patch): "simplifies" the
++        // unlocked arm to permit — the plausible real-world regression is someone reasoning that
++        // Some(true) should be treated the same as Some(false) here. Targets the DECISION, not a
++        // test assertion, so the break-patch proves the test detects the property, not merely
++        // that an assertion exists.
++        Some(true) => Ok(()),
+         None => Err(UpdateApplyRefusal::LockStateUnknown),
+     }
+ }

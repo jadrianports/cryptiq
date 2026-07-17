@@ -60,6 +60,7 @@ since the pipeline might be red for unrelated reasons.
 | 25 | UPD-04 capability/CSP byte-identity golden-snapshot lint | `updater-capability-diff.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
 | 26 | D-11 rollback mitigation fail-closed on a corrupt high-water store | `updater-rollback.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-09 local pre-flight" below |
 | 27 | DEBT-01 consent guard fail-direction (fail-OPEN reintroduces W-1) | `updater-consent-guard.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-11 local pre-flight" below |
+| 28 | SC-3 apply seam decision (permits an apply over an unlocked vault) | `updater-apply-seam.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-11 local pre-flight" below |
 
 **Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
@@ -484,6 +485,44 @@ cd apps/desktop/src-tauri && cargo test commands::hibp::tests::consent_guard_blo
 ```
 
 `git status --short` was empty after the revert step above.
+
+## Phase 36-11 local pre-flight: `updater-apply-seam.patch`
+
+Closes the SC-3 half of the same coverage gap: the apply seam (`should_apply`, Plan 07) was proven
+inert against a permissive baseline but had no break-patch proving its refusal could actually fail
+CI. Locally checkable (a Rust `#[test]`), no live-CI-only surface involved — pre-flighted on this
+machine before authoring row 28 above. **The live CI red-run URL is still OUTSTANDING** — recorded
+honestly as `pending`, to be closed by `/gsd-verify-work` at phase close (repair→prove→arm; this
+plan does not push a scratch branch or a `v*` tag).
+
+**`updater-apply-seam.patch`** — flips `should_apply`'s `Some(true)` arm from
+`Err(UpdateApplyRefusal::VaultUnlocked)` to `Ok(())`, i.e. permits an apply over a KNOWN-unlocked
+vault. Targets the DECISION, not a test assertion — patching an assertion would only prove the
+assertion exists; patching the decision proves the test detects the real security regression (an
+apply seam that permits over a live vault key), and it is the more plausible real-world
+regression: someone "simplifying" the refusal arms.
+
+```bash
+git apply scripts/ci-selftest/updater-apply-seam.patch
+cd apps/desktop/src-tauri && cargo test commands::update::tests::apply_refuses_when_unlocked_zero_ipc -- --exact
+# applied: exit 101 (FAILED — 0 passed; 1 failed) — "an unlocked vault must refuse with
+# VaultUnlocked", left: Ok(()), right: Err(VaultUnlocked)
+cargo test commands::update::tests::apply_permits_when_locked -- --exact
+# applied: exit 0 (ok — 1 passed; 0 failed) — the CONTROL still passes: a seam that refused
+# everything would also pass the refusal test alone, so this confirms the gate checks the
+# property (only the unlocked arm changed), not merely "some assertion in this file"
+cargo test commands::update::tests::apply_refuses_when_lock_state_unknown -- --exact
+# applied: exit 0 (ok — 1 passed; 0 failed) — the None arm is untouched by this patch; the two
+# refusal arms are genuinely independent, not coupled (should_apply's own design intent)
+cd ../../.. && git checkout -- apps/desktop/src-tauri/src/commands/update.rs
+cd apps/desktop/src-tauri && cargo test commands::update::tests::apply_refuses_when_unlocked_zero_ipc -- --exact
+# reverted: exit 0 (ok — 1 passed; 0 failed)
+```
+
+`git status --short` was empty after the revert step above. With this patch, all SIX of this
+phase's gates now have a committed, locally red/green-proven break-patch: `updater-signature`,
+`updater-comparator`, `updater-capability-diff`, `updater-rollback`, `updater-consent-guard`,
+`updater-apply-seam`.
 
 ## Full ledger
 
