@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      D-06 (LOCKED): full-lockdown meta-CSP. GitHub Pages (the Phase 39 hosting
+      target) cannot set response headers, so this <meta> tag is the ONLY
+      egress control that ships with the page — it must survive the Vite build
+      verbatim (38-RESEARCH.md confirmed Vite preserves hand-authored <meta>
+      tags through `vite build` with no plugin needed).
+
+      - script-src 'self' 'wasm-unsafe-eval'  — 'wasm-unsafe-eval' is REQUIRED
+        for the Argon2id WASM (libsodium-wrappers-sumo, inlined as base64 JS —
+        no separate .wasm fetch, confirmed by 38-RESEARCH.md Question 1).
+      - connect-src 'none'                    — enforces the zero-network
+        promise at the browser level (DEMO-02b), independent of the post-build
+        containment lint (38-03).
+      - object-src 'none'; base-uri 'none'; form-action 'none' — hardening
+        belt-and-suspenders; form-action is moot given D-04 (this page has no
+        form element at all) but costs nothing to also lock at the CSP layer.
+      - style-src 'self' 'unsafe-inline'       — Tailwind v4 + Svelte emit
+        inline <style> during dev/build; kept as tight as the build allows
+        (Claude's Discretion per 38-CONTEXT.md).
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Cryptiq</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
