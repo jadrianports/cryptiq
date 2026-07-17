@@ -1,0 +1,19 @@
+diff --git a/apps/desktop/src-tauri/src/commands/hibp.rs b/apps/desktop/src-tauri/src/commands/hibp.rs
+index 1c5250d..19a6d43 100644
+--- a/apps/desktop/src-tauri/src/commands/hibp.rs
++++ b/apps/desktop/src-tauri/src/commands/hibp.rs
+@@ -83,7 +83,13 @@ const HIBP_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+ /// `hibp_range_lookup` directly (module header's ENVIRONMENT BLOCKER note), so without this
+ /// shared constant, a break-patch flipping the call site's literal would be invisible to every
+ /// test in this module — a fake-green gate. See `scripts/ci-selftest/updater-consent-guard.patch`.
+-const HIBP_CONSENT_DEFAULT_IF_ABSENT: bool = false;
++// CI-06 selftest break (scripts/ci-selftest/updater-consent-guard.patch): flips the
++// fail-direction to fail-OPEN (`true`) — the exact regression 36-PATTERNS.md warned about: a
++// reviewer or executor copying extension_bridge_enabled's fail-OPEN analog verbatim silently
++// reintroduces W-1. One word, compiles clean, every UI-level test still passes (the call sites
++// keep their own consent checks) — only consent_guard_blocks_when_disabled catches it, because
++// it now shares this exact constant with the real hibp_range_lookup call site.
++const HIBP_CONSENT_DEFAULT_IF_ABSENT: bool = true;
+ 
+ /// Maps a `purpose` discriminator to the config field that governs it (D-13/D-15). Pure,
+ /// zero-I/O — a `#[test]` target on its own, mirroring `build_hibp_request`'s "assert on the

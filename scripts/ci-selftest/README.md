@@ -59,6 +59,7 @@ since the pipeline might be red for unrelated reasons.
 | 24 | UPD-02 explicit anti-rollback `version_comparator` lint | `updater-comparator.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
 | 25 | UPD-04 capability/CSP byte-identity golden-snapshot lint | `updater-capability-diff.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-04 local pre-flight" below |
 | 26 | D-11 rollback mitigation fail-closed on a corrupt high-water store | `updater-rollback.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-09 local pre-flight" below |
+| 27 | DEBT-01 consent guard fail-direction (fail-OPEN reintroduces W-1) | `updater-consent-guard.patch` | **pending — authored, locally pre-flighted, not yet red-run** | See "Phase 36-11 local pre-flight" below |
 
 **Green-on-real:** [29359083518](https://github.com/jadrianports/cryptiq/actions/runs/29359083518) — main, every job green (`rust`, `node`, `build`, `secrets`, `CI Required`) at the same commit these breaks were forked from.
 
@@ -444,6 +445,45 @@ cd apps\desktop\src-tauri && cargo test commands::high_water::tests::unreadable_
 
 `git status --short` was empty after the revert step above (aside from the newly-authored, then
 committed, `.patch` file itself).
+
+## Phase 36-11 local pre-flight: `updater-consent-guard.patch`
+
+Closes a coverage gap left by Plans 04/05: DEBT-01's consent guard was as novel and as
+security-critical as the four properties already covered above, but had no break-patch proving
+its gate could actually fail. Locally checkable (a Rust `#[test]`), no live-CI-only surface
+involved — pre-flighted on this machine before authoring row 27 above. **The live CI red-run URL
+is still OUTSTANDING** — recorded honestly as `pending`, to be closed by `/gsd-verify-work` at
+phase close (repair→prove→arm; this plan does not push a scratch branch or a `v*` tag).
+
+**`updater-consent-guard.patch`** — flips `HIBP_CONSENT_DEFAULT_IF_ABSENT` (the fail-direction the
+DEBT-01/W-1 consent guard in `hibp_range_lookup` uses) from `false` to `true`, i.e. fail-OPEN. This
+is the exact regression 36-PATTERNS.md warned about: a reviewer or executor copying
+`extension_bridge_enabled`'s fail-OPEN analog verbatim silently reintroduces W-1. It is a one-word
+change, it compiles clean, and every UI-level test still passes (the call sites keep their own
+consent checks) — only the seam test catches it.
+
+*Fake-gate finding, corrected before authoring this row:* the plan's originally-named target,
+`consent_guard_blocks_when_disabled`, drove `config_guard::resolve_bool` with its own
+independently-hardcoded `false` literal, not the real call site's value inside
+`hibp_range_lookup` — flipping only the inline literal at the call site left every test in the
+module green (confirmed by running that exact flip locally first, before authoring the patch).
+Reworked per this plan's own "a patch whose applied run exits 0 is a fake-green gate" instruction:
+extracted the fail-direction into a named constant (`HIBP_CONSENT_DEFAULT_IF_ABSENT`) that BOTH
+the real call site and `consent_guard_blocks_when_disabled` now reference, so the test is provably
+load-bearing on the same value the patch flips. That refactor landed as its own commit before the
+patch was authored (`hibp.rs` is therefore modified by this plan beyond the three files in its
+frontmatter — documented as a deviation in `36-11-SUMMARY.md`).
+
+```bash
+git apply scripts/ci-selftest/updater-consent-guard.patch
+cd apps/desktop/src-tauri && cargo test commands::hibp::tests::consent_guard_blocks_when_disabled -- --exact
+# applied: exit 101 (FAILED — 0 passed; 1 failed), panic at the None-branch assertion
+cd ../../.. && git checkout -- apps/desktop/src-tauri/src/commands/hibp.rs
+cd apps/desktop/src-tauri && cargo test commands::hibp::tests::consent_guard_blocks_when_disabled -- --exact
+# reverted: exit 0 (ok — 1 passed; 0 failed)
+```
+
+`git status --short` was empty after the revert step above.
 
 ## Full ledger
 
