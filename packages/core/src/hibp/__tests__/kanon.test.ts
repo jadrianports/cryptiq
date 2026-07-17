@@ -63,17 +63,35 @@ describe('matchesSuffix (SC-3 GATE)', () => {
 describe('lookupHibpRange (fail-closed orchestrator, D-04/D-07)', () => {
   it('throws HibpLookupError when the injected invoke rejects (never resolves false)', async () => {
     const fakeInvoke = vi.fn().mockRejectedValue(new Error('hibp_timeout'));
-    await expect(lookupHibpRange('password', fakeInvoke)).rejects.toBeInstanceOf(HibpLookupError);
+    await expect(lookupHibpRange('password', fakeInvoke, 'entry-scan')).rejects.toBeInstanceOf(
+      HibpLookupError,
+    );
   });
 
   it('resolves true when the response body contains the matching suffix', async () => {
     const fakeInvoke = vi.fn().mockResolvedValue(`AAAA:1\r\n${PASSWORD_SUFFIX}:12345\r\nBBBB:2`);
-    await expect(lookupHibpRange('password', fakeInvoke)).resolves.toBe(true);
-    expect(fakeInvoke).toHaveBeenCalledWith('hibp_range_lookup', { prefix: '5BAA6' });
+    await expect(lookupHibpRange('password', fakeInvoke, 'master-check')).resolves.toBe(true);
+    expect(fakeInvoke).toHaveBeenCalledWith('hibp_range_lookup', { prefix: '5BAA6', purpose: 'master-check' });
   });
 
   it('resolves false when the response body does not contain the suffix', async () => {
     const fakeInvoke = vi.fn().mockResolvedValue('AAAA:1\r\nBBBB:2');
-    await expect(lookupHibpRange('password', fakeInvoke)).resolves.toBe(false);
+    await expect(lookupHibpRange('password', fakeInvoke, 'entry-scan')).resolves.toBe(false);
+  });
+
+  it('forwards the purpose argument unchanged for both entry-scan and master-check (Phase 36, DEBT-01)', async () => {
+    const fakeInvokeEntryScan = vi.fn().mockResolvedValue('');
+    await lookupHibpRange('password', fakeInvokeEntryScan, 'entry-scan');
+    expect(fakeInvokeEntryScan).toHaveBeenCalledWith('hibp_range_lookup', {
+      prefix: '5BAA6',
+      purpose: 'entry-scan',
+    });
+
+    const fakeInvokeMasterCheck = vi.fn().mockResolvedValue('');
+    await lookupHibpRange('password', fakeInvokeMasterCheck, 'master-check');
+    expect(fakeInvokeMasterCheck).toHaveBeenCalledWith('hibp_range_lookup', {
+      prefix: '5BAA6',
+      purpose: 'master-check',
+    });
   });
 });
