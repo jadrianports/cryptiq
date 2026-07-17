@@ -1,0 +1,6 @@
+{
+  "_why": "UPD-04 (Phase 36) requires the capability surface and the production CSP block to stay byte-identically zero-diff across the addition of the updater. These are the Phase-35-era (pre-updater) SHA-256 digests of the exact bytes UPD-04 asserts the updater must not perturb. This snapshot is the artifact of record for that assertion — changing a digest here requires an explicit cross-phase decision (e.g. a deliberate, reviewed capability change), never a silent regeneration to make the lint pass. If lint-updater-capability-diff.mjs is failing, the fix is almost always to revert the capability/CSP change, not to update this file.",
+  "capabilities/default.json": "597599014d9ee9ac71f55d5e6f039099303dcd824fbcace644fb0a9d411e29b4",
+  "capabilities/bootstrap.json": "ae2ba4544b05e71be62b415066e8490f52e2bcc9225688bab834810ea94ab20b",
+  "tauri.conf.json#app.security.csp": "29b9b8a4d854a87a68c6deb5054a6ae9cb65cf08d582283f0e3c3faf1bf12ec2"
+}
