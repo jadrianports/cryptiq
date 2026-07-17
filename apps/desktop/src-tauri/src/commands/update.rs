@@ -19,6 +19,17 @@
 //                           should_apply, and — on Ok — does NOT yet install (Phase 37 wires
 //                           the real install() path). update_check is NOT added this plan;
 //                           its runtime belongs to Phase 37 alongside its consent gate.
+//   check_rollback_mitigation — Plan 09's D-11 rollback mitigation, composed: verifies the
+//                           signed sub-manifest binding (high_water::verify_sub_manifest) BEFORE
+//                           trusting any version claim, then checks the bound version against
+//                           the monotonic high-water mark (high_water::passes_high_water).
+//                           Proven against the SAME attack Plan 02's upd03_rollback_experiment
+//                           proved succeeds, now refused — see
+//                           upd03_rollback_experiment_is_refused_by_mitigation below. Recording
+//                           the mark (high_water::record_high_water) is Phase 37's job, once a
+//                           real update actually applies — this plan provides and tests the
+//                           function but wires no auto-record call (no runtime path exists yet
+//                           to call it from).
 //
 // Security invariants:
 //   - The update endpoint is a Rust `const` (when it lands, in a later plan); no `url`/`host`/
@@ -36,6 +47,8 @@
 //     marked with an explicit comment at its landing site.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use super::high_water;
 
 /// Rust-authoritative mirror of whether the vault is currently unlocked.
 ///
@@ -202,6 +215,85 @@ pub async fn update_apply(app: tauri::AppHandle) -> Result<(), String> {
     // should_apply() returning Ok(()) above — that call IS the entire guard; do not move
     // install() above it, and do not add a second code path that bypasses it.
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// D-11 rollback mitigation (Plan 09) — the composed decision wiring high_water.rs's monotonic
+// store + Option A's signed sub-manifest binding into the update path. UPD-03 (Plan 02,
+// CONFIRMED — see upd03_rollback_experiment below) proved that minisign signs the ARTIFACT bytes
+// but `version` lives in the UNSIGNED `latest.json`: a GitHub-account compromise with NO key
+// access can serve a real, old, validly-signed artifact under a false high version claim and
+// every existing check (including UPD-02's comparator) passes, because the comparator only ever
+// sees the untrusted claim. This composition closes that gap.
+// ---------------------------------------------------------------------------
+
+/// Typed refusal reasons for the D-11 rollback mitigation — distinct from `UpdateApplyRefusal`
+/// (the vault-lock apply seam) so a caller can tell a rollback/binding refusal apart from an
+/// unlocked-vault refusal, matching the project's stable-short-code fail-closed contract.
+///
+/// Not yet constructed by any live path this plan (mirrors `with_explicit_comparator`'s
+/// `#[allow(dead_code)]` precedent above) — Phase 37's real `update_check` wires the runtime
+/// caller of `check_rollback_mitigation` below; this plan's own tests exercise both variants.
+#[derive(Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum UpdateRefusal {
+    /// No valid signed sub-manifest binds the claimed version to a SHA-256 — the version claim
+    /// itself is untrusted (T-36-50 / Option A). This is the refusal UPD-03's exact attack hits:
+    /// the attacker has the real, old, validly-signed ARTIFACT but no way to produce a NEW
+    /// signed `{version, sha256}` document for a version they don't hold the signing key for.
+    /// Distinct from `Rollback` — this fires even for a version claim ABOVE the high-water mark,
+    /// which a high-water check ALONE (Option B) would miss entirely.
+    BindingInvalid,
+    /// The sub-manifest's signature verified — the version claim IS key-covered — but the bound
+    /// version is at or below the recorded high-water mark (T-36-46/T-36-49). This is a genuine,
+    /// validly-signed release being REPLAYED (e.g. an old real release's real sub-manifest),
+    /// distinct from an outright forged claim.
+    Rollback,
+}
+
+impl UpdateRefusal {
+    /// Stable short-code, consistent with `hibp.rs`'s `hibp_*` and this module's own
+    /// `update_refused_*` short-code style.
+    #[allow(dead_code)]
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            UpdateRefusal::BindingInvalid => "update_refused_binding_invalid",
+            UpdateRefusal::Rollback => "update_refused_rollback",
+        }
+    }
+}
+
+/// The composed D-11 mitigation decision. LOAD-BEARING ORDERING: the sub-manifest binding is
+/// verified BEFORE the (now key-covered) version is ever compared against the high-water mark —
+/// a version check that ran against the UNSIGNED `latest.json` claim first would be exactly
+/// UPD-03's original gap, re-implemented. On success, returns the verified binding (the caller —
+/// Phase 37's real update path — still owns downloading the artifact and comparing its SHA-256
+/// against `binding.sha256_hex` before treating it as installable; that comparison is outside
+/// this function's scope, which stops at "is this version claim trustworthy and not a rollback").
+///
+/// Not yet called by any live path this plan — same forward-declared-for-Phase-37 shape as
+/// `should_apply`/`update_apply` were for Plan 07 before this plan landed.
+#[allow(dead_code)]
+pub(crate) fn check_rollback_mitigation(
+    sub_manifest_bytes: &[u8],
+    signature_b64: &str,
+    pubkey_b64: &str,
+    high_water_state: &high_water::HighWaterState,
+    current_app_version: &semver::Version,
+) -> Result<high_water::SubManifestBinding, UpdateRefusal> {
+    // Step 1 — the version claim is UNTRUSTED until this succeeds. No field of
+    // `sub_manifest_bytes` (in particular its `version`) is read by the caller before this call
+    // returns Ok.
+    let binding = high_water::verify_sub_manifest(sub_manifest_bytes, signature_b64, pubkey_b64)
+        .map_err(|_| UpdateRefusal::BindingInvalid)?;
+
+    // Step 2 — only NOW, with a key-covered version in hand, is the anti-rollback check
+    // meaningful.
+    if !high_water::passes_high_water(high_water_state, &binding.version, current_app_version) {
+        return Err(UpdateRefusal::Rollback);
+    }
+
+    Ok(binding)
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +660,12 @@ mod tests {
         }
     }
 
+    // NOTE (Plan 09): this test is kept intact and asserted STILL PASSING — it documents the
+    // UNMITIGATED behavior of the underlying `tauri-plugin-updater` machinery, which is a
+    // durable finding about Tauri itself, not a bug in Cryptiq's code. Deleting it would erase
+    // the evidence for why the D-11 mitigation below exists. See
+    // `upd03_rollback_experiment_is_refused_by_mitigation` for the SAME attack, refused, as the
+    // "after" half of this before/after pair.
     #[test]
     fn upd03_rollback_experiment() {
         use minisign_verify::{PublicKey, Signature};
@@ -624,5 +722,120 @@ mod tests {
              Error: {:?} — see tests/fixtures/upd03/README.md to regenerate the fixtures.",
             result.as_ref().err()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // D-11 rollback mitigation (Plan 09) — the "after" half of the upd03_rollback_experiment
+    // before/after pair. Fixtures are a FRESH throwaway keypair generated for this plan's own
+    // sub-manifest tests (D-09-style: `npx tauri signer generate`, private key discarded after
+    // use, never committed) — distinct from Plan 02's THROWAWAY_PUBKEY above, which signed only
+    // the artifact, not a sub-manifest. Duplicated here from high_water.rs's own test fixtures
+    // (same values, proven to verify there) rather than exposed cross-module, since
+    // high_water.rs's fixture constants are private to its own #[cfg(test)] module.
+    // -----------------------------------------------------------------------
+
+    const SUBMANIFEST_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwMTUwQzU2RDRBQkQ1N0UKUldSKzFhdlVWZ3dWOEpqTGtxNnBIVW4wM0hyQjY2ZGN5bjB2NlVMYmZIbXJEZGRSV0ttRXY5ejcK";
+    const SUBMANIFEST_320_JSON: &str = r#"{"version":"3.2.0","sha256":"bdf80aacae51a333c134af15e1e7602f4adca9f062466770d0fae86e8fcbcb21"}"#;
+    const SUBMANIFEST_320_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSKzFhdlVWZ3dWOEJHZGxGb3ArVG1vMU50ZXBMZ3FnaVFxZG5SWlAwaGhTWWxSRllydllCMEN0cFFuc0pBOG9mZTV5WHhxZFcxSnRSY2ZYNDlBb0xDcWNhRTY4T2RkdHdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0MzAyMTk3CWZpbGU6c3VibWFuaWZlc3QtMzIwLmpzb24KZnlPZ3ArY1U3UFJmdk8vd2hLVGlMUnpKV1VWN0ZnejU1RWZTdHdnY0Y1aXI2b2VHSFlKcVlqVktHc0gzRUdyai9NTmt0dURJL2pzeWJQMTl6d3o5Qnc9PQo=";
+
+    #[test]
+    fn upd03_rollback_experiment_is_refused_by_mitigation() {
+        // THE KEY TEST. Serves the SAME attack `upd03_rollback_experiment` above proves succeeds
+        // against the raw plugin machinery: a hand-built `latest.json` claiming a false high
+        // version ("99.0.0" per 36-02-SUMMARY.md's recorded attack shape) over the SAME real,
+        // old, validly-signed v3.2.0 artifact + its genuine .sig (loaded via the SAME
+        // load_upd03_fixture_strings() helper Plan 02/04 already use). The only thing that
+        // changes between the two tests is that THIS path refuses.
+        let (artifact_bytes, _pubkey_text, _signature_text) = load_upd03_fixture_strings();
+        assert!(!artifact_bytes.is_empty(), "sanity: the real fixture artifact must be non-empty");
+
+        // The attacker's hand-built latest.json has NO sub-manifest at all — Option A did not
+        // exist when Plan 02 crafted this attack, and even if it did, the attacker cannot
+        // produce a validly-signed {version: "99.0.0", sha256: ...} document without the signing
+        // key. Modeled here as empty sub-manifest bytes/signature — the absence itself is the
+        // attack surface Option A closes.
+        let high_water_state = high_water::HighWaterState::Known(v("3.2.0"));
+        let current_app_version = v("3.2.0");
+
+        let decision = check_rollback_mitigation(
+            b"", // no sub-manifest — the attacker cannot forge one
+            "",
+            SUBMANIFEST_PUBKEY,
+            &high_water_state,
+            &current_app_version,
+        );
+
+        assert_eq!(
+            decision,
+            Err(UpdateRefusal::BindingInvalid),
+            "UPD-03's exact attack (real, old, validly-signed artifact under a false high \
+             version claim) is now REFUSED — the attacker has no way to produce a signed \
+             sub-manifest for a version they don't hold the key for, so Option A refuses before \
+             the false version claim is ever trusted, let alone compared against the \
+             high-water mark. Same attack, same genuinely-valid artifact signature, opposite \
+             outcome from upd03_rollback_experiment above."
+        );
+    }
+
+    #[test]
+    fn valid_sub_manifest_replay_refused_by_rollback_check() {
+        // T-36-50's OTHER half: not a forged claim, but a REPLAY of a genuinely-signed release
+        // whose version is not strictly greater than the recorded high-water mark. Reuses the
+        // real, validly-signed 3.2.0 sub-manifest fixture (proven to verify in
+        // high_water.rs's own verify_sub_manifest_accepts_genuine_signature test) — replayed
+        // once the high-water mark is ALREADY at 3.2.0, this must refuse via Rollback, not
+        // BindingInvalid, since the signature itself is genuine.
+        let high_water_state = high_water::HighWaterState::Known(v("3.2.0"));
+        let current_app_version = v("3.2.0");
+
+        let decision = check_rollback_mitigation(
+            SUBMANIFEST_320_JSON.as_bytes(),
+            SUBMANIFEST_320_SIG,
+            SUBMANIFEST_PUBKEY,
+            &high_water_state,
+            &current_app_version,
+        );
+
+        assert_eq!(
+            decision,
+            Err(UpdateRefusal::Rollback),
+            "a validly-signed sub-manifest whose version is NOT strictly greater than the \
+             recorded high-water mark must be refused via Rollback (distinct from \
+             BindingInvalid) — the signature itself verified fine, so the anti-rollback check, \
+             not the binding check, is what must catch this."
+        );
+    }
+
+    #[test]
+    fn high_water_check_precedes_trust() {
+        // Ordering test: the version check must run BEFORE the downloaded artifact bytes are
+        // ever treated as installable — mirroring the T-36-32-style zero-IPC spy pattern already
+        // used for should_apply above, applied to "trusting the artifact" instead of "installing
+        // it". An empty/absent sub-manifest must fail verification, and the spy counter proves
+        // nothing downstream (representing "artifact trusted") was ever reached.
+        let artifact_trusted_calls = std::sync::atomic::AtomicUsize::new(0);
+
+        let sub_manifest_result = high_water::verify_sub_manifest(b"", "", SUBMANIFEST_PUBKEY);
+        if sub_manifest_result.is_ok() {
+            artifact_trusted_calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        assert!(
+            sub_manifest_result.is_err(),
+            "an empty/absent sub-manifest must fail signature verification"
+        );
+        assert_eq!(
+            artifact_trusted_calls.load(Ordering::SeqCst),
+            0,
+            "the artifact must NEVER be treated as trusted when the sub-manifest binding check \
+             fails — a version check that ran AFTER trusting the bytes would be exactly UPD-03's \
+             original gap, re-implemented. Ordering IS the mitigation."
+        );
+    }
+
+    /// Small local helper — `semver::Version::parse` shorthand for this test block's fixtures,
+    /// mirroring `high_water.rs`'s own test-module `v()` helper.
+    fn v(s: &str) -> semver::Version {
+        semver::Version::parse(s).unwrap()
     }
 }

@@ -100,7 +100,13 @@ use tauri::Manager;
 /// Three-state high-water read result. "Never recorded" (`Absent`) and "cannot read"
 /// (`Unreadable`) are different facts with different safe responses and must never be collapsed
 /// into a single `Option<Version>`.
+///
+/// Not yet constructed by any live path this plan (mirrors `update.rs`'s own
+/// `with_explicit_comparator` `#[allow(dead_code)]` precedent): `update_check`/`update_apply`'s
+/// real runtime call into this module lands in Phase 37; this plan's own tests (both here and in
+/// `update.rs`'s `check_rollback_mitigation` tests) exercise every variant directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum HighWaterState {
     /// A high-water mark was successfully read from the sidecar.
     Known(semver::Version),
@@ -113,11 +119,13 @@ pub enum HighWaterState {
 }
 
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 struct HighWaterFileWrite<'a> {
     version: &'a str,
 }
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct HighWaterFileRead {
     version: String,
 }
@@ -126,6 +134,11 @@ struct HighWaterFileRead {
 /// dir, missing file, unreadable file, corrupt JSON, unparseable version string) collapses to
 /// `Unreadable` — a missing FILE specifically (not merely a missing FIELD) is `Absent`, per the
 /// three-state contract above.
+///
+/// Not yet called by any live path this plan — Phase 37 wires the real `update_check` runtime
+/// that calls this. `#[allow(dead_code)]` matches `update.rs`'s `with_explicit_comparator`
+/// forward-declared-for-a-later-plan precedent.
+#[allow(dead_code)]
 pub fn read_high_water(app: &tauri::AppHandle) -> HighWaterState {
     let config_dir = match app.path().app_config_dir() {
         Ok(p) => p,
@@ -154,6 +167,7 @@ pub fn read_high_water(app: &tauri::AppHandle) -> HighWaterState {
 /// Returns `Some(new_value)` when a write should proceed, `None` when it should not (a silent
 /// no-op — never an error the caller need report — for a non-strictly-greater candidate, or a
 /// refusal when the current state is `Unreadable`, per the module header's security invariant).
+#[allow(dead_code)]
 pub(crate) fn should_record_high_water(
     current: &HighWaterState,
     candidate: &semver::Version,
@@ -176,6 +190,10 @@ pub(crate) fn should_record_high_water(
 /// an idempotent no-op returning `Ok(())`, never an error. Written atomically via the
 /// project's standard temp-file -> `sync_all` -> atomic rename -> best-effort dir-fsync
 /// discipline (mirrors `vault_write_atomic` / `pairing.rs`'s `write_peers_json_atomic`).
+///
+/// Not yet called by any live path this plan — per the module header, "recording the mark is
+/// Phase 37's job" (it happens on a successful update, which no runtime path exists for yet).
+#[allow(dead_code)]
 pub fn record_high_water(app: &tauri::AppHandle, v: &semver::Version) -> Result<(), String> {
     let current = read_high_water(app);
     let new_value = match should_record_high_water(&current, v) {
@@ -236,6 +254,10 @@ pub fn record_high_water(app: &tauri::AppHandle, v: &semver::Version) -> Result<
 ///     permit-by-default — a candidate at or below the app's own version is still refused.
 ///   - `Unreadable`  -> `false`. FAIL CLOSED. A corrupt store must never permit — an attacker who
 ///     can corrupt the sidecar must not thereby regain the rollback.
+///
+/// Called from `update.rs`'s `check_rollback_mitigation` (also `#[allow(dead_code)]` this plan —
+/// Phase 37 wires its real runtime caller) and directly by this module's own tests.
+#[allow(dead_code)]
 pub(crate) fn passes_high_water(
     state: &HighWaterState,
     candidate: &semver::Version,
@@ -256,12 +278,14 @@ pub(crate) fn passes_high_water(
 /// `sha256_hex` is lower-cased on parse so comparison against `sha256_hex()`'s own output
 /// (always lowercase) is a plain string equality, never case-sensitive by accident.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct SubManifestBinding {
     pub(crate) version: semver::Version,
     pub(crate) sha256_hex: String,
 }
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct SubManifestJson {
     version: String,
     sha256: String,
@@ -270,6 +294,7 @@ struct SubManifestJson {
 /// Typed reasons `verify_sub_manifest` can fail — every failure surfaces a distinguishable
 /// reason, never a bare `Err(())`, matching the project's fail-closed typed-error contract.
 #[derive(Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum BindingError {
     /// The outer base64 wrapper, the minisign signature, or the minisign verification itself
     /// failed — the sub-manifest's authenticity cannot be established.
@@ -294,6 +319,7 @@ pub(crate) enum BindingError {
 /// trusts `sub_manifest_bytes`' `version` field for anything (including a high-water comparison)
 /// — that ordering IS Option A's entire value. Verifying a version claim after already having
 /// acted on it is not a gate.
+#[allow(dead_code)]
 pub(crate) fn verify_sub_manifest(
     sub_manifest_bytes: &[u8],
     signature_b64: &str,
@@ -323,6 +349,10 @@ pub(crate) fn verify_sub_manifest(
 
 /// SHA-256 of arbitrary bytes as lowercase hex. D-11 / 36-RESEARCH.md's "Don't Hand-Roll" table:
 /// reuse an already-audited primitive (the `sha2` crate) rather than hand-rolling a hash.
+///
+/// Not yet called by any live path this plan — Phase 37's real update path will hash the
+/// downloaded artifact and compare it against `SubManifestBinding::sha256_hex`.
+#[allow(dead_code)]
 pub(crate) fn sha256_hex(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
