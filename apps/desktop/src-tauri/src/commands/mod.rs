@@ -1,4 +1,5 @@
 pub mod clipboard;
+pub mod config_guard;
 pub mod extension_bridge;
 pub mod extension_peers;
 pub mod hibp;
