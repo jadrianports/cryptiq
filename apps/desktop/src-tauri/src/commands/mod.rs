@@ -3,6 +3,7 @@ pub mod config_guard;
 pub mod extension_bridge;
 pub mod extension_peers;
 pub mod hibp;
+pub mod high_water;
 pub mod pairing;
 pub mod sync;
 pub mod update;

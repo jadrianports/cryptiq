@@ -86,6 +86,29 @@ reqwest = { version = "=0.13.3", default-features = false, features = ["rustls"]
 #   the binary never mixes rustls with schannel/native-tls.
 tauri-plugin-updater = { version = "2.10.1", default-features = false, features = ["rustls-tls"] }
 
+# Phase 36 Plan 09 (D-11/D-12): the rollback mitigation's Option A binding — a minisign-signed
+# sub-manifest binding {version, sha256} together, verified BEFORE any version claim is trusted.
+# `minisign-verify` moved HERE from [dev-dependencies] (was added there by Plan 04 for the UPD-01
+# tampered-byte test only): `high_water::verify_sub_manifest` calls it from PRODUCTION code
+# (Phase 37's real update_check/update_apply path reuses the exact same function this plan tests),
+# not merely from a #[cfg(test)] module — the dev-only declaration no longer covers that call
+# site. Still the SAME already-resolved 0.2.5 (see Cargo.lock; pulled in transitively by
+# tauri-plugin-updater above since Plan 04) — moving it does not pull a new download, it only
+# widens which build profiles can see it.
+minisign-verify = "=0.2.5"
+
+# Phase 36 Plan 09 (D-11): SHA-256 for the rollback mitigation's signature-covered artifact-hash
+# binding (Option A) — `high_water::sha256_hex` hashes the downloaded artifact bytes so they can
+# be compared against the value bound inside the signed sub-manifest. Human-verified on crates.io
+# 2026-07-17 (checkpoint:human-verify approved by user — RustCrypto org, MIT OR Apache-2.0,
+# github.com/RustCrypto/hashes): NOT declared directly by Cryptiq before this plan, but already
+# resolved TRANSITIVELY at 0.10.9 (verified in Cargo.lock — pulled in by tauri-codegen and snow),
+# so declaring it directly pins the SAME already-resolved version and pulls NO new download —
+# mirroring the blake2/base64/semver "reuse the already-resolved version" precedent above. Per
+# 36-RESEARCH.md's "Don't Hand-Roll" table: reuse an already-audited primitive rather than
+# hand-rolling SHA-256.
+sha2 = "=0.10.9"
+
 # Phase 36: Plan 04's `is_strictly_newer` names `semver::Version` directly in its own signature
 # and its tests construct `semver::Version` values — Rust requires a direct declaration to `use`
 # a crate; a transitive Cargo.lock entry is not sufficient. Already resolved transitively at
@@ -143,14 +166,10 @@ windows-sys = { version = "0.59", features = [
 libc = "0.2"
 
 [dev-dependencies]
-# Phase 36: Plan 04's UPD-01 test calls `minisign_verify::PublicKey::decode(..).verify(..)`
-# directly, to exercise the SAME code path tauri-plugin-updater runs internally. NOT declared
-# directly by Cryptiq before this phase (verified absent from Cargo.lock pre-Phase-36); it
-# arrives transitively via the updater plugin above. Pinned to the EXACT version the plugin
-# actually resolved (confirmed via `cargo tree -i`, run after adding the updater dependency
-# above, per the Task 1 instruction to never guess a version the plugin did not resolve):
-#   v0.2.5, pulled in solely by tauri-plugin-updater v2.10.1 → cryptiq v3.2.0.
-minisign-verify = "=0.2.5"
+# (Phase 36 Plan 04's UPD-01 test originally declared `minisign-verify` here as a dev-only
+# dependency. Plan 09 moved it to [dependencies] above — see that entry's comment — because
+# Option A's `high_water::verify_sub_manifest` calls it from production code, not only from
+# #[cfg(test)]. Left this section's header intact for future dev-only additions.)
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
