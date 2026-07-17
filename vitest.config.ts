@@ -24,6 +24,11 @@
 // apps/desktop/vitest.config.ts, NOT apps/desktop/vitest.browser.config.ts — the
 // Playwright component suite (`test:components`) stays out of the root aggregate.
 //
+// apps/site (Phase 38, 38-03, Pitfall 2) has a SINGLE always-on browser-mode
+// vitest.config.ts (no node/desktop-style split) — apps/site has no node-only test
+// in this phase's scope that would justify a split, so its one config IS the
+// browser-mode suite and resolves directly here, intentionally.
+//
 // Vitest stays pinned at ^3.2.4 (STACK.md §Q5 / CLAUDE.md) — `test.projects` is the
 // native 3.2 mechanism; no version bump, no new dependencies.
 
@@ -31,6 +36,6 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    projects: ['packages/core', 'apps/desktop'],
+    projects: ['packages/core', 'apps/desktop', 'apps/site'],
   },
 });

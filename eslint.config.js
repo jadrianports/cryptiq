@@ -166,14 +166,17 @@ export default [
   },
 
   // === Svelte file parsing ===
-  // Covers both apps/desktop AND apps/extension (v3.1 widened this to the extension's
-  // popup .svelte files — without parserOptions.parser: tseslint.parser here, any
-  // `<script lang="ts">` block in apps/extension/entrypoints/** fails with a bare
-  // "Parsing error: '>' expected", since svelte-eslint-parser needs an explicit TS
+  // Covers apps/desktop, apps/extension, AND apps/site (v3.1 widened this to the
+  // extension's popup .svelte files — without parserOptions.parser: tseslint.parser
+  // here, any `<script lang="ts">` block in apps/extension/entrypoints/** fails with a
+  // bare "Parsing error: '>' expected", since svelte-eslint-parser needs an explicit TS
   // sub-parser to understand the lang="ts" attribute; apps/desktop already worked
-  // because it was the only glob originally listed).
+  // because it was the only glob originally listed. Phase 38 (38-03, D-11/Pitfall 1)
+  // added apps/site/**/*.svelte — this hardcoded per-app glob is the exact "silently
+  // misses the Nth app" trap; widen it by hand whenever a new Svelte workspace member
+  // lands).
   {
-    files: ['apps/desktop/**/*.svelte', 'apps/extension/**/*.svelte'],
+    files: ['apps/desktop/**/*.svelte', 'apps/extension/**/*.svelte', 'apps/site/**/*.svelte'],
     languageOptions: {
       parser: svelteParser,
       parserOptions: {

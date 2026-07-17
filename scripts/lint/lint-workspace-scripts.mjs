@@ -9,12 +9,18 @@
 // named `compile`, so `pnpm -r run typecheck` silently ran zero type-checks against
 // the extension for the duration it carried the wrong name.
 //
+// D-11 (Phase 38) — the same silent-skip class applies equally to `test`: the root
+// vitest.config.ts `test.projects` aggregator and `pnpm -r run test` both silently
+// skip a package lacking a `test` script. Extended to require BOTH `typecheck` AND
+// `test`, closing the exact @cryptiq/extension compile->typecheck trap for every
+// future workspace member (starting with apps/site, 38-03), not just typecheck.
+//
 // Fix: enumerate the ACTUAL pnpm-workspace.yaml `packages:` globs (no hardcoded
 // package-name allowlist — an allowlist silently misses the Nth app the same way
 // pnpm's skip silently missed the 4th) and assert every resolved package.json
-// declares a non-empty `scripts.typecheck`. Directories with no package.json (e.g.
-// apps/native-host, a Rust-only workspace member) are correctly not pnpm workspace
-// members and are skipped, not flagged.
+// declares BOTH a non-empty `scripts.typecheck` AND a non-empty `scripts.test`.
+// Directories with no package.json (e.g. apps/native-host, a Rust-only workspace
+// member) are correctly not pnpm workspace members and are skipped, not flagged.
 //
 // Zero-dependency (node:fs/node:path/node:url only), mirrors the existing lint idiom
 // (hand-walked YAML line scan, no YAML/glob parser — see lint-supply-chain.mjs).
@@ -131,6 +137,14 @@ for (const dir of packageDirs) {
     );
     violations++;
   }
+
+  const testScript = pkg?.scripts?.test;
+  if (typeof testScript !== 'string' || testScript.length === 0) {
+    console.error(
+      `${pkgJsonPath}: missing a non-empty scripts.test — the root vitest aggregator / pnpm -r run test would silently SKIP this package (D-11).`,
+    );
+    violations++;
+  }
 }
 
 if (checked === 0) {
@@ -143,4 +157,4 @@ if (violations > 0) {
   process.exit(1);
 }
 
-console.log(`OK: all ${checked} workspace package(s) declare scripts.typecheck.`);
+console.log(`OK: all ${checked} workspace package(s) declare scripts.typecheck and scripts.test.`);
