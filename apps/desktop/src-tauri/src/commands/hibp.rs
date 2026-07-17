@@ -75,6 +75,16 @@ use super::config_guard;
 const HIBP_HOST: &str = "https://api.pwnedpasswords.com";
 const HIBP_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// Fail-direction for the DEBT-01/W-1 consent guard (D-13) — REQUIRED `false` (fail-CLOSED).
+/// Named as its own constant, rather than an inline literal at the `hibp_range_lookup` call
+/// site, specifically so `consent_guard_blocks_when_disabled` below can assert against the
+/// SAME symbol the real guard uses — not a second, independently-hardcoded `false` literal in
+/// the test. This machine's `cargo test` cannot construct a live `AppHandle` to call
+/// `hibp_range_lookup` directly (module header's ENVIRONMENT BLOCKER note), so without this
+/// shared constant, a break-patch flipping the call site's literal would be invisible to every
+/// test in this module — a fake-green gate. See `scripts/ci-selftest/updater-consent-guard.patch`.
+const HIBP_CONSENT_DEFAULT_IF_ABSENT: bool = false;
+
 /// Maps a `purpose` discriminator to the config field that governs it (D-13/D-15). Pure,
 /// zero-I/O — a `#[test]` target on its own, mirroring `build_hibp_request`'s "assert on the
 /// unsent request" discipline. Any value other than the two known purposes (including case
@@ -143,7 +153,7 @@ pub async fn hibp_range_lookup(app: tauri::AppHandle, prefix: String, purpose: S
     // authorize egress. See config_guard.rs's own doc-comment on polarity; a `?? true`-shaped
     // call here would silently authorize this app's network egress for every pre-consent
     // install (quoting config.ts's own load-bearing-deviation sentence on this exact field).
-    if !config_guard::config_bool_field(&app, field, false) {
+    if !config_guard::config_bool_field(&app, field, HIBP_CONSENT_DEFAULT_IF_ABSENT) {
         return Err("hibp_consent_denied".to_string());
     }
 
@@ -242,14 +252,26 @@ mod tests {
         // same `None` branch per config_guard's contract) means the guard's decision is
         // refuse, and `hibp_range_lookup` never reaches prefix validation or request
         // construction in that case.
-        assert!(!config_guard::resolve_bool(None, "hibpEntryScanEnabled", false));
+        // Drives HIBP_CONSENT_DEFAULT_IF_ABSENT — the SAME constant the real call site in
+        // hibp_range_lookup uses (not an independently-hardcoded `false` literal here) — so a
+        // break-patch flipping that constant's fail-direction is provably load-bearing on this
+        // assertion, not merely on the test's own copy of the value.
+        assert!(!config_guard::resolve_bool(
+            None,
+            "hibpEntryScanEnabled",
+            HIBP_CONSENT_DEFAULT_IF_ABSENT
+        ));
         let explicit_false = serde_json::json!({ "hibpEntryScanEnabled": false });
-        assert!(!config_guard::resolve_bool(Some(&explicit_false), "hibpEntryScanEnabled", false));
+        assert!(!config_guard::resolve_bool(
+            Some(&explicit_false),
+            "hibpEntryScanEnabled",
+            HIBP_CONSENT_DEFAULT_IF_ABSENT
+        ));
         let explicit_false_master = serde_json::json!({ "hibpMasterCheckEnabled": false });
         assert!(!config_guard::resolve_bool(
             Some(&explicit_false_master),
             "hibpMasterCheckEnabled",
-            false
+            HIBP_CONSENT_DEFAULT_IF_ABSENT
         ));
     }
 
