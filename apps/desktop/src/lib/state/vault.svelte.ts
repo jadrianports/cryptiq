@@ -257,6 +257,24 @@ class VaultSession {
     secret: UnlockSecret,
   ): Promise<LockWarning | null> {
     const bytes = await adapter.load();
+
+    // Phase 36 (UPD-05 apply-seam guard, T-36-32/T-36-36): tell Rust's VaultLockState the
+    // vault is about to be unlocked BEFORE the Argon2id derive below (unlockVault) — not
+    // after. ORDERING IS THE SAFETY ARGUMENT: a crash mid-derive then leaves Rust reading
+    // *unlocked*, the refusing direction for the apply seam (an apply gate that refuses on
+    // "unlocked" never mistakenly proceeds over a live key). Setting this AFTER the derive
+    // would leave a window where the key exists in memory while Rust still believes the
+    // vault is locked — an apply in that window is exactly the force-quit-with-live-key
+    // scenario this guard exists to prevent.
+    //
+    // FAIL-FAST (T-36-36): unlike the AFTER-WIPE call in lock() (fire-and-forget — its
+    // failure direction is safe), a failed invoke HERE must abort the unlock attempt rather
+    // than proceeding to derive. Rust initializes LOCKED at process start (Plan 01); if this
+    // invoke fails, Rust keeps reading LOCKED while the derive below would make a key live —
+    // the ONE unsafe combination. Refusing to unlock is a recoverable annoyance; applying an
+    // update over a live key is not. (Intentionally NOT wrapped in try/catch — propagates.)
+    await invoke('vault_lock_state_set', { unlocked: true });
+
     const { vault, vaultKey } = await unlockVault(bytes, secret);
 
     // Acquire advisory lock BEFORE mounting — fail if another live process holds it.
@@ -295,6 +313,12 @@ class VaultSession {
     withRecoveryKey: boolean,
     kdfParams?: KdfParams,
   ): Promise<{ recoveryKey?: string; creationReport: import('@cryptiq/core').CreationReport }> {
+    // Phase 36 (UPD-05 apply-seam guard): same BEFORE-derive / fail-fast ordering argument as
+    // unlock() above — set unlocked=true BEFORE createVault's Argon2id derive. See unlock()'s
+    // comment for the full rationale (T-36-32/T-36-36); not repeated here to avoid the two
+    // copies drifting apart.
+    await invoke('vault_lock_state_set', { unlocked: true });
+
     const result = await createVault(
       kdfParams !== undefined
         ? { masterPassword, withRecoveryKey, kdfParams }
@@ -395,6 +419,9 @@ class VaultSession {
    *   4. await save-mutex (Pitfall 4 ordering — BEFORE secureWipe).
    *   4b. await in-flight critical op (Pitfall 1 backstop — BEFORE secureWipe).
    *   5. secureWipe the key (SEC-09).
+   *   5b. Set VaultLockState unlocked=false via invoke (Phase 36 / UPD-05 apply-seam guard) —
+   *       AFTER secureWipe, fire-and-forget. See Step 5b's own inline comment for the full
+   *       ordering rationale (T-36-32/T-36-36).
    *   6. Clear HMR data in dev (LOCK-05).
    *   7. Release advisory lock (P3-08).
    */
@@ -469,6 +496,24 @@ class VaultSession {
     // (JS GC may have already copied bytes).
     if (key !== null) {
       await secureWipe(key);
+    }
+
+    // Step 5b (Phase 36 / UPD-05 apply-seam guard, T-36-32): tell Rust's VaultLockState the
+    // vault is now locked, AFTER secureWipe (Step 5) — not before. Setting this BEFORE the
+    // wipe would claim "locked" while the key is still live, permitting an apply during
+    // exactly the wrong window.
+    //
+    // FIRE-AND-FORGET (same shape as Step 7's vault_lock_release below) — a VaultLockState
+    // set failure must never block the rest of lock(). This is the intentional ASYMMETRY
+    // with unlock()/create()'s BEFORE-derive call (which is fail-fast, T-36-36): this side's
+    // failure direction is SAFE. If this invoke fails, Rust keeps reading whatever it read
+    // before — and since unlock()/create()'s fail-fast guarantee means Rust only ever reads
+    // "unlocked" while a key could be live, a failed set-locked-here just leaves Rust still
+    // (correctly, if conservatively) reading "unlocked", so the apply seam keeps refusing.
+    try {
+      await invoke('vault_lock_state_set', { unlocked: false });
+    } catch {
+      // Non-fatal — see the asymmetry rationale above; this failure direction is safe.
     }
 
     // Step 6 (LOCK-05 / Pitfall 4): Clear HMR module data in dev so a

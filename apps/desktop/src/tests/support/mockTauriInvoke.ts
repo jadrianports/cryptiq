@@ -24,6 +24,13 @@
 //                                             fail-closed, matching hibp.rs's
 //                                             config_bool_field(&app, field, false)), or
 //                                             hibp_invalid_purpose for an unrecognized purpose
+//   vault_lock_state_set                   — Phase 36 (UPD-05 apply-seam guard, Plan 07):
+//                                             vault.svelte.ts's Rust-lock-state mirror call.
+//                                             The mock has no lock-state to mutate (that
+//                                             decision is pinned by update.rs's own
+//                                             #[test]s) — it only records the call into the
+//                                             invoke log below so ordering tests can assert
+//                                             RELATIVE call order, not merely presence.
 //
 // Any unrecognized command rejects with a clear error message so component tests
 // fail loudly if an unexpected invoke is triggered.
@@ -35,6 +42,8 @@
 //                                    the config.json a spec's loadConfig() will read back
 //   setMockHibpResponse(mode, pw?)   controls hibp_range_lookup's response (match/no-match/fail)
 //   getLastSavedConfig()             the last CryptiqConfig object written via saveConfig()
+//   getInvokeLog()                   ordered log of every invoke() call this run (Phase 36
+//                                    UPD-05 ordering tests — asserts call ORDER, not presence)
 //   resetMockState()                 restore defaults between tests
 //
 // NOTE (Phase 31, Plan 31-02): this file is the Wave-1 shared owner of the three HIBP
@@ -156,6 +165,26 @@ export function getMockVaultPath(): string | null {
   return _mockVaultPath;
 }
 
+/**
+ * Full ordered log of every invoke() call made this test run (Phase 36 / UPD-05). Used by
+ * the apply-seam ordering test to assert vault_lock_state_set's position RELATIVE TO other
+ * invoke calls whose position in vault.svelte.ts's source is already known (vault_lock_acquire
+ * fires AFTER unlockVault()/createVault()'s Argon2id derive; clipboard_clear_if_ours fires
+ * BEFORE the save-mutex/secureWipe in lock(); vault_lock_release fires LAST). An ordering test
+ * that only checks both calls happened would pass against a reordered, unsafe version — this
+ * log lets a test assert relative ORDER, not just call presence.
+ */
+export interface InvokeLogEntry {
+  command: string;
+  args: unknown;
+}
+let _invokeLog: InvokeLogEntry[] = [];
+
+/** Read the full ordered invoke() call log (Phase 36 / UPD-05 ordering tests). */
+export function getInvokeLog(): InvokeLogEntry[] {
+  return [..._invokeLog];
+}
+
 /** Reset all configurable mock state to harness defaults. */
 export function resetMockState(): void {
   _mockVaultPath = '/fake/vault.cryptiq';
@@ -165,6 +194,7 @@ export function resetMockState(): void {
   _lastSavedConfig = null;
   _mockHibpMode = 'no-match';
   _mockHibpMatchPassword = null;
+  _invokeLog = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +215,15 @@ export async function invoke(
   args?: unknown,
   _options?: { headers?: Record<string, string> },
 ): Promise<unknown> {
+  // Phase 36 / UPD-05: record EVERY invoke() call into the ordered log (see getInvokeLog's
+  // doc comment above) before any command-specific handling below.
+  _invokeLog.push({ command, args });
+
+  // ── vault_lock_state_set (Phase 36 / UPD-05 apply-seam guard) ────────────────────────────
+  if (command === 'vault_lock_state_set') {
+    return undefined;
+  }
+
   // ── Advisory lock lifecycle ────────────────────────────────────────────────
   if (
     command === 'vault_lock_acquire' ||
