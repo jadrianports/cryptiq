@@ -14,7 +14,16 @@
 //   plugin:dialog|save                     — vault-path picker (FirstRunWizard — no-op)
 //   plugin:clipboard-manager|write_text    — per-field copy (copyField.ts — no-op)
 //   plugin:opener|open_url                 — URL launch (openUrl.ts — no-op)
-//   hibp_range_lookup                      — HIBP k-anonymity range lookup (Phase 31)
+//   hibp_range_lookup                      — HIBP k-anonymity range lookup (Phase 31); also
+//                                             models the Phase-36 (DEBT-01/W-1) Rust-side
+//                                             fail-closed consent-seam guard: reads the
+//                                             `purpose` arg, consults the corresponding
+//                                             _mockConfigFlags field, and throws
+//                                             hibp_consent_denied when that field is not
+//                                             `true` (including when flags are unseeded —
+//                                             fail-closed, matching hibp.rs's
+//                                             config_bool_field(&app, field, false)), or
+//                                             hibp_invalid_purpose for an unrecognized purpose
 //
 // Any unrecognized command rejects with a clear error message so component tests
 // fail loudly if an unexpected invoke is triggered.
@@ -276,7 +285,28 @@ export async function invoke(
   // sha1Hex/matchesSuffix k-anonymity logic in @cryptiq/core is NEVER mocked —
   // this handler returns a raw range-response body (or throws), exactly like the
   // real Rust hibp_range_lookup command would, and lets the real core logic parse it.
+  //
+  // Phase 36 (DEBT-01/W-1, D-13): the guard below models hibp.rs's fail-closed
+  // consent-seam check FIRST, before any response-shaping logic — a mock that
+  // skipped this would let every component test pass against behavior production
+  // does not have (the exact fake-green class this milestone exists to eliminate).
   if (command === 'hibp_range_lookup') {
+    const purpose = (args as Record<string, string> | undefined)?.purpose;
+    const fieldForPurpose: Record<string, keyof typeof _mockConfigFlags> = {
+      'entry-scan': 'hibpEntryScanEnabled',
+      'master-check': 'hibpMasterCheckEnabled',
+    };
+    const field = purpose !== undefined ? fieldForPurpose[purpose] : undefined;
+    if (field === undefined) {
+      throw new Error('hibp_invalid_purpose');
+    }
+    // Fail-CLOSED: an empty/unseeded _mockConfigFlags object must refuse, exactly mirroring
+    // hibp.rs's config_bool_field(&app, field, false) treating "absent" as "not consented" —
+    // never treat "no flags seeded" as an implicit pass.
+    if (_mockConfigFlags[field] !== true) {
+      throw new Error('hibp_consent_denied');
+    }
+
     if (_mockHibpMode === 'fail') {
       throw new Error('[test] mock hibp_range_lookup failure (setMockHibpResponse fail mode)');
     }

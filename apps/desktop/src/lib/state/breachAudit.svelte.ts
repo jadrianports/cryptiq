@@ -172,7 +172,10 @@ async function _sweep(
 
       let outcome: { failed: false; breached: boolean } | { failed: true };
       try {
-        const isBreached = await lookupHibpRange(groupEntries[0]!.password, invoke);
+        // Phase 36 (DEBT-01/W-1, D-13): 'entry-scan' is the ONLY purpose this module ever
+        // requests -- it sweeps stored ENTRY passwords, governed by hibpEntryScanEnabled,
+        // never hibpMasterCheckEnabled (the two consent flags are independent, Phase 31 D-16).
+        const isBreached = await lookupHibpRange(groupEntries[0]!.password, invoke, 'entry-scan');
         outcome = { failed: false, breached: isBreached };
       } catch {
         // HibpLookupError or anything else — routes to `unknown`, NEVER cached (D-09/D-06).

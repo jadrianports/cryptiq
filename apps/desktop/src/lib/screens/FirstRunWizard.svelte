@@ -121,7 +121,9 @@
   async function runBreachCheck(): Promise<void> {
     breachCheckResult = 'checking';
     try {
-      const breached = await lookupHibpRange(masterPassword, hibpInvoke);
+      // Phase 36 (DEBT-01/W-1, D-13): 'master-check' governs hibpMasterCheckEnabled, the
+      // independent consent flag for this check (Phase 31 D-16) -- never 'entry-scan'.
+      const breached = await lookupHibpRange(masterPassword, hibpInvoke, 'master-check');
       breachCheckResult = breached ? 'breached' : 'safe';
     } catch {
       // ANY failure (HibpLookupError or otherwise) reads as 'unknown' — NEVER 'safe'.
