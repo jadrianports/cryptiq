@@ -256,7 +256,12 @@ jobs:
       # GitHub-hosted runners reach the Playwright CDN fine, so Playwright manages its
       # own install and no local override is needed.
       - name: Playwright install chromium
-        run: pnpm exec playwright install chromium
+        # `playwright` is a devDependency of the workspace packages (apps/site,
+        # apps/desktop), NOT the repo root — so a root `pnpm exec playwright` fails
+        # with "Command 'playwright' not found". Resolve the CLI from the workspace
+        # that owns it. (This step is unreachable by the local flaky-CDN escape hatch,
+        # so it was only ever proven in CI — 38-VERIFICATION human-verify caught it.)
+        run: pnpm --filter @cryptiq/site exec playwright install chromium
 
       - name: ESLint
         run: pnpm exec eslint .
