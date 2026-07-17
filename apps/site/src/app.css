@@ -1,0 +1,22 @@
+/* apps/site/src/app.css */
+
+@import 'tailwindcss';
+@import '../../desktop/src/theme.css';
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+html,
+body,
+#app {
+  height: 100%;
+  background: var(--color-cryptiq-bg);
+  color: var(--color-cryptiq-fg);
+  font-family: var(--font-sans);
+  color-scheme: light dark;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-cryptiq-ring);
+  color: var(--color-cryptiq-fg);
+}
