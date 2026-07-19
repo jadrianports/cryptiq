@@ -107,7 +107,7 @@ minisign-verify = "=0.2.5"
 # mirroring the blake2/base64/semver "reuse the already-resolved version" precedent above. Per
 # 36-RESEARCH.md's "Don't Hand-Roll" table: reuse an already-audited primitive rather than
 # hand-rolling SHA-256.
-sha2 = "=0.10.9"
+sha2 = "=0.11.0"
 
 # Phase 36: Plan 04's `is_strictly_newer` names `semver::Version` directly in its own signature
 # and its tests construct `semver::Version` values — Rust requires a direct declaration to `use`
