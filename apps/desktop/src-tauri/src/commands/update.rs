@@ -758,16 +758,20 @@ mod tests {
     const SUBMANIFEST_320_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSKzFhdlVWZ3dWOEJHZGxGb3ArVG1vMU50ZXBMZ3FnaVFxZG5SWlAwaGhTWWxSRllydllCMEN0cFFuc0pBOG9mZTV5WHhxZFcxSnRSY2ZYNDlBb0xDcWNhRTY4T2RkdHdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0MzAyMTk3CWZpbGU6c3VibWFuaWZlc3QtMzIwLmpzb24KZnlPZ3ArY1U3UFJmdk8vd2hLVGlMUnpKV1VWN0ZnejU1RWZTdHdnY0Y1aXI2b2VHSFlKcVlqVktHc0gzRUdyai9NTmt0dURJL2pzeWJQMTl6d3o5Qnc9PQo=";
 
     #[test]
-    #[ignore = "needs the local UPD-01/03 build-artifact fixture — see load_upd03_fixture_strings"]
     fn upd03_rollback_experiment_is_refused_by_mitigation() {
         // THE KEY TEST. Serves the SAME attack `upd03_rollback_experiment` above proves succeeds
         // against the raw plugin machinery: a hand-built `latest.json` claiming a false high
         // version ("99.0.0" per 36-02-SUMMARY.md's recorded attack shape) over the SAME real,
-        // old, validly-signed v3.2.0 artifact + its genuine .sig (loaded via the SAME
-        // load_upd03_fixture_strings() helper Plan 02/04 already use). The only thing that
-        // changes between the two tests is that THIS path refuses.
-        let (artifact_bytes, _pubkey_text, _signature_text) = load_upd03_fixture_strings();
-        assert!(!artifact_bytes.is_empty(), "sanity: the real fixture artifact must be non-empty");
+        // old, validly-signed v3.2.0 artifact + its genuine .sig. The only thing that changes
+        // between the two tests is that THIS path refuses.
+        //
+        // Deliberately NOT `#[ignore]`d, unlike its before-half. This test proves the D-11
+        // mitigation REFUSES, and the refusal is decided entirely by check_rollback_mitigation()
+        // below — it never needs the artifact bytes. It previously called
+        // load_upd03_fixture_strings() only for an incidental non-empty sanity assert, which
+        // coupled the mitigation proof to a local-only build artifact and would have silently
+        // removed it from CI. The coupling is dropped so this keeps running everywhere; the
+        // artifact's role in the attack narrative is documented above rather than loaded.
 
         // The attacker's hand-built latest.json has NO sub-manifest at all — Option A did not
         // exist when Plan 02 crafted this attack, and even if it did, the attacker cannot
