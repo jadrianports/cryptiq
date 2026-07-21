@@ -15,9 +15,27 @@
 //     silent allowlist.
 //
 // (b) CSP-SURVIVAL + structural belt-and-suspenders — every .html file under
-//     dist must contain the meta-CSP with `connect-src 'none'` (DEMO-02b), and
+//     dist must contain the meta-CSP with `connect-src 'none'` (DEMO-02b) AND
+//     `worker-src 'self'` (39-01, DEMO-03/04, T-39-01-T — see below), and
 //     must contain zero `type="password"`, zero `<form`, and zero
 //     `type="submit"` (DEMO-01 structural lock, mirroring D-04).
+//
+// AMENDMENT (39-01, T-39-01-T): `Worker(`/`importScripts` were REMOVED from
+// FORBIDDEN_API_STRINGS below. Phase 38 banned them outright ("off-thread
+// code that can itself egress") for a page with no legitimate Worker use
+// case at the time; DEMO-03/04 now requires a real Web Worker for the
+// off-main-thread Argon2id demo, which ALWAYS emits the literal `Worker(`
+// substring in the built JS (Vite's documented bundling pattern). A
+// same-origin, build-time-bundled module Worker cannot egress any
+// differently than the main bundle — both are governed by the SAME
+// inherited page CSP (a Worker created from a document with no separate CSP
+// response header inherits the creating document's policy). Rather than
+// weaken containment, this amendment TIGHTENS it: the inherited guarantee
+// is now an EXPLICIT, browser-enforced `worker-src 'self'` directive
+// (index.html), and REQUIRED_WORKER_CSP_SUBSTRING below asserts it survives
+// the build — mirroring REQUIRED_CSP_SUBSTRING exactly. This is a MINIMAL,
+// reviewable two-part diff (delete 2 array entries, add 1 assertion) —
+// never a wholesale rewrite that could silently drop another check.
 //
 // Skips gracefully (NOTICE + exit 0) when apps/site/dist does not exist yet —
 // safe in the pre-build lint:custom auto-discovery chain (scripts/lint/run-all.mjs),
@@ -55,8 +73,6 @@ const FORBIDDEN_API_STRINGS = [
   'WebSocket',
   'EventSource',
   'RTCPeerConnection', // WebRTC data/media egress
-  'Worker(', // new Worker( / SharedWorker( — off-thread code that can itself egress
-  'importScripts', // worker-side code/network load
   'ping="', // <a ping="…"> beacon on navigation
 ];
 
@@ -71,6 +87,9 @@ const FORBIDDEN_API_STRINGS = [
 const FORBIDDEN_STRUCTURAL_STRINGS = ['type="password"', '<form', 'type="submit"'];
 
 const REQUIRED_CSP_SUBSTRING = "connect-src 'none'";
+// 39-01, DEMO-03/04, T-39-01-T — the explicit worker-src tightening that
+// accompanies the Worker(/importScripts removal above (see header comment).
+const REQUIRED_WORKER_CSP_SUBSTRING = "worker-src 'self'";
 
 if (!existsSync(DIST_DIR)) {
   console.log(
@@ -124,6 +143,13 @@ for (const htmlFile of htmlFiles) {
     violations++;
   }
 
+  if (!text.includes(REQUIRED_WORKER_CSP_SUBSTRING)) {
+    console.error(
+      `${htmlFile}: missing required meta-CSP directive ${JSON.stringify(REQUIRED_WORKER_CSP_SUBSTRING)} — DEMO-03 Worker containment did not survive the build.`,
+    );
+    violations++;
+  }
+
   for (const needle of FORBIDDEN_STRUCTURAL_STRINGS) {
     if (text.includes(needle)) {
       console.error(
@@ -140,5 +166,5 @@ if (violations > 0) {
 }
 
 console.log(
-  `OK: apps/site/dist is clean — no forbidden network/storage APIs, meta-CSP (${REQUIRED_CSP_SUBSTRING}) survived the build, and no password input/form/submit control.`,
+  `OK: apps/site/dist is clean — no forbidden network/storage APIs, meta-CSP (${REQUIRED_CSP_SUBSTRING}, ${REQUIRED_WORKER_CSP_SUBSTRING}) survived the build, and no password input/form/submit control.`,
 );

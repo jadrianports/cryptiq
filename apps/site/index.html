@@ -22,10 +22,20 @@
       - style-src 'self' 'unsafe-inline'       — Tailwind v4 + Svelte emit
         inline <style> during dev/build; kept as tight as the build allows
         (Claude's Discretion per 38-CONTEXT.md).
+      - worker-src 'self'  (39-01, DEMO-03/04, T-39-01-T) — the live crypto
+        demo's Web Worker is a same-origin, build-time-bundled module Worker;
+        a Worker created same-origin from a document with no separate CSP
+        response header on the worker script inherits the CREATING
+        document's policy (WHATWG HTML / MDN CSP inheritance). This
+        directive makes that inherited guarantee EXPLICIT and browser-
+        enforced rather than relying on the worker-src -> script-src ->
+        default-src CSP fallback chain — a TIGHTENING, never a loosening,
+        of containment (lint-demo-containment.mjs asserts this survives the
+        build the same way it asserts connect-src 'none' does).
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'self'"
     />
     <title>Cryptiq</title>
   </head>
