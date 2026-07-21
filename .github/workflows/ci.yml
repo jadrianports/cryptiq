@@ -459,6 +459,63 @@ jobs:
           # public, so a real finding must never echo the secret itself into the run log.
           ./gitleaks-bin/gitleaks.exe git --config .gitleaks.toml --log-opts="$range" --verbose --redact .
 
+  pages:
+    name: pages
+    # DEMO-11 (39-04) — push-to-main-only GitHub Pages deploy of apps/site. Deliberately
+    # excluded from ci-required's `needs:` below: this job is INTENTIONALLY skipped on
+    # every pull_request run (no `pages: write`/`id-token: write` trust on a PR), and a
+    # required aggregator must never fail on a job that is legitimately skipped by design
+    # (the same "skipped must never masquerade as a pass" principle applied in reverse —
+    # here a skip is the CORRECT, expected outcome on a PR, not a gap to gate on).
+    #
+    # ubuntu-latest, not windows-2025: apps/site has zero Tauri/Rust dependency, so this
+    # runs independently of (and much faster than) the Windows build matrix above.
+    #
+    # actions/checkout, pnpm/action-setup, actions/setup-node reuse the SAME SHAs already
+    # pinned elsewhere in this file (do not re-resolve those). actions/upload-pages-artifact
+    # and actions/deploy-pages are net-new for this job; their SHAs were resolved live via
+    # `gh api repos/actions/<name>/git/refs/tags/v5.0.0` at execution time (both tags point
+    # directly at a commit object, not an annotated tag needing dereference) — never
+    # hand-copied from a doc fetch (CVE-2025-30066).
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
+        with:
+          run_install: false
+
+      # HARD-05/D-10a: pnpm on PATH before setup-node's `cache: 'pnpm'` (see rust job).
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: pnpm install (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build apps/site
+        run: pnpm --filter @cryptiq/site build
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: apps/site/dist
+
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
+
   ci-required:
     name: CI Required
     runs-on: ubuntu-latest
