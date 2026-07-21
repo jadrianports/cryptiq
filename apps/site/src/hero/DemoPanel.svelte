@@ -30,6 +30,11 @@
   let phase = $state<Phase>('idle');
   let finalElapsedMs = $state<number | null>(null);
   let oomMessage = $state<string | null>(null);
+  // The REAL typed code from the failure, never a hardcoded literal. A page whose
+  // whole pitch is "don't trust it, check it" must not print a plausible-looking
+  // error code it made up — the tamper path already surfaces err.code, and this
+  // path must hold the same standard. Null when the failure carried no typed code.
+  let oomCode = $state<string | null>(null);
 
   type CipherGrid = { ciphertext: Uint8Array; nonce: Uint8Array };
   let grids = $state<CipherGrid[]>([]);
@@ -68,6 +73,7 @@
     phase = 'deriving';
     finalElapsedMs = null;
     oomMessage = null;
+    oomCode = null;
     grids = [];
     tamperResult = null;
     try {
@@ -80,6 +86,7 @@
       // browser almost always means a genuine allocation refusal, which IS
       // the security argument (D-05), not a bug to hide.
       phase = 'oom';
+      oomCode = err instanceof CryptoWorkerError ? err.code : null;
       oomMessage =
         err instanceof CryptoWorkerError
           ? err.message
@@ -200,7 +207,9 @@
         the same allocation, every single guess.
       </p>
       {#if oomMessage}
-        <p class="mt-1.5 font-mono text-meta text-cryptiq-fg-subtle">KDF_RESOURCE: {oomMessage}</p>
+        <p class="mt-1.5 font-mono text-meta text-cryptiq-fg-subtle">
+          {#if oomCode}{oomCode}: {/if}{oomMessage}
+        </p>
       {/if}
       <button
         type="button"
