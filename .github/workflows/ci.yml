@@ -149,7 +149,7 @@ jobs:
       # HARD-05/D-10a: pnpm MUST be on PATH before setup-node's `cache: 'pnpm'` runs —
       # it shells `pnpm store path --silent` to resolve the cache folder. Reordering
       # this after pnpm/action-setup (was previously first) is the actual fix.
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -240,7 +240,7 @@ jobs:
           run_install: false
 
       # HARD-05/D-10a: pnpm on PATH before setup-node's `cache: 'pnpm'` (see rust job).
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -328,7 +328,7 @@ jobs:
           run_install: false
 
       # HARD-05/D-10a: pnpm on PATH before setup-node's `cache: 'pnpm'` (see rust job).
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -498,7 +498,7 @@ jobs:
           run_install: false
 
       # HARD-05/D-10a: pnpm on PATH before setup-node's `cache: 'pnpm'` (see rust job).
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
