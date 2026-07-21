@@ -137,7 +137,7 @@ jobs:
         --ignore RUSTSEC-2025-0100
         --ignore RUSTSEC-2025-0098
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
         # No `version:` — pnpm/action-setup v6 reads the pinned pnpm@11.13.0 from
@@ -233,7 +233,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
         with:
@@ -321,7 +321,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
         with:
@@ -414,7 +414,7 @@ jobs:
     # cadence: watch https://github.com/gitleaks/gitleaks/releases and update both the
     # version and SHA256 below (same values are reused in gitleaks-full.yml).
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # The incremental scan below walks `github.event.before..after`. The default
           # depth-1 checkout has none of those commits, so the range would be unwalkable.
@@ -491,7 +491,7 @@ jobs:
       group: pages
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093  # v6.0.8
         with:
