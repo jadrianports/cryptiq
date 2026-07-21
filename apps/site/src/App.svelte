@@ -1,5 +1,8 @@
 <script lang="ts">
   import DemoPanel from './hero/DemoPanel.svelte';
+  import RealAppProof from './hero/RealAppProof.svelte';
+  import FrontDoor from './hero/FrontDoor.svelte';
+  import Verify from './hero/Verify.svelte';
 
   // D-06/D-19/DEMO-10 (39-CONTEXT.md): this is now a long-scroll PAGE — the
   // Phase-38 centered max-w-md single-card "contained shell" composition is
@@ -9,6 +12,11 @@
   // DemoPanel.svelte's passphrase input — this file must never reintroduce
   // any of that structure itself. containment.spec.ts's field-detector test
   // and lint-demo-containment.mjs both re-run against this fuller page.
+  //
+  // D-06 document order (39-03): hook -> live demo -> real-app screenshots ->
+  // download -> verify. RealAppProof/FrontDoor/Verify each own their own
+  // <section id="..."> anchor internally (real-app / download / verify) — no
+  // wrapper <section> duplication here.
 </script>
 
 <main class="min-h-screen bg-cryptiq-bg">
@@ -35,12 +43,22 @@
       <DemoPanel />
     </div>
 
-    <!-- TODO(39-03): annotated real-app screenshots (D-16) fill this slot. -->
-    <section id="real-app" class="mt-24"></section>
+    <!-- Real-app proof (DEMO-12, D-16) — labeled screenshot placeholder slots. -->
+    <div class="mt-24">
+      <RealAppProof />
+    </div>
 
-    <!-- TODO(39-03): GitHub-Releases download links, checksum + attestation
-         verify block, SmartScreen explainer (D-11..D-15) fill this slot. -->
-    <section id="download" class="mt-24"></section>
+    <!-- Download front door (DEMO-09/11..15) — GitHub-Releases-only Windows
+         download, SmartScreen explainer, honest macOS/mobile/extension slots. -->
+    <div class="mt-24">
+      <FrontDoor />
+    </div>
+
+    <!-- Verify (DEMO-13, D-13/D-10) — copy-ready gh attestation verify one-liner
+         + live SHA256SUMS link, never a baked checksum. -->
+    <div class="mt-24">
+      <Verify />
+    </div>
 
     <!-- Core commit SHA credit (DEMO-07/D-18) — font-mono, Label/Meta size,
          fg-subtle, a real <a> to the source tree at the exact build SHA. -->
