@@ -207,7 +207,14 @@ jobs:
       # either workspace, so this is cheap even though it runs after the full
       # check/clippy/test suite above. `--deny warnings` also fails on yanked and
       # unmaintained crates, not only advisories with a CVE.
+      # `if: always()` here is load-bearing for the SAME reason it is on the native-host audit
+      # below. Without it, ANY earlier red step (e.g. a failing `cargo test`) skips this install
+      # while the `if: always()` audit step still runs — which then dies with
+      # `error: no such command: audit` instead of auditing anything, i.e. the guard that exists
+      # to close the blind spot silently re-opens it exactly when something is already wrong.
+      # Observed on run 29816164253 (2026-07-21).
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853  # v2.83.2
+        if: always()
         with:
           tool: cargo-audit
 
@@ -217,6 +224,7 @@ jobs:
       # prove native-host is genuinely audited, not just src-tauri (the four-milestone
       # blind-spot this phase exists to close).
       - name: cargo audit (Tauri)
+        if: always()
         run: cargo audit --deny warnings --file apps/desktop/src-tauri/Cargo.lock ${{ env.CARGO_AUDIT_IGNORES }}
 
       # `if: always()` is load-bearing, not defensive boilerplate. Steps are sequential:
