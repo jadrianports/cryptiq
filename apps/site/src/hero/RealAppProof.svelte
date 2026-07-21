@@ -7,9 +7,9 @@
   broken <img src>, until then.
 
   Capture spec (for the user, when ready to replace these slots):
-    - "Unlock": the real master-password unlock screen. The password field
-      itself must be visually masked/obscured in the capture — never show a
-      real password on screen.
+    - "Master password": the real master-password entry screen. The password
+      field itself must be visually masked/obscured in the capture — never
+      show a real password on screen.
     - "Vault list": a vault populated with a FEW realistic-looking but FAKE
       entries (no real personal accounts); stored passwords collapsed/hidden.
     - "Generate": the password generator panel mid-generation, strength meter
@@ -20,8 +20,11 @@
       actual accounts; crop out OS taskbar/notification chrome where possible.
 -->
 <script lang="ts">
+  // D-19 (carried from Phase 38): no copy using the verb "Unlock" anywhere on
+  // this page — phrase the master-password-entry caption around the screen's
+  // purpose, never that verb.
   const slots = [
-    { caption: 'Unlock — the real master-password screen' },
+    { caption: 'Master password — the real entry screen' },
     { caption: 'Vault list — entries at a glance' },
     { caption: 'Generate — a strong password, on demand' },
     { caption: 'Copy — one click, auto-clearing clipboard' },

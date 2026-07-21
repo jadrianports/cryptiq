@@ -23,6 +23,17 @@
 // D-05: "the enforcement is the test" — a demo-specific reimplementation of
 // field detection would prove nothing about the real extension and could
 // silently drift from it (T-38-04). This spec imports the REAL detector.
+//
+// EXTENDED (39-03, Task 3, DEMO-10 phase-gate regression): `render(App)`
+// below now renders the FULLY ASSEMBLED hero page — skim badges, Derive,
+// hex-grid tamper cells, copy buttons (Verify.svelte), coming-soon slots
+// (FrontDoor.svelte), screenshot placeholders (RealAppProof.svelte) — all
+// landed across 39-01/39-02/39-03. The assertions below are UNCHANGED from
+// Phase 38: no reimplementation was needed, because `scanForLoginFields` and
+// the zero-<form>/zero-submit-control checks already run against whatever
+// `App.svelte` renders. Passing here after 39-03's assembly is the DEMO-10
+// proof that none of this phase's new interactive elements reconstruct a
+// credential form.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
