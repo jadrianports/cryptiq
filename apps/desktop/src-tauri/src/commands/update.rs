@@ -548,7 +548,24 @@ mod tests {
     // -----------------------------------------------------------------------
     // Shared fixture loader (Plan 04 Task 1: reuse Plan 02's throwaway keypair + real signed
     // artifact for the UPD-01 tampered-byte proof too — do NOT generate a second throwaway
-    // keypair). Returns `(artifact_bytes, pubkey_text, signature_text)` where the pubkey/
+    // keypair).
+    //
+    // ALL THREE CALLERS ARE `#[ignore]`-BY-DEFAULT, DELIBERATELY. The fixture is a real
+    // `pnpm build` NSIS artifact plus a `.sig` produced by a THROWAWAY private key that was
+    // never committed (D-09 — that non-committal is the point, not an oversight). Neither half
+    // can be reconstructed on a clean runner: `target/` is gitignored, and re-signing is
+    // impossible without the discarded key. So these are LOCAL-ONLY proofs by construction —
+    // leaving them un-ignored made the `rust` CI job permanently red, which trained the red to
+    // be ignored and masked real failures behind it (it also skipped the cargo-audit install
+    // step, so `cargo audit (native-host)` reported `no such command: audit` instead of auditing).
+    //
+    // Run them deliberately after a build + sign:
+    //     pnpm build && tauri signer sign ...   # see tests/fixtures/upd03/README.md
+    //     cargo test -- --ignored
+    // If CI ever needs to run them, it must first regenerate BOTH halves with a fresh throwaway
+    // keypair — do not weaken the assertions to make them runnable without the fixture.
+    //
+    // Returns `(artifact_bytes, pubkey_text, signature_text)` where the pubkey/
     // signature strings are ALREADY outer-base64-unwrapped to the inner minisign text, exactly
     // as `verify_signature()` itself does before calling `PublicKey::decode`/`Signature::decode`
     // (see `upd03_rollback_experiment`'s header comment above for the plugin source quote this
@@ -624,6 +641,7 @@ mod tests {
     // verifier that only checks a prefix would pass a first-byte-only test).
     // -----------------------------------------------------------------------
     #[test]
+    #[ignore = "needs the local UPD-01/03 build-artifact fixture — see load_upd03_fixture_strings"]
     fn signature_verification_fails_on_tampered_byte() {
         use minisign_verify::{PublicKey, Signature};
 
@@ -667,6 +685,7 @@ mod tests {
     // `upd03_rollback_experiment_is_refused_by_mitigation` for the SAME attack, refused, as the
     // "after" half of this before/after pair.
     #[test]
+    #[ignore = "needs the local UPD-01/03 build-artifact fixture — see load_upd03_fixture_strings"]
     fn upd03_rollback_experiment() {
         use minisign_verify::{PublicKey, Signature};
 
@@ -739,6 +758,7 @@ mod tests {
     const SUBMANIFEST_320_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSKzFhdlVWZ3dWOEJHZGxGb3ArVG1vMU50ZXBMZ3FnaVFxZG5SWlAwaGhTWWxSRllydllCMEN0cFFuc0pBOG9mZTV5WHhxZFcxSnRSY2ZYNDlBb0xDcWNhRTY4T2RkdHdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0MzAyMTk3CWZpbGU6c3VibWFuaWZlc3QtMzIwLmpzb24KZnlPZ3ArY1U3UFJmdk8vd2hLVGlMUnpKV1VWN0ZnejU1RWZTdHdnY0Y1aXI2b2VHSFlKcVlqVktHc0gzRUdyai9NTmt0dURJL2pzeWJQMTl6d3o5Qnc9PQo=";
 
     #[test]
+    #[ignore = "needs the local UPD-01/03 build-artifact fixture — see load_upd03_fixture_strings"]
     fn upd03_rollback_experiment_is_refused_by_mitigation() {
         // THE KEY TEST. Serves the SAME attack `upd03_rollback_experiment` above proves succeeds
         // against the raw plugin machinery: a hand-built `latest.json` claiming a false high
