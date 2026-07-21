@@ -52,7 +52,7 @@
     <!-- Zero-network claim (D-10) — falsifiable, not a marketing assertion. -->
     <p class="mt-2 text-body text-cryptiq-fg-muted">
       Nothing you type leaves your browser — there's no server to leave to. Open DevTools →
-      Network and watch: zero requests.
+      Network, then use the demo: after this page loads, it makes zero requests.
     </p>
 
     <!-- gh attestation verify — copy-ready procedure, not a baked hash (D-13). -->

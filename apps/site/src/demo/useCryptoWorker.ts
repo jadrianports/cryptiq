@@ -25,6 +25,24 @@ function getWorker(): Worker {
   return worker;
 }
 
+/**
+ * Instantiate the Worker eagerly, at page load, so no chunk fetch happens later.
+ *
+ * DEMO-10 correctness, not a perf tweak. `getWorker()` is lazy, so before this
+ * existed the ~1 MB `cryptoWorker` chunk was fetched on the FIRST derive click —
+ * i.e. a network request fired at the exact moment the page invites the visitor to
+ * "open DevTools → Network and watch: zero requests". The claim is the page's whole
+ * pitch, so it has to survive the check it asks the reader to run: after load,
+ * interacting with the demo must produce no requests at all.
+ *
+ * Creating the Worker does NOT derive anything and does not weaken D-02 (derive()
+ * is still only ever called from the explicit click handler) — it only pre-pays the
+ * module fetch during initial page load, where it is honestly an asset load.
+ */
+export function preloadCryptoWorker(): void {
+  getWorker();
+}
+
 /** Reconstructed, main-thread-local representation of a worker-side typed error. */
 export class CryptoWorkerError extends Error {
   readonly code: string;

@@ -3,6 +3,14 @@
   import RealAppProof from './hero/RealAppProof.svelte';
   import FrontDoor from './hero/FrontDoor.svelte';
   import Verify from './hero/Verify.svelte';
+  import { preloadCryptoWorker } from './demo/useCryptoWorker';
+
+  // DEMO-10: warm the crypto Worker during initial page load so that clicking
+  // Derive later fetches NOTHING. The worker chunk is lazy by default, which
+  // would fire a ~1 MB request at precisely the moment the copy below tells the
+  // reader to watch the Network tab for zero requests. See preloadCryptoWorker().
+  // This creates the Worker only — it derives nothing (D-02 is untouched).
+  preloadCryptoWorker();
 
   // D-06/D-19/DEMO-10 (39-CONTEXT.md): this is now a long-scroll PAGE — the
   // Phase-38 centered max-w-md single-card "contained shell" composition is
@@ -36,7 +44,7 @@
     </h1>
     <p class="mt-3 max-w-xl text-body text-cryptiq-fg-muted">
       Nothing you type leaves your browser — there's no server to leave to. Open DevTools →
-      Network and watch: zero requests.
+      Network, then use the demo: after this page loads, it makes zero requests.
     </p>
 
     <div class="mt-10">
