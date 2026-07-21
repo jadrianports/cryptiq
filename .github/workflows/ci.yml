@@ -384,6 +384,14 @@ jobs:
       - name: Demo containment lint (post-build dist scan)
         run: node scripts/lint/lint-demo-containment.mjs
 
+      # DEMO-07 evidentiary integrity (39-01, T-39-01-R) — the printed "audit
+      # it yourself" core commit SHA must byte-equal the real build commit,
+      # not just look like a 40-hex string. Authored + wired here; goes green
+      # once 39-02/39-03 render __CORE_COMMIT_SHA__ into the page (see the
+      # lint's own header comment for why it is expected to fail until then).
+      - name: Demo SHA-equality lint (post-build dist scan)
+        run: node scripts/lint/lint-demo-sha.mjs
+
       # REL-03 (build-job half) / D-02d: install-smokes the *-setup.exe this same
       # runner just built — the earliest point the DIST-02 `-196608` class of bug
       # could be caught. Local to this runner (same job that just ran `pnpm build`),
