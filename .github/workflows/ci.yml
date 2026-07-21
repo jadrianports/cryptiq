@@ -485,6 +485,15 @@ jobs:
     # `gh api repos/actions/<name>/git/refs/tags/v5.0.0` at execution time (both tags point
     # directly at a commit object, not an annotated tag needing dereference) — never
     # hand-copied from a doc fetch (CVE-2025-30066).
+    # Gate publication on the required set actually passing. `pages` originally had no
+    # `needs:` at all, so it deployed to the public site in parallel with — and
+    # independently of — rust/node/build/secrets: run 29816164253 published while
+    # `CI Required` was red. Depending on the aggregator (rather than listing the four
+    # jobs again) keeps a single definition of "required" and means a red trunk stops
+    # the deploy instead of shipping over it. This is deliberately one-directional:
+    # `pages` depends on `ci-required`, never the reverse — ci-required must NOT gate on
+    # `pages`, which is legitimately skipped on every pull_request.
+    needs: [ci-required]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -516,6 +525,18 @@ jobs:
 
       - name: Build apps/site
         run: pnpm --filter @cryptiq/site build
+
+      # Gate the bytes that ACTUALLY ship. Both lints also run in the `build` job, but
+      # against a DIFFERENT dist produced on a DIFFERENT runner — so before this step
+      # existed the artifact uploaded below was linted by nothing, and a containment or
+      # SHA-equality regression could reach the public page while `build` stayed green.
+      # These lints are the enforcement behind the page's own falsifiable claims
+      # (DEMO-07 SHA equality, DEMO-10 containment), so they must run here, on this
+      # dist, immediately before it is uploaded.
+      - name: Lint deployed dist (containment + SHA equality)
+        run: |
+          node scripts/lint/lint-demo-containment.mjs
+          node scripts/lint/lint-demo-sha.mjs
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
         with:
