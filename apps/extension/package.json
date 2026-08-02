@@ -18,16 +18,16 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.7",
-    "@types/chrome": "^0.2.2",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/chrome": "^0.2.5",
     "@wxt-dev/module-svelte": "^2.0.5",
-    "happy-dom": "20.10.6",
-    "svelte": "^5.55.9",
-    "svelte-check": "^4.4.8",
-    "tailwindcss": "^4.1.7",
+    "happy-dom": "20.11.1",
+    "svelte": "^5.56.8",
+    "svelte-check": "^4.7.4",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.4.0",
     "vitest": "^3.2.4",
-    "wxt": "^0.20.27"
+    "wxt": "^0.21.3"
   },
   "dependencies": {
     "tweetnacl": "^1.0.3"
